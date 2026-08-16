@@ -248,6 +248,15 @@ fn build_native_timeline() {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // On macOS a Swift error is a broken build, not a reason to ship the
+        // stub: falling back silently produces an app where the timeline is
+        // simply the old webview one, with a warning nobody reads to say why.
+        if cfg!(target_os = "macos") {
+            panic!(
+                "swiftc failed for the native timeline:\n{}",
+                stderr.chars().take(4000).collect::<String>()
+            );
+        }
         println!(
             "cargo:warning=swiftc failed for the native timeline: {}",
             stderr.chars().take(800).collect::<String>()

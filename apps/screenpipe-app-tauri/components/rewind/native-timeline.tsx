@@ -22,6 +22,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { commands } from "@/lib/utils/tauri";
 import { getApiKey, getApiPort } from "@/lib/api";
@@ -85,12 +86,17 @@ export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
     const host = hostRef.current;
     if (!host) return;
 
+    const detachPayload = { windowLabel: getCurrentWindow().label };
+
     // Rounded, because a fractional rect leaves a seam between the child
     // window and the webview underneath it.
     const place = () => {
       const box = host.getBoundingClientRect();
       if (box.width < 1 || box.height < 1) return;
       void emit("native-timeline-attach", {
+        // Which window is asking. Two surfaces show a timeline — the main
+        // window's section and the overlay — and each needs its own.
+        windowLabel: getCurrentWindow().label,
         port: getApiPort(),
         apiKey: getApiKey(),
         embedded: true,
@@ -117,7 +123,7 @@ export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
       const nowOccluded = document.querySelector(OVERLAY_SELECTOR) !== null;
       if (nowOccluded !== occluded) {
         occluded = nowOccluded;
-        if (occluded) void emit("native-timeline-detach", {});
+        if (occluded) void emit("native-timeline-detach", detachPayload);
         else place();
         return;
       }
@@ -144,7 +150,7 @@ export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
       window.removeEventListener("resize", schedule);
       // Leaving the section has to take the window with it, or it floats over
       // whatever the user navigated to.
-      void emit("native-timeline-detach", {});
+      void emit("native-timeline-detach", detachPayload);
     };
   }, [available]);
 

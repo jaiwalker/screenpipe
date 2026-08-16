@@ -21,6 +21,7 @@ mod ffi {
         pub fn timeline_is_available() -> c_int;
         pub fn timeline_show(json: *const c_char) -> c_int;
         pub fn timeline_hide() -> c_int;
+        pub fn timeline_detach(json: *const c_char) -> c_int;
         pub fn timeline_close() -> c_int;
         pub fn timeline_navigate(json: *const c_char) -> c_int;
         pub fn timeline_set_action_callback(cb: Option<extern "C" fn(*const c_char)>);
@@ -42,6 +43,13 @@ mod ffi {
 
     pub fn hide() -> bool {
         unsafe { timeline_hide() == 0 }
+    }
+
+    pub fn detach(json: &str) -> bool {
+        match CString::new(json) {
+            Ok(c) => unsafe { timeline_detach(c.as_ptr()) == 0 },
+            Err(_) => false,
+        }
     }
 
     pub fn close() -> bool {
@@ -71,6 +79,10 @@ mod ffi {
         false
     }
     pub fn hide() -> bool {
+        false
+    }
+
+    pub fn detach(_json: &str) -> bool {
         false
     }
     pub fn close() -> bool {
@@ -159,6 +171,11 @@ pub fn show_raw(json: &str) -> bool {
 
 pub fn hide() -> bool {
     ffi::hide()
+}
+
+/// Detaches the timeline belonging to one host window.
+pub fn detach(json: &str) -> bool {
+    ffi::detach(json)
 }
 
 pub fn close() -> bool {

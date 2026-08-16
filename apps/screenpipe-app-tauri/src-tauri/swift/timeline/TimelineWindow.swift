@@ -282,9 +282,37 @@ struct TimelineHostView: View {
 
 // MARK: - Window controller
 
+/// A borderless `NSWindow` answers `canBecomeKey` with false, and a window that
+/// cannot become key never gets first responder — so nothing inside it can take
+/// a selection or a keystroke. Attached mode is borderless because the app
+/// draws the chrome, which quietly cost the timeline text selection until this
+/// override put it back.
+final class TimelineWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 @MainActor
 final class TimelineWindowController: NSObject, NSWindowDelegate {
+    /// The standalone window (preview, or `timeline_show` with no host).
     static let shared = TimelineWindowController()
+
+    /// One controller per host window. The app has more than one surface that
+    /// shows a timeline — the main window's section and the overlay — and a
+    /// single shared window meant whichever attached last stole it and the
+    /// other was left with an empty hole.
+    private static var attachedControllers: [Int: TimelineWindowController] = [:]
+
+    static func controller(forHost pointer: Int) -> TimelineWindowController {
+        if let existing = attachedControllers[pointer] { return existing }
+        let created = TimelineWindowController()
+        attachedControllers[pointer] = created
+        return created
+    }
+
+    static func releaseController(forHost pointer: Int) {
+        attachedControllers.removeValue(forKey: pointer)?.detach()
+    }
 
     private var window: NSWindow?
     private var model: TimelineViewModel?
@@ -293,6 +321,9 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     private var scrollHandler: TimelineScrollHandler?
     /// Set while the window is a child pinned over the webview's content area.
     private var hostWindowNumber: Int?
+    /// The host's `NSWindow` address, handed over by Rust. Unambiguous where
+    /// "the main window" is not, once the app has two of them.
+    private var hostPointer: Int?
     /// The attached rect, in the parent's own (bottom-left) coordinates, so the
     /// child can be re-laid whenever the parent moves or resizes.
     private var attachedRect: NSRect?
@@ -328,7 +359,7 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
         self.model = model
 
         let hosting = NSHostingView(rootView: TimelineHostView(model: model, embedded: embedded))
-        let window = NSWindow(
+        let window = TimelineWindow(
             contentRect: frame,
             styleMask: borderless
                 ? [.borderless, .fullSizeContentView]
@@ -362,7 +393,10 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     /// which the caller cannot do for us — it only knows the rect in its own
     /// layout, not where the window will be next.
     @discardableResult
-    func attach(config: TimelineAPIConfig, hostWindowNumber: Int, rect: NSRect) -> Bool {
+    func attach(
+        config: TimelineAPIConfig, hostWindowNumber: Int, rect: NSRect, hostPointer: Int? = nil
+    ) -> Bool {
+        self.hostPointer = hostPointer
         guard let host = resolveHost(hostWindowNumber) else { return false }
 
         // Build it at its final frame. Creating at the centred default and
@@ -398,6 +432,9 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     /// number, and resolving it there would mean an Objective-C hop for a
     /// value this side already has.
     private func resolveHost(_ number: Int) -> NSWindow? {
+        if let pointer = hostPointer {
+            return unsafeBitCast(UInt(bitPattern: pointer), to: NSWindow?.self)
+        }
         if number >= 0 { return NSApp.window(withWindowNumber: number) }
         let mine = window
         if let main = NSApp.mainWindow, main !== mine { return main }
@@ -454,6 +491,7 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     func detach() {
         removeParentObservers()
         hostWindowNumber = nil
+        hostPointer = nil
         attachedRect = nil
         guard let window else { return }
         window.parent?.removeChildWindow(window)
@@ -572,7 +610,9 @@ public func timeline_show(_ json: UnsafePointer<CChar>?) -> Int32 {
         if let host = obj["host"] as? String, !host.isEmpty { config.host = host }
         if let key = obj["apiKey"] as? String, !key.isEmpty { config.apiKey = key }
         if let value = obj["embedded"] as? Bool { embedded = value }
-        if let host = obj["hostWindow"] as? Int, let r = obj["rect"] as? [String: Any] {
+        if let r = obj["rect"] as? [String: Any] {
+            let host = (obj["hostWindow"] as? Int) ?? -1
+            let pointer = obj["hostPointer"] as? Int
             let rect = NSRect(
                 x: (r["x"] as? Double) ?? 0,
                 y: (r["y"] as? Double) ?? 0,
@@ -580,18 +620,17 @@ public func timeline_show(_ json: UnsafePointer<CChar>?) -> Int32 {
                 height: (r["height"] as? Double) ?? 0
             )
             let cfg = config
+            @MainActor func run() -> Int32 {
+                let controller = pointer.map { TimelineWindowController.controller(forHost: $0) }
+                    ?? TimelineWindowController.shared
+                return controller.attach(
+                    config: cfg, hostWindowNumber: host, rect: rect, hostPointer: pointer
+                ) ? 0 : -1
+            }
             if Thread.isMainThread {
-                return MainActor.assumeIsolated {
-                    TimelineWindowController.shared.attach(
-                        config: cfg, hostWindowNumber: host, rect: rect) ? 0 : -1
-                }
+                return MainActor.assumeIsolated { run() }
             }
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    _ = TimelineWindowController.shared.attach(
-                        config: cfg, hostWindowNumber: host, rect: rect)
-                }
-            }
+            DispatchQueue.main.async { MainActor.assumeIsolated { _ = run() } }
             return 0
         }
     }
@@ -620,6 +659,32 @@ public func timeline_hide() -> Int32 {
         DispatchQueue.main.async {
             MainActor.assumeIsolated { TimelineWindowController.shared.hide() }
         }
+    }
+    return 0
+}
+
+/// Detaches one host's timeline. Separate from `timeline_hide`, which has no
+/// argument and would have to guess which of them the caller meant.
+@_cdecl("timeline_detach")
+public func timeline_detach(_ json: UnsafePointer<CChar>?) -> Int32 {
+    guard #available(macOS 13.0, *) else { return -2 }
+    var pointer: Int?
+    if let json, let text = String(validatingUTF8: json), let data = text.data(using: .utf8),
+       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+        pointer = obj["hostPointer"] as? Int
+    }
+    let host = pointer
+    @MainActor func run() {
+        if let host {
+            TimelineWindowController.releaseController(forHost: host)
+        } else {
+            TimelineWindowController.shared.hide()
+        }
+    }
+    if Thread.isMainThread {
+        MainActor.assumeIsolated { run() }
+    } else {
+        DispatchQueue.main.async { MainActor.assumeIsolated { run() } }
     }
     return 0
 }

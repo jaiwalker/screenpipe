@@ -73,16 +73,43 @@ fn install_native_timeline_placement(app_handle: &tauri::AppHandle) {
         let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
             return;
         };
-        // -1 means "the app's main window"; Swift resolves it, because Rust
-        // holds a Tauri handle rather than an AppKit window number.
         payload["hostWindow"] = serde_json::json!(-1);
-        let _ = attach_handle;
+        if let Some(pointer) = host_window_pointer(&attach_handle, &payload) {
+            payload["hostPointer"] = serde_json::json!(pointer);
+        }
         crate::native_timeline::show_raw(&payload.to_string());
     });
 
-    app_handle.listen("native-timeline-detach", move |_| {
-        crate::native_timeline::hide();
+    let detach_handle = app_handle.clone();
+    app_handle.listen("native-timeline-detach", move |event| {
+        let payload = serde_json::from_str::<serde_json::Value>(event.payload())
+            .unwrap_or_else(|_| serde_json::json!({}));
+        let mut out = serde_json::json!({});
+        if let Some(pointer) = host_window_pointer(&detach_handle, &payload) {
+            out["hostPointer"] = serde_json::json!(pointer);
+        }
+        crate::native_timeline::detach(&out.to_string());
     });
+}
+
+/// The address of the `NSWindow` behind a Tauri window label.
+///
+/// Which window is asking matters once more than one of them shows a timeline,
+/// and "the main window" stops being an answer. The label comes from the
+/// webview, which is the only side that knows who it is; Tauri turns it into
+/// the AppKit handle that Swift can attach to.
+#[cfg(target_os = "macos")]
+fn host_window_pointer(app: &tauri::AppHandle, payload: &serde_json::Value) -> Option<isize> {
+    use tauri::Manager;
+
+    let label = payload.get("windowLabel")?.as_str()?;
+    let window = app.get_webview_window(label)?;
+    window.ns_window().ok().map(|ptr| ptr as isize)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn host_window_pointer(_app: &tauri::AppHandle, _payload: &serde_json::Value) -> Option<isize> {
+    None
 }
 
 /// Callback invoked from Swift when the native timeline asks the app to do

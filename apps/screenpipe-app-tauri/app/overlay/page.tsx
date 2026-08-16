@@ -22,6 +22,7 @@ import { UpdateBanner } from "@/components/update-banner";
 import { useManagedPolicy } from "@/lib/hooks/use-managed-policy";
 import { ModelDownloadTracker } from "@/components/model-download-tracker";
 import Timeline from "@/components/rewind/timeline";
+import { NativeTimeline } from "@/components/rewind/native-timeline";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { RefreshCw, AlertTriangle, WifiOff, Upload, Loader, Check, Calendar, X } from "lucide-react";
@@ -403,7 +404,7 @@ export default function OverlayPage() {
                 </div>
               )}
               <TimelineErrorBoundary>
-                <Timeline />
+                <NativeTimeline fallback={<Timeline />} />
               </TimelineErrorBoundary>
             </div>
           ) : showServerError ? (
