@@ -2470,6 +2470,14 @@ async showWindowActivated(window: ShowRewindWindow) : Promise<Result<null, strin
     else return { status: "error", error: e  as any };
 }
 },
+async snoozeShortcutReminderForHour() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("snooze_shortcut_reminder_for_hour") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Start the server (if not running) and capture.
  * This is the main entry point called by the frontend.
@@ -3737,14 +3745,17 @@ listenOnLan?: boolean }) &
  */
 shortcutOverlaySize?: string;
 /**
- * The user's choice, honored only while `allow_hiding_shortcut_overlay`
- * is on. The overlay ships unhideable, so this is inert by default.
+ * The user's persistent choice for the shortcut reminder. Recording-health
+ * incidents may still reveal their own temporary recovery surface.
  */
 showShortcutOverlay?: boolean;
 /**
- * Remote-controlled capability (`overlay-hiding-control`), written by the
- * desktop remote-control registry. False ships; flipping the flag on gives
- * the Display toggle back without a release.
+ * Unix timestamp until which the user asked to hide the shortcut reminder.
+ */
+shortcutOverlaySnoozedUntil?: number | null;
+/**
+ * Compatibility capability written by the desktop remote-control registry.
+ * Consumer visibility is controlled by `show_shortcut_overlay` above.
  */
 allowHidingShortcutOverlay?: boolean;
 /**
