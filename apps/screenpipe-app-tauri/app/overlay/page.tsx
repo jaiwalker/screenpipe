@@ -385,7 +385,7 @@ export default function OverlayPage() {
           <UpdateBanner />
           
           {showTimeline ? (
-            <div className="w-full scrollbar-hide bg-background relative">
+            <div className="w-full h-screen scrollbar-hide bg-background relative">
               {/* Subtle disconnected indicator - only show if we have data but no connection */}
               {hasAnyData && !isConnected && isServerDown && (
                 <div className="fixed top-10 right-4 z-50 flex items-center gap-2 px-3 py-1.5 bg-muted/90 backdrop-blur-sm rounded-full text-xs text-muted-foreground border">

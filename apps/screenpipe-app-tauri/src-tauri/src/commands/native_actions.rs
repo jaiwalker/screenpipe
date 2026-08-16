@@ -79,6 +79,13 @@ fn install_native_timeline_placement(app_handle: &tauri::AppHandle) {
             payload["hostPointer"] = serde_json::json!(pointer);
         }
         let ok = pointer.is_some() && crate::native_timeline::show_raw(&payload.to_string());
+        tracing::info!(
+            target: "native_timeline",
+            label = payload.get("windowLabel").and_then(|v| v.as_str()).unwrap_or("?"),
+            resolved_host = pointer.is_some(),
+            attached = ok,
+            "native timeline attach request"
+        );
         // Tell the webview whether it actually got a window. Without this a
         // failed attach is a transparent hole in the layout, which reads as a
         // blank screen rather than as "fall back to the React timeline".
@@ -155,6 +162,15 @@ fn native_timeline_action_callback_inner(action_ptr: *const std::os::raw::c_char
     match TimelineAction::parse(&raw) {
         TimelineAction::CloseWindow => {
             crate::native_timeline::hide();
+            // The Swift close button and its attached-window blur both mean
+            // close the overlay, not merely remove the AppKit child and leave
+            // an empty webview host behind.
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::commands::close_window(app, ShowRewindWindow::Main).await
+                {
+                    tracing::warn!(%error, "failed to close timeline overlay");
+                }
+            });
         }
         TimelineAction::OpenSearch => {
             let _ = app.emit("timeline-open-search", ());

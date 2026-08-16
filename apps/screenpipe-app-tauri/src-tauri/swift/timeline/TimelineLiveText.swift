@@ -10,10 +10,11 @@
 // and keeps it aligned by hand — position updates, a click guard so the
 // invisible text regions do not eat button presses, per-window keying.
 //
-// None of that scaffolding is needed here. `ImageAnalysisOverlayView` sits
-// inside the view hierarchy as an ordinary subview, and `trackingImageView`
-// makes it follow the image's own content rect, letterboxing included, so the
-// selection lands where the glyphs are without a line of coordinate maths.
+// None of the window-level scaffolding is needed here, but the geometry contract
+// still is: the pixels and VisionKit overlay must occupy the exact same rect.
+// `trackingImageView` does not reliably update its internal transform when an
+// embedded child window is resized, which makes the visible selection and the
+// copied OCR text disagree. We therefore aspect-fit both views explicitly.
 //
 // The analysis runs per image and is cancelled when the frame changes, because
 // scrubbing walks through frames far faster than Vision can finish one.
@@ -25,6 +26,53 @@ import SwiftUI
 import VisionKit
 #endif
 
+@MainActor
+final class TimelineLiveTextContainer: NSView {
+    let imageView = NSImageView()
+
+    #if canImport(VisionKit)
+    var analysisOverlay: Any?
+    #endif
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        imageView.imageScaling = .scaleAxesIndependently
+        imageView.autoresizingMask = []
+        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        imageView.setContentHuggingPriority(.defaultLow, for: .vertical)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        addSubview(imageView)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    static func aspectFitRect(imageSize: CGSize, inside bounds: CGRect) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return .zero }
+        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+        return CGRect(
+            x: bounds.midX - size.width / 2,
+            y: bounds.midY - size.height / 2,
+            width: size.width,
+            height: size.height
+        )
+    }
+
+    override func layout() {
+        super.layout()
+        let fitted = Self.aspectFitRect(imageSize: imageView.image?.size ?? .zero, inside: bounds)
+        imageView.frame = fitted
+        #if canImport(VisionKit)
+        if #available(macOS 13.0, *),
+           let overlay = analysisOverlay as? ImageAnalysisOverlayView {
+            overlay.frame = fitted
+        }
+        #endif
+    }
+}
+
 /// The frame, with its text selectable.
 ///
 /// Falls back to a plain image view where VisionKit is unavailable, so the
@@ -32,21 +80,9 @@ import VisionKit
 struct TimelineLiveTextImage: NSViewRepresentable {
     let image: NSImage
 
-    func makeNSView(context: Context) -> NSView {
-        let container = NSView()
-
-        let imageView = NSImageView()
-        imageView.imageScaling = .scaleProportionallyUpOrDown
-        imageView.image = image
-        imageView.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(imageView)
-        NSLayoutConstraint.activate([
-            imageView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            imageView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            imageView.topAnchor.constraint(equalTo: container.topAnchor),
-            imageView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
-        context.coordinator.imageView = imageView
+    func makeNSView(context: Context) -> TimelineLiveTextContainer {
+        let container = TimelineLiveTextContainer()
+        container.imageView.image = image
 
         #if canImport(VisionKit)
         if #available(macOS 13.0, *) {
@@ -54,36 +90,42 @@ struct TimelineLiveTextImage: NSViewRepresentable {
             // Text only: the subject-lifting and QR affordances would be a
             // surprise on a screen recording, and they add their own gestures.
             overlay.preferredInteractionTypes = .textSelection
-            // Tracks the image view's content rect, so a letterboxed frame
-            // still selects on the glyphs rather than an offset ghost of them.
-            overlay.trackingImageView = imageView
-            overlay.translatesAutoresizingMaskIntoConstraints = false
+            overlay.setSupplementaryInterfaceHidden(true, animated: false)
+            overlay.autoresizingMask = []
             container.addSubview(overlay)
-            NSLayoutConstraint.activate([
-                overlay.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-                overlay.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-                overlay.topAnchor.constraint(equalTo: container.topAnchor),
-                overlay.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            ])
+            container.analysisOverlay = overlay
             context.coordinator.overlay = overlay
         }
         #endif
 
+        container.needsLayout = true
+        container.layoutSubtreeIfNeeded()
         context.coordinator.analyze(image)
         return container
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        guard context.coordinator.imageView?.image !== image else { return }
-        context.coordinator.imageView?.image = image
+    func updateNSView(_ nsView: TimelineLiveTextContainer, context: Context) {
+        guard nsView.imageView.image !== image else { return }
+        nsView.imageView.image = image
+        nsView.needsLayout = true
+        nsView.layoutSubtreeIfNeeded()
         context.coordinator.analyze(image)
+    }
+
+    /// The viewport owns sizing. Falling back to `NSImageView.fittingSize`
+    /// would feed the capture's native resolution back into SwiftUI and move
+    /// window-level controls outside an embedded pane.
+    func sizeThatFits(
+        _ proposal: ProposedViewSize, nsView: NSView, context: Context
+    ) -> CGSize? {
+        guard let width = proposal.width, let height = proposal.height else { return nil }
+        return CGSize(width: max(width, 0), height: max(height, 0))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     @MainActor
     final class Coordinator {
-        var imageView: NSImageView?
         #if canImport(VisionKit)
         var overlay: Any?
         #endif

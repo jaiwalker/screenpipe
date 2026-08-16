@@ -547,6 +547,41 @@ private func testAttachTracksHost(model: TimelineViewModel) {
         return
     }
     expect(child.parent === host, "the attached timeline must be a child of the host")
+    if let hosting = child.contentView as? NSHostingView<TimelineHostView> {
+        expect(hosting.sizingOptions.isEmpty,
+               "SwiftUI intrinsic content must not resize the attached window")
+    } else {
+        failures.append("the attached timeline is not hosted by TimelineHostView")
+    }
+
+    // Native controls and Live Text need the child to become key. The Tauri
+    // parent consequently resigns key status; the Rust focus handler must
+    // recognize this parent chain as internal focus and keep the overlay up.
+    child.makeKey()
+    pump(0.2)
+    if child.isKeyWindow {
+        expect(!host.isKeyWindow, "the host resigns key status while its timeline is active")
+        expect(child.parent === host && child.isVisible,
+               "key focus must not detach or hide the native timeline")
+
+        // Once focus lives in the Swift child, the Tauri parent will not receive a
+        // second blur when the user switches apps. The child's delegate must send
+        // the normal close action itself after the same debounce.
+        _ = TimelineActionBridge.shared.drainEmitted()
+        let outsider = NSWindow(
+            contentRect: NSRect(x: 40, y: 40, width: 240, height: 160),
+            styleMask: [.titled], backing: .buffered, defer: false
+        )
+        outsider.makeKeyAndOrderFront(nil)
+        pump(0.5)
+        expect(TimelineActionBridge.shared.drainEmitted().contains("close_window"),
+               "external focus must dismiss an attached timeline")
+        outsider.close()
+        child.makeKey()
+        pump(0.2)
+    } else {
+        print("SKIP attached key-focus lifecycle: the test app never became active")
+    }
 
     func expectedFrame(for hostWindow: NSWindow) -> NSRect {
         let content = hostWindow.contentRect(forFrameRect: hostWindow.frame)
@@ -569,6 +604,21 @@ private func testAttachTracksHost(model: TimelineViewModel) {
     let moved = expectedFrame(for: host)
     expect(abs(child.frame.minX - moved.minX) < 1 && abs(child.frame.minY - moved.minY) < 1,
            "the child must follow the host, want \(moved.origin) got \(child.frame.origin)")
+
+    // The Home webview can briefly report its full viewport size for a host
+    // that starts after the sidebar. The child must stay inside the parent
+    // even when that payload is wider and taller than the remaining content.
+    TimelineWindowController.shared.updateAttachedRect(
+        NSRect(x: 240, y: 60, width: 1_280, height: 900)
+    )
+    pump(0.2)
+    let content = host.contentRect(forFrameRect: host.frame)
+    expect(child.frame.minX >= content.minX - 1 && child.frame.maxX <= content.maxX + 1,
+           "an oversized attached width must be clamped to the host content")
+    expect(child.frame.minY >= content.minY - 1 && child.frame.maxY <= content.maxY + 1,
+           "an oversized attached height must be clamped to the host content")
+    expectEqual(child.frame.width, content.width - 240, "clamped attached width")
+    expectEqual(child.frame.height, content.height - 60, "clamped attached height")
 
     TimelineWindowController.shared.detach()
     pump(0.3)

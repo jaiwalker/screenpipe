@@ -166,8 +166,11 @@ struct TimelineFrameCanvas: View {
                 // Not `Image(nsImage:)`: the point of a recorded frame is to
                 // read it and take the text out, which needs VisionKit sitting
                 // on the pixels.
-                TimelineLiveTextImage(image: image)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // GeometryReader cuts the AppKit image view's native pixel
+                // size out of SwiftUI's ideal-size negotiation. The screenshot
+                // scales into the timeline viewport instead of leaving the
+                // 1920x1080 root clipped inside a narrower embedded pane.
+                TimelineFrameImageView(image: image)
             } else if model.imageUnavailable {
                 TimelineImageUnavailableCard(model: model)
             } else {
@@ -180,6 +183,20 @@ struct TimelineFrameCanvas: View {
         } else {
             TimelineScreenshotPausedCard(model: model)
         }
+    }
+}
+
+/// Gives the AppKit Live Text surface an explicit viewport. Keeping this as a
+/// named view makes the native-resolution regression directly render-testable.
+struct TimelineFrameImageView: View {
+    let image: NSImage
+
+    var body: some View {
+        GeometryReader { viewport in
+            TimelineLiveTextImage(image: image)
+                .frame(width: viewport.size.width, height: viewport.size.height)
+        }
+        .clipped()
     }
 }
 

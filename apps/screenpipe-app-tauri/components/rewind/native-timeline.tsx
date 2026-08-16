@@ -172,8 +172,11 @@ export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
     };
   }, [available]);
 
-  if (available === null) return null;
-  if (!available || attached === false) return <>{fallback}</>;
+  // Never render nothing. Returning null while the availability check was in
+  // flight left the overlay window white, and a check that never resolves left
+  // it white for good — the React timeline is the honest thing to show until
+  // the native one has actually taken over.
+  if (available !== true || attached === false) return <>{fallback}</>;
 
   // Black rather than transparent: the timeline's own canvas is black, so a
   // frame where the native window has not painted yet does not flash white.

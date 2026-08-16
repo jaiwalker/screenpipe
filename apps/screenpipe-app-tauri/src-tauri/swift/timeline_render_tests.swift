@@ -17,6 +17,10 @@
 import AppKit
 import SwiftUI
 
+#if canImport(VisionKit)
+import VisionKit
+#endif
+
 private var failures: [String] = []
 private var checks = 0
 
@@ -215,6 +219,61 @@ private func testStatesRender(shots: String) {
         expect(s.distinctColors > 4,
                "\(testCase.name) is not a flat fill (\(s.distinctColors) colours)")
     }
+}
+
+@MainActor
+private func testFrameImageFitsEmbeddedViewport() {
+    let image = NSImage(size: NSSize(width: 1_920, height: 1_080))
+    image.lockFocus()
+    NSColor.black.setFill()
+    NSRect(x: 0, y: 0, width: 1_920, height: 1_080).fill()
+    NSColor.systemRed.setFill()
+    NSRect(x: 0, y: 0, width: 240, height: 1_080).fill()
+    NSColor.systemGreen.setFill()
+    NSRect(x: 1_680, y: 0, width: 240, height: 1_080).fill()
+    image.unlockFocus()
+
+    guard let rep = render(
+        TimelineFrameImageView(image: image),
+        size: CGSize(width: 320, height: 240)
+    ) else {
+        failures.append("the embedded frame image did not render")
+        return
+    }
+    let y = rep.pixelsHigh / 2
+    let left = rep.colorAt(x: 8, y: y)
+    let right = rep.colorAt(x: rep.pixelsWide - 9, y: y)
+    expect((left?.redComponent ?? 0) > 0.7,
+           "the embedded viewport must keep the capture's left edge visible")
+    expect((right?.greenComponent ?? 0) > 0.7,
+           "the embedded viewport must keep the capture's right edge visible")
+
+    let container = TimelineLiveTextContainer(frame: CGRect(x: 0, y: 0, width: 866, height: 850))
+    container.imageView.image = image
+    container.layoutSubtreeIfNeeded()
+    let expected = TimelineLiveTextContainer.aspectFitRect(
+        imageSize: CGSize(width: 1_920, height: 1_080),
+        inside: container.bounds
+    )
+    expect(abs(container.imageView.frame.minX - expected.minX) < 0.01,
+           "the pixels use the shared aspect-fit x origin")
+    expect(abs(container.imageView.frame.minY - expected.minY) < 0.01,
+           "the pixels use the shared aspect-fit y origin")
+    expect(abs(container.imageView.frame.width - expected.width) < 0.01,
+           "the pixels use the shared aspect-fit width")
+    expect(abs(container.imageView.frame.height - expected.height) < 0.01,
+           "the pixels use the shared aspect-fit height")
+    #if canImport(VisionKit)
+    if #available(macOS 13.0, *) {
+        let overlay = ImageAnalysisOverlayView()
+        container.analysisOverlay = overlay
+        container.addSubview(overlay)
+        container.needsLayout = true
+        container.layoutSubtreeIfNeeded()
+        expectEqual(overlay.frame, container.imageView.frame,
+                    "Live Text and pixels share one selection rectangle")
+    }
+    #endif
 }
 
 /// The scrubber is the part most likely to silently render nothing.
@@ -721,6 +780,7 @@ struct TimelineRenderTests {
         MainActor.assumeIsolated {
             let groups: [(String, () -> Void)] = [
                 ("states render", { testStatesRender(shots: shots) }),
+                ("frame image fits embedded viewport", testFrameImageFitsEmbeddedViewport),
                 ("scrubber renders", { testScrubberRenders(shots: shots) }),
                 ("scrubber layout", testScrubberLayoutMatchesHitTest),
                 ("keyboard", testKeyboard),

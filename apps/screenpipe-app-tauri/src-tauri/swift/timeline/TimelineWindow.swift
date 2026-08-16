@@ -328,6 +328,9 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     /// child can be re-laid whenever the parent moves or resizes.
     private var attachedRect: NSRect?
     private var parentObservers: [NSObjectProtocol] = []
+    /// Cancels a pending attached-window blur when focus comes back inside the
+    /// overlay before the normal 300 ms dismissal debounce expires.
+    private var focusLossGeneration = 0
 
     var isVisible: Bool { window?.isVisible ?? false }
 
@@ -337,6 +340,41 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
 
     /// Only used by tests, which need to assert on the real window's geometry.
     var currentWindowForTesting: NSWindow? { window }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
+        focusLossGeneration &+= 1
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        guard hostWindowNumber != nil,
+              notification.object as? NSWindow === window else { return }
+        focusLossGeneration &+= 1
+        let generation = focusLossGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(300)) { [weak self] in
+            guard let self,
+                  self.hostWindowNumber != nil,
+                  self.focusLossGeneration == generation,
+                  !self.attachedHierarchyHasKeyWindow() else { return }
+            TimelineActionBridge.shared.emit("close_window")
+        }
+    }
+
+    /// Focus may move into a native child such as a Live Text surface or back
+    /// to the Tauri host. Both are still inside the same overlay.
+    private func attachedHierarchyHasKeyWindow() -> Bool {
+        guard let timeline = window else { return false }
+        let host = timeline.parent
+        var candidate = NSApp.keyWindow
+        for _ in 0..<16 {
+            guard let current = candidate else { return false }
+            if current === timeline || current === host { return true }
+            let parent = current.parent
+            if parent === current { return false }
+            candidate = parent
+        }
+        return false
+    }
 
     @discardableResult
     func show(config: TimelineAPIConfig = .fromEnvironment(), embedded: Bool = false) -> Bool {
@@ -359,6 +397,15 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
         self.model = model
 
         let hosting = NSHostingView(rootView: TimelineHostView(model: model, embedded: embedded))
+        // The canvas contains the captured image at its native resolution.
+        // NSHostingView's default sizing options propagate that intrinsic size
+        // back into its NSWindow, so a 1920x1080 capture could grow an embedded
+        // child far past the webview region after the first frame loaded.
+        // Window placement is authoritative here; SwiftUI must fill it, not
+        // resize it.
+        hosting.sizingOptions = []
+        hosting.frame = NSRect(origin: .zero, size: frame.size)
+        hosting.autoresizingMask = [.width, .height]
         let window = TimelineWindow(
             contentRect: frame,
             styleMask: borderless
@@ -436,9 +483,12 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
             return unsafeBitCast(UInt(bitPattern: pointer), to: NSWindow?.self)
         }
         if number >= 0 { return NSApp.window(withWindowNumber: number) }
-        let mine = window
-        if let main = NSApp.mainWindow, main !== mine { return main }
-        return NSApp.windows.first { $0 !== mine && $0.isVisible && $0.parent == nil }
+        // No guessing. Picking "some visible window" put the timeline over the
+        // wrong one at the wrong size — a free-floating 1280-wide window over
+        // the desktop instead of a panel inside the app. Failing here lets the
+        // webview fall back to the React timeline, which is a worse timeline
+        // but an honest one.
+        return nil
     }
 
     /// Moves the pinned region without rebuilding anything.
@@ -452,14 +502,20 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     /// `rect` is top-left origin, in points, relative to the host's content
     /// area — the shape a webview layout can actually report. AppKit wants
     /// bottom-left in screen space, so the flip happens here rather than being
-    /// duplicated in every caller.
+    /// duplicated in every caller. Clamp it to that content area as a final
+    /// boundary: a stale or over-wide DOM measurement must never let the child
+    /// window spill outside its parent.
     private func attachedFrame(host: NSWindow, rect: NSRect) -> NSRect {
         let content = host.contentRect(forFrameRect: host.frame)
+        let x = min(max(rect.minX, 0), max(content.width - 1, 0))
+        let y = min(max(rect.minY, 0), max(content.height - 1, 0))
+        let width = min(max(rect.width, 1), max(content.width - x, 1))
+        let height = min(max(rect.height, 1), max(content.height - y, 1))
         return NSRect(
-            x: content.minX + rect.minX,
-            y: content.maxY - rect.minY - rect.height,
-            width: max(rect.width, 1),
-            height: max(rect.height, 1)
+            x: content.minX + x,
+            y: content.maxY - y - height,
+            width: width,
+            height: height
         )
     }
 
@@ -489,6 +545,7 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     /// Takes the window back out of the parent so it can be closed or shown
     /// standalone without leaving a detached child behind.
     func detach() {
+        focusLossGeneration &+= 1
         removeParentObservers()
         hostWindowNumber = nil
         hostPointer = nil
