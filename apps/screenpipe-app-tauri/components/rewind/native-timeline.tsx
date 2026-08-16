@@ -65,6 +65,24 @@ export function NativeTimelineBridge() {
 export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [available, setAvailable] = useState<boolean | null>(null);
+  // Null while the first attach is in flight. A failed attach leaves a
+  // transparent hole where the timeline should be, which reads as a blank
+  // screen, so the React one takes over instead.
+  const [attached, setAttached] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    const label = getCurrentWindow().label;
+    const subscription = listen<{ windowLabel: string; ok: boolean }>(
+      "native-timeline-attached",
+      (event) => {
+        if (event.payload?.windowLabel !== label) return;
+        setAttached(event.payload.ok);
+      }
+    );
+    return () => {
+      void subscription.then((unlisten) => unlisten());
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -155,7 +173,9 @@ export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
   }, [available]);
 
   if (available === null) return null;
-  if (!available) return <>{fallback}</>;
+  if (!available || attached === false) return <>{fallback}</>;
 
-  return <div ref={hostRef} className="h-full w-full" />;
+  // Black rather than transparent: the timeline's own canvas is black, so a
+  // frame where the native window has not painted yet does not flash white.
+  return <div ref={hostRef} className="h-full w-full bg-black" />;
 }

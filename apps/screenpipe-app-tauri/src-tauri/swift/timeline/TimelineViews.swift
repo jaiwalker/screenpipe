@@ -163,9 +163,10 @@ struct TimelineFrameCanvas: View {
     private var frameContent: some View {
         if let frame = model.displayFrame, TimelineFrames.hasVisual(frame) {
             if let image = model.currentImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
+                // Not `Image(nsImage:)`: the point of a recorded frame is to
+                // read it and take the text out, which needs VisionKit sitting
+                // on the pixels.
+                TimelineLiveTextImage(image: image)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if model.imageUnavailable {
                 TimelineImageUnavailableCard(model: model)

@@ -66,7 +66,7 @@ pub(super) fn install_shortcut_action_callback(app_handle: &tauri::AppHandle) {
 /// only job is to forward four numbers. The webview is the only thing that
 /// knows where its content area is, so it has to be the one to say.
 fn install_native_timeline_placement(app_handle: &tauri::AppHandle) {
-    use tauri::Listener;
+    use tauri::{Emitter, Listener};
 
     let attach_handle = app_handle.clone();
     app_handle.listen("native-timeline-attach", move |event| {
@@ -74,10 +74,23 @@ fn install_native_timeline_placement(app_handle: &tauri::AppHandle) {
             return;
         };
         payload["hostWindow"] = serde_json::json!(-1);
-        if let Some(pointer) = host_window_pointer(&attach_handle, &payload) {
+        let pointer = host_window_pointer(&attach_handle, &payload);
+        if let Some(pointer) = pointer {
             payload["hostPointer"] = serde_json::json!(pointer);
         }
-        crate::native_timeline::show_raw(&payload.to_string());
+        let ok = pointer.is_some() && crate::native_timeline::show_raw(&payload.to_string());
+        // Tell the webview whether it actually got a window. Without this a
+        // failed attach is a transparent hole in the layout, which reads as a
+        // blank screen rather than as "fall back to the React timeline".
+        let label = payload
+            .get("windowLabel")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let _ = attach_handle.emit(
+            "native-timeline-attached",
+            serde_json::json!({ "windowLabel": label, "ok": ok }),
+        );
     });
 
     let detach_handle = app_handle.clone();
