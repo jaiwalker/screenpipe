@@ -161,6 +161,9 @@ struct TimelineTranscriptPanel: View {
             content
         }
         .frame(width: 360, height: 500)
+        // A transcript exists to be quoted. The webview let you drag across
+        // it; SwiftUI text is inert until asked, so ask.
+        .textSelection(.enabled)
         .background(Rectangle().fill(Color.black.opacity(0.9)))
         .overlay(Rectangle().stroke(TimelineTheme.border, lineWidth: 1))
         .offset(x: origin.width, y: origin.height)
@@ -379,6 +382,7 @@ struct TimelineAppContextPopover: View {
         .padding(10)
         .frame(width: 288, alignment: .leading)
         .background(Rectangle().fill(Color.black.opacity(0.9)))
+        .textSelection(.enabled)
         .overlay(Rectangle().stroke(TimelineTheme.border, lineWidth: 1))
     }
 

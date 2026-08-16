@@ -314,14 +314,25 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
             return true
         }
 
+        makeWindow(config: config, embedded: embedded, frame: defaultFrame(), borderless: false)
+        window?.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    /// Creates the window without showing it, so a caller that needs to place
+    /// it first does not have to reveal it in the wrong spot.
+    private func makeWindow(
+        config: TimelineAPIConfig, embedded: Bool, frame: NSRect, borderless: Bool
+    ) {
         let model = TimelineViewModel(config: config)
         self.model = model
 
         let hosting = NSHostingView(rootView: TimelineHostView(model: model, embedded: embedded))
-        let frame = defaultFrame()
         let window = NSWindow(
             contentRect: frame,
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: borderless
+                ? [.borderless, .fullSizeContentView]
+                : [.titled, .closable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -336,12 +347,10 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.contentView = hosting
         window.delegate = self
-        window.makeKeyAndOrderFront(nil)
         self.window = window
 
         installKeyMonitor(model: model, embedded: embedded)
         installScrollMonitor(model: model)
-        return true
     }
 
     /// Pins the timeline over a region of another window, so it replaces a
@@ -356,8 +365,12 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     func attach(config: TimelineAPIConfig, hostWindowNumber: Int, rect: NSRect) -> Bool {
         guard let host = resolveHost(hostWindowNumber) else { return false }
 
+        // Build it at its final frame. Creating at the centred default and
+        // moving afterwards put a full-size black window on screen for a frame
+        // or two, in the wrong place, before it snapped into the layout.
+        let target = attachedFrame(host: host, rect: rect)
         if window == nil {
-            _ = show(config: config, embedded: true)
+            makeWindow(config: config, embedded: true, frame: target, borderless: true)
         }
         guard let window else { return false }
 
@@ -365,6 +378,7 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
         window.styleMask = [.borderless, .fullSizeContentView]
         window.hasShadow = false
         window.isMovable = false
+        window.setFrame(target, display: false)
 
         self.hostWindowNumber = host.windowNumber
         attachedRect = rect
@@ -402,15 +416,18 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     /// area — the shape a webview layout can actually report. AppKit wants
     /// bottom-left in screen space, so the flip happens here rather than being
     /// duplicated in every caller.
-    private func applyAttachedFrame(host: NSWindow, rect: NSRect) {
-        guard let window else { return }
+    private func attachedFrame(host: NSWindow, rect: NSRect) -> NSRect {
         let content = host.contentRect(forFrameRect: host.frame)
-        let y = content.maxY - rect.minY - rect.height
-        window.setFrame(
-            NSRect(x: content.minX + rect.minX, y: y,
-                   width: max(rect.width, 1), height: max(rect.height, 1)),
-            display: true
+        return NSRect(
+            x: content.minX + rect.minX,
+            y: content.maxY - rect.minY - rect.height,
+            width: max(rect.width, 1),
+            height: max(rect.height, 1)
         )
+    }
+
+    private func applyAttachedFrame(host: NSWindow, rect: NSRect) {
+        window?.setFrame(attachedFrame(host: host, rect: rect), display: true)
     }
 
     private func observeParent(_ host: NSWindow) {

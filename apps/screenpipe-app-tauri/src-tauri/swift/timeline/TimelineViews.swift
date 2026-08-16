@@ -799,6 +799,7 @@ struct TimelineSubtitleBar: View {
             }
             .padding(10)
             .frame(maxWidth: 640)
+            .textSelection(.enabled)
             .background(TimelineTheme.chromeBackground)
             .overlay(Rectangle().stroke(TimelineTheme.border, lineWidth: 1))
             .onTapGesture { model.showAudioTranscript.toggle() }
