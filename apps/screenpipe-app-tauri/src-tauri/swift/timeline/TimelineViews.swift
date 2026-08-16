@@ -399,7 +399,8 @@ struct TimelineControlBar: View {
         HStack(spacing: 8) {
             dateGroup
             if model.hasAudioNearby { playbackGroup }
-            if !embedded { windowActions }
+            searchAction
+            if !embedded { chatAction }
         }
         .padding(.horizontal, 16)
     }
@@ -487,24 +488,28 @@ struct TimelineControlBar: View {
             : String(model.playbackSpeed)
     }
 
-    private var windowActions: some View {
-        HStack(spacing: 2) {
-            Button { TimelineActionBridge.shared.emit("open_search") } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                    Text("search")
-                }
+    private var searchAction: some View {
+        Button { TimelineActionBridge.shared.emit("open_search") } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                Text("search")
             }
-            .buttonStyle(TimelineControlStyle())
-
-            Button { TimelineActionBridge.shared.emit("open_chat") } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "bubble.left")
-                    Text("chat")
-                }
-            }
-            .buttonStyle(TimelineControlStyle())
         }
+        .buttonStyle(TimelineControlStyle())
+        .accessibilityLabel("search")
+        .help("Search timeline (/)")
+    }
+
+    private var chatAction: some View {
+        Button { TimelineActionBridge.shared.emit("open_chat") } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.left")
+                Text("chat")
+            }
+        }
+        .buttonStyle(TimelineControlStyle())
+        .accessibilityLabel("chat")
+        .help("Open chat")
     }
 }
 
@@ -630,6 +635,9 @@ struct TimelineCalendarPopover: View {
 // MARK: - Filter rail
 
 struct TimelineFilterRail: View {
+    static let captionsSymbol = "captions.bubble"
+    static let tagSymbol = "tag"
+
     @ObservedObject var model: TimelineViewModel
     @State private var expanded: String?
 
@@ -648,12 +656,39 @@ struct TimelineFilterRail: View {
             if !values.speakers.isEmpty {
                 row("speakers", "mic", values.speakers, keyPath: \.speaker, selected: model.filters.speaker)
             }
+            captionsRow
             if !model.viewportTags.isEmpty {
-                row("number", "tags", model.viewportTags, keyPath: \.tag, selected: model.filters.tag)
+                row("tags", Self.tagSymbol, model.viewportTags, keyPath: \.tag, selected: model.filters.tag)
             }
             if !model.meetings.isEmpty { meetingRow }
             zoomRow
         }
+    }
+
+    private var captionsRow: some View {
+        Button { model.showSubtitles.toggle() } label: {
+            ZStack {
+                Image(systemName: Self.captionsSymbol)
+                    .font(.system(size: 11))
+                if !model.showSubtitles {
+                    Rectangle()
+                        .fill(TimelineTheme.foreground)
+                        .frame(width: 15, height: 1)
+                        .rotationEffect(.degrees(-45))
+                }
+            }
+            .foregroundStyle(model.showSubtitles ? TimelineTheme.foreground : TimelineTheme.trace)
+            .frame(width: 22, height: 22)
+            .background(TimelineTheme.chromeBackground)
+            .overlay(
+                Rectangle().stroke(
+                    model.showSubtitles ? TimelineTheme.border : TimelineTheme.trace.opacity(0.5),
+                    lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(model.showSubtitles ? "hide captions" : "show captions")
+        .help(model.showSubtitles ? "Hide captions" : "Show captions")
     }
 
     private func row(

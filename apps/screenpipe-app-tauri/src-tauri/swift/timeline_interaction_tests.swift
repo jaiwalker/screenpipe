@@ -124,6 +124,7 @@ private func resetModel(_ model: TimelineViewModel) {
     if model.isPlaying { model.togglePlayback() }
     model.playbackSpeed = 1
     model.clearSelection()
+    model.showSubtitles = true
     model.setHealthForTesting(HealthStatus(status: "healthy", frameStatus: "ok"))
     model.injectForTesting(frames: fixtureFrames())
     model.setIndex(60)
@@ -291,6 +292,14 @@ private func testControlBarButtonsRespond(window: NSWindow, model: TimelineViewM
     expect(actionable.count == buttons.count,
            "every button must expose a press action, \(buttons.count - actionable.count) did not")
 
+    if let captions = buttons.first(where: { $0.label == "hide captions" }) {
+        model.showSubtitles = true
+        press(captions)
+        expect(!model.showSubtitles, "the captions control must hide the subtitle bar")
+    } else {
+        failures.append("the captions visibility control is missing")
+    }
+
     // Each press starts from the same state, because these are the real
     // actions: `jumpDay` really does change the day and drop the frames.
     var sawPlaybackToggle = false
@@ -457,6 +466,11 @@ private func testIcons() {
     let store = TimelineIconStore.shared
     store.resetForTesting()
 
+    for symbol in [TimelineFilterRail.captionsSymbol, TimelineFilterRail.tagSymbol] {
+        expect(NSImage(systemSymbolName: symbol, accessibilityDescription: nil) != nil,
+               "the filter rail symbol \(symbol) must exist on supported macOS versions")
+    }
+
     // Finder is always running, so its icon must resolve locally and instantly
     // — no network, no icon server.
     let finder = store.appIcon(named: "Finder")
@@ -552,6 +566,14 @@ private func testAttachTracksHost(model: TimelineViewModel) {
                "SwiftUI intrinsic content must not resize the attached window")
     } else {
         failures.append("the attached timeline is not hosted by TimelineHostView")
+    }
+
+    let embeddedButtons = findButtons(in: child)
+    if !embeddedButtons.isEmpty || NSApp.isActive {
+        expect(embeddedButtons.contains { $0.label == "search" },
+               "the attached timeline must keep its top search button")
+    } else {
+        print("SKIP attached search button: the inactive test app built no accessibility tree")
     }
 
     // Native controls and Live Text need the child to become key. The Tauri
