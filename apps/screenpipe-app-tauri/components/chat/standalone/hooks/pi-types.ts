@@ -170,44 +170,68 @@ type PrefillActions = {
   setPrefillFrameId: React.Dispatch<React.SetStateAction<number | null>>;
 };
 
-export type PiSendTransportOptions = {
-  abortControllerRef: PiTransportRefs["abortControllerRef"];
-  activePipeExecution: { name: string } | null;
+/**
+ * What the send path and the event path both need.
+ *
+ * These 28 fields were listed twice, once in each hook's options type, and
+ * passed twice at the call site. That duplication was the coupling between
+ * the two halves of a turn, spelled out field by field instead of named.
+ *
+ * Naming it does not remove the coupling, it makes it visible: anything added
+ * here is now obviously shared state between sending and receiving, which is
+ * the question worth asking before adding to it.
+ */
+export type PiTurnContext = {
   activePreset: AIPreset | undefined;
   activePresetRef?: React.MutableRefObject<AIPreset | undefined>;
-  attachedDocsRef: React.MutableRefObject<ExtractedDoc[]>;
-  autoSendBypassRef: PiTransportRefs["autoSendBypassRef"];
   buildProviderConfig: PiProviderConfigBuilder;
-  canChat: boolean;
   cancelStreamingMessageRender: StreamingActions["cancelStreamingMessageRender"];
-  consumePendingAttachments: ComposerAttachmentActions["consumePendingAttachments"];
-  currentQueueSessionId: string | null;
-  beginQueuedAction: QueueActions["beginQueuedAction"];
-  finishQueuedAction: QueueActions["finishQueuedAction"];
   forceQueueModeRef: PiTransportRefs["forceQueueModeRef"];
-  input: string;
-  inputRef: React.RefObject<HTMLTextAreaElement | null>;
-  isLoading: boolean;
-  isStreaming: boolean;
   lastUserMessageRef: PiTransportRefs["lastUserMessageRef"];
+  markTurnIntentConsumed: TurnIntentActions["markTurnIntentConsumed"];
   messages: Message[];
   optimisticSteerRef: SteeringRefs["optimisticSteerRef"];
-  pastedImages: string[];
   pendingNextPiUserDisplayRef: SteeringRefs["pendingNextPiUserDisplayRef"];
   pendingNextPiUserIntentRef: SteeringRefs["pendingNextPiUserIntentRef"];
   pendingSteerBatchRef: SteeringRefs["pendingSteerBatchRef"];
-  pendingSteerFlushInFlightRef: SteeringRefs["pendingSteerFlushInFlightRef"];
   piActiveStopRequestedRef: PiSessionRefs["piActiveStopRequestedRef"];
   piContentBlocksRef: PiSessionRefs["piContentBlocksRef"];
   piCrashCountRef: PiSessionRefs["piCrashCountRef"];
-  piInfo: PiInfo | null;
   piMessageIdRef: PiSessionRefs["piMessageIdRef"];
-  piPresetSwitchPromiseRef: NonNullable<PiSessionRefs["piPresetSwitchPromiseRef"]>;
   piRateLimitRetries: PiSessionRefs["piRateLimitRetries"];
   piSessionIdRef: PiSessionRefs["piSessionIdRef"];
   piSessionSyncedRef: PiSessionRefs["piSessionSyncedRef"];
   piStartInFlightRef: PiSessionRefs["piStartInFlightRef"];
   piStreamingTextRef: PiSessionRefs["piStreamingTextRef"];
+  saveConversation: SaveConversation;
+  setIsLoading: ChatStateActions["setIsLoading"];
+  setIsStreaming: ChatStateActions["setIsStreaming"];
+  setMessages: ChatStateActions["setMessages"];
+  setPiInfo: PiStateActions["setPiInfo"];
+  settings: Settings;
+  syncThinkingLevelAfterStart: PiStateActions["syncThinkingLevelAfterStart"];
+};
+
+export type PiSendTransportOptions = {
+  /** Shared send/receive turn state. */
+  turn: PiTurnContext;
+  abortControllerRef: PiTransportRefs["abortControllerRef"];
+  activePipeExecution: { name: string } | null;
+  attachedDocsRef: React.MutableRefObject<ExtractedDoc[]>;
+  autoSendBypassRef: PiTransportRefs["autoSendBypassRef"];
+  canChat: boolean;
+  consumePendingAttachments: ComposerAttachmentActions["consumePendingAttachments"];
+  currentQueueSessionId: string | null;
+  beginQueuedAction: QueueActions["beginQueuedAction"];
+  finishQueuedAction: QueueActions["finishQueuedAction"];
+  input: string;
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  isLoading: boolean;
+  isStreaming: boolean;
+  pastedImages: string[];
+  pendingSteerFlushInFlightRef: SteeringRefs["pendingSteerFlushInFlightRef"];
+  piInfo: PiInfo | null;
+  piPresetSwitchPromiseRef: NonNullable<PiSessionRefs["piPresetSwitchPromiseRef"]>;
   prefillContext: string | null;
   prefillFrameId: number | null;
   prefillSource: string;
@@ -222,91 +246,57 @@ export type PiSendTransportOptions = {
   ) => Promise<{ modelInput: string; context: ComposerMentionContext }>;
   queuedPrompts: PiQueuedPrompt[];
   registerTurnIntent: TurnIntentActions["registerTurnIntent"];
-  markTurnIntentConsumed: TurnIntentActions["markTurnIntentConsumed"];
   removeQueuedPrompt: QueueActions["removeQueuedPrompt"];
   removeTurnIntent: TurnIntentActions["removeTurnIntent"];
   restartCurrentPiSession: PiStateActions["restartCurrentPiSession"];
   restoreQueuedDisplay: QueueActions["restoreQueuedDisplay"];
   restoreQueuedPrompt: QueueActions["restoreQueuedPrompt"];
-  saveConversation: SaveConversation;
   sendDispatchInFlightRef: PiTransportRefs["sendDispatchInFlightRef"];
   sendMessageRef: PiTransportRefs["sendMessageRef"];
   setAttachedDocs: ComposerAttachmentActions["setAttachedDocs"];
   setInput: ChatStateActions["setInput"];
-  setIsLoading: ChatStateActions["setIsLoading"];
-  setIsStreaming: ChatStateActions["setIsStreaming"];
-  setMessages: ChatStateActions["setMessages"];
   setConversationId: ChatStateActions["setConversationId"];
   setPastedImages: ComposerAttachmentActions["setPastedImages"];
-  setPiInfo: PiStateActions["setPiInfo"];
   setPiStarting: NonNullable<PiStateActions["setPiStarting"]>;
   setPrefillContext: PrefillActions["setPrefillContext"];
   setPrefillFrameId: PrefillActions["setPrefillFrameId"];
   setRunningConfigFromProviderConfig: PiStateActions["setRunningConfigFromProviderConfig"];
-  settings: Settings;
   stagePendingAttachments: ComposerAttachmentActions["stagePendingAttachments"];
-  syncThinkingLevelAfterStart: PiStateActions["syncThinkingLevelAfterStart"];
   takeQueuedDisplayById: QueueActions["takeQueuedDisplayById"];
   turnIntentLedgerRef: SteeringRefs["turnIntentLedgerRef"];
 };
 
 export type PiForegroundEventsOptions = {
-  activePreset: AIPreset | undefined;
-  activePresetRef?: React.MutableRefObject<AIPreset | undefined>;
-  buildProviderConfig: PiProviderConfigBuilder;
-  cancelStreamingMessageRender: StreamingActions["cancelStreamingMessageRender"];
+  /** Shared send/receive turn state. */
+  turn: PiTurnContext;
   clearPipeExecution: () => void;
   consumeQueuedDisplayForStartedMessage: QueueActions["consumeQueuedDisplayForStartedMessage"];
   findTurnIntentForUserStart: TurnIntentActions["findTurnIntentForUserStart"];
   flushPendingSteerBatch: () => Promise<void>;
   flushStreamingMessageRender: NonNullable<StreamingActions["flushStreamingMessageRender"]>;
-  forceQueueModeRef: PiTransportRefs["forceQueueModeRef"];
   handleAgentEventDataRef: React.MutableRefObject<((data: unknown) => void) | null>;
   handleAgentActionEvent: (data: unknown, sessionId: string) => boolean;
   clearAgentActionsForSession: (sessionId: string) => void;
   handleInvalidatedAuthToken: () => Promise<void> | void;
-  lastUserMessageRef: PiTransportRefs["lastUserMessageRef"];
-  markTurnIntentConsumed: TurnIntentActions["markTurnIntentConsumed"];
   // Fired when an ACP agent (Kimi, OpenCode) can't sign in over the protocol
   // and needs a one-time CLI login. The panel shows a single sign-in dialog.
   onAcpExternalAuthRequired?: (info: { agentId: string; agentName: string; command: string }) => void;
   // Fired on `acp_ready` — the ACP session opened successfully (auth passed or
   // wasn't needed). Used to close a sign-in dialog once a retry connects.
   onAcpSessionReady?: () => void;
-  messages: Message[];
   messagesRef: React.MutableRefObject<Message[]>;
   mountedRef: React.MutableRefObject<boolean>;
-  optimisticSteerRef: SteeringRefs["optimisticSteerRef"];
-  pendingNextPiUserDisplayRef: SteeringRefs["pendingNextPiUserDisplayRef"];
-  pendingNextPiUserIntentRef: SteeringRefs["pendingNextPiUserIntentRef"];
-  pendingSteerBatchRef: SteeringRefs["pendingSteerBatchRef"];
-  piActiveStopRequestedRef: PiSessionRefs["piActiveStopRequestedRef"];
-  piContentBlocksRef: PiSessionRefs["piContentBlocksRef"];
-  piCrashCountRef: PiSessionRefs["piCrashCountRef"];
   piFirstCallRetried: NonNullable<PiSessionRefs["piFirstCallRetried"]>;
   piIntentionallyStoppedPidsRef: NonNullable<PiSessionRefs["piIntentionallyStoppedPidsRef"]>;
-  piStartInFlightRef: PiSessionRefs["piStartInFlightRef"];
   piLastCrashRef: NonNullable<PiSessionRefs["piLastCrashRef"]>;
   piLastErrorRef: NonNullable<PiSessionRefs["piLastErrorRef"]>;
-  piMessageIdRef: PiSessionRefs["piMessageIdRef"];
-  piRateLimitRetries: PiSessionRefs["piRateLimitRetries"];
   piRunningConfigRef: NonNullable<PiSessionRefs["piRunningConfigRef"]>;
-  piSessionIdRef: PiSessionRefs["piSessionIdRef"];
-  piSessionSyncedRef: PiSessionRefs["piSessionSyncedRef"];
   piStoppedIntentionallyRef: NonNullable<PiSessionRefs["piStoppedIntentionallyRef"]>;
-  piStreamingTextRef: PiSessionRefs["piStreamingTextRef"];
   piTerminationDedupRef: NonNullable<PiSessionRefs["piTerminationDedupRef"]>;
   piThinkingStartRef: NonNullable<PiSessionRefs["piThinkingStartRef"]>;
-  saveConversation: SaveConversation;
   scheduleStreamingMessageRender: NonNullable<StreamingActions["scheduleStreamingMessageRender"]>;
   sessionActivityLastEmitAtRef: React.MutableRefObject<Record<string, number>>;
   sessionActivityLastSigRef: React.MutableRefObject<Record<string, string>>;
-  setIsLoading: ChatStateActions["setIsLoading"];
-  setIsStreaming: ChatStateActions["setIsStreaming"];
-  setMessages: ChatStateActions["setMessages"];
-  setPiInfo: PiStateActions["setPiInfo"];
-  settings: Settings;
-  syncThinkingLevelAfterStart: PiStateActions["syncThinkingLevelAfterStart"];
   turnIntentTextValuesMatch: TurnIntentActions["turnIntentTextValuesMatch"];
 };
 

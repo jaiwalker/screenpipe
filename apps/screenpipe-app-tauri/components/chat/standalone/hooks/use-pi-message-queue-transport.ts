@@ -20,14 +20,17 @@ export function createPiMessageQueueTransport(
   sendPiMessage: PiSendCommand,
 ) {
   const {
-    activePreset,
+    // Shared send/receive turn state; see PiTurnContext.
+    turn: {
+      activePreset,
+      messages,
+      piSessionIdRef,
+    },
     consumePendingAttachments,
     input,
     inputRef,
-    messages,
     pastedImages,
     piInfo,
-    piSessionIdRef,
     queuedPrompts,
     registerTurnIntent,
     restoreQueuedDisplay,

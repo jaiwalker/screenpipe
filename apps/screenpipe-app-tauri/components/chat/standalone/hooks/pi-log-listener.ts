@@ -6,13 +6,15 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type * as React from "react";
 import { toast } from "@/components/ui/use-toast";
 import type { Message } from "@/lib/chat/types";
-import type { PiForegroundEventsOptions } from "@/components/chat/standalone/hooks/pi-types";
+import type {
+  PiTurnContext,
+} from "@/components/chat/standalone/hooks/pi-types";
 
 interface PiLogListenerOptions {
   isMounted: () => boolean;
-  cancelStreamingMessageRender: PiForegroundEventsOptions["cancelStreamingMessageRender"];
-  piMessageIdRef: PiForegroundEventsOptions["piMessageIdRef"];
-  setMessages: PiForegroundEventsOptions["setMessages"];
+  cancelStreamingMessageRender: PiTurnContext["cancelStreamingMessageRender"];
+  piMessageIdRef: PiTurnContext["piMessageIdRef"];
+  setMessages: PiTurnContext["setMessages"];
 }
 
 function patchActiveMessage(

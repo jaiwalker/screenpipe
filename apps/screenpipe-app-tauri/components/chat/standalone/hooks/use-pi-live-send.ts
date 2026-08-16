@@ -7,11 +7,9 @@ import { toast } from "@/components/ui/use-toast";
 import { dispatchStopRequest } from "@/lib/chat-stop";
 import { requestPipeStop } from "@/lib/pipe-stop";
 import { commands } from "@/lib/utils/tauri";
-import type { PiSendTransportOptions } from "@/components/chat/standalone/hooks/pi-types";
+import type { PiSendTransportOptions, PiTurnContext } from "@/components/chat/standalone/hooks/pi-types";
 
 export function usePiLiveSendControls({
-  abortControllerRef,
-  activePipeExecution,
   cancelStreamingMessageRender,
   piActiveStopRequestedRef,
   piContentBlocksRef,
@@ -21,10 +19,15 @@ export function usePiLiveSendControls({
   setMessages,
   setIsLoading,
   setIsStreaming,
+  abortControllerRef,
+  activePipeExecution,
 }: Pick<
   PiSendTransportOptions,
   | "abortControllerRef"
   | "activePipeExecution"
+> &
+  Pick<
+  PiTurnContext,
   | "cancelStreamingMessageRender"
   | "piActiveStopRequestedRef"
   | "piContentBlocksRef"

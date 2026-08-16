@@ -6,16 +6,16 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { piProjectDirForSession } from "@/lib/chat/pi-project-dir";
 import { commands } from "@/lib/utils/tauri";
 import type {
-  PiForegroundEventsOptions,
+  PiTurnContext,
 } from "@/components/chat/standalone/hooks/pi-types";
 
 interface PiReauthListenerOptions {
   isMounted: () => boolean;
-  buildProviderConfig: PiForegroundEventsOptions["buildProviderConfig"];
-  piSessionIdRef: PiForegroundEventsOptions["piSessionIdRef"];
-  piSessionSyncedRef: PiForegroundEventsOptions["piSessionSyncedRef"];
-  setPiInfo: PiForegroundEventsOptions["setPiInfo"];
-  syncThinkingLevelAfterStart: PiForegroundEventsOptions["syncThinkingLevelAfterStart"];
+  buildProviderConfig: PiTurnContext["buildProviderConfig"];
+  piSessionIdRef: PiTurnContext["piSessionIdRef"];
+  piSessionSyncedRef: PiTurnContext["piSessionSyncedRef"];
+  setPiInfo: PiTurnContext["setPiInfo"];
+  syncThinkingLevelAfterStart: PiTurnContext["syncThinkingLevelAfterStart"];
 }
 
 export function registerPiReauthListener({
