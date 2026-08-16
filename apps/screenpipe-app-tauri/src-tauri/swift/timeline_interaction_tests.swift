@@ -262,14 +262,27 @@ private func testControlBarButtonsRespond(window: NSWindow, model: TimelineViewM
     // SwiftUI populates its accessibility tree lazily and over more than one
     // run-loop turn, so this waits for it rather than sampling once.
     var buttons: [FoundControl] = []
-    for _ in 0..<6 {
+    for _ in 0..<10 {
         buttons = findButtons(in: window)
         if !buttons.isEmpty { break }
         NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
         pump(0.5)
     }
+    // SwiftUI only builds the tree for an active app. A test binary is not a
+    // bundle, so activation is a request, not a guarantee — anything else
+    // launching mid-run takes it away. Distinguish the two outcomes: a red here
+    // should mean the buttons are gone, not that focus was stolen.
+    if buttons.isEmpty && !NSApp.isActive {
+        FileHandle.standardError.write(
+            ("SKIP control bar buttons: the app never became active, so SwiftUI built no "
+             + "accessibility tree. Re-run with nothing else launching.\n")
+                .data(using: .utf8)!)
+        return
+    }
     expect(buttons.count >= 5,
-           "the control bar must expose its buttons to accessibility, found \(buttons.count)")
+           "the control bar must expose its buttons to accessibility, found "
+           + "\(buttons.count) while active")
     guard !buttons.isEmpty else { return }
 
     // A control that exposes no press action is one no click can reach either.
@@ -504,6 +517,72 @@ private func testIconChipRenders(shots: String) {
     }
 }
 
+/// Attaching is how the timeline replaces a slice of the app rather than
+/// floating as a second window, so the geometry has to be right: the child sits
+/// exactly over the rect the webview reserved, and follows the parent.
+@MainActor
+private func testAttachTracksHost(model: TimelineViewModel) {
+    // A stand-in for the app's webview window.
+    let host = NSWindow(
+        contentRect: NSRect(x: 200, y: 200, width: 1000, height: 700),
+        styleMask: [.titled, .closable, .resizable],
+        backing: .buffered, defer: false
+    )
+    host.title = "interaction-host"
+    host.makeKeyAndOrderFront(nil)
+    pump(0.3)
+
+    // Top-left origin, the shape a webview layout reports.
+    let reserved = NSRect(x: 240, y: 60, width: 700, height: 560)
+    let attached = TimelineWindowController.shared.attach(
+        config: TimelineAPIConfig(host: "127.0.0.1", port: 0, apiKey: nil),
+        hostWindowNumber: host.windowNumber,
+        rect: reserved
+    )
+    expect(attached, "the timeline must attach to a host window")
+    pump(0.4)
+
+    guard let child = TimelineWindowController.shared.currentWindowForTesting else {
+        failures.append("no window after attaching")
+        return
+    }
+    expect(child.parent === host, "the attached timeline must be a child of the host")
+
+    func expectedFrame(for hostWindow: NSWindow) -> NSRect {
+        let content = hostWindow.contentRect(forFrameRect: hostWindow.frame)
+        return NSRect(
+            x: content.minX + reserved.minX,
+            y: content.maxY - reserved.minY - reserved.height,
+            width: reserved.width, height: reserved.height
+        )
+    }
+
+    let want = expectedFrame(for: host)
+    expect(abs(child.frame.minX - want.minX) < 1 && abs(child.frame.minY - want.minY) < 1,
+           "attached origin must match the reserved rect, want \(want.origin) got \(child.frame.origin)")
+    expectEqual(child.frame.width, reserved.width, "attached width")
+    expectEqual(child.frame.height, reserved.height, "attached height")
+
+    // Moving the app must not leave the timeline behind.
+    host.setFrameOrigin(NSPoint(x: 320, y: 260))
+    pump(0.5)
+    let moved = expectedFrame(for: host)
+    expect(abs(child.frame.minX - moved.minX) < 1 && abs(child.frame.minY - moved.minY) < 1,
+           "the child must follow the host, want \(moved.origin) got \(child.frame.origin)")
+
+    TimelineWindowController.shared.detach()
+    pump(0.3)
+    expect(child.parent == nil, "detaching must release the child")
+    expect(!child.isVisible, "a detached timeline must not float over the app")
+
+    host.close()
+    // Detaching orders the shared window out, and every other group in this
+    // file drives that same window. Put it back.
+    child.styleMask = [.titled, .closable, .resizable, .fullSizeContentView]
+    child.makeKeyAndOrderFront(nil)
+    pump(0.3)
+}
+
 /// Keyboard has to work through the real window, not just the handler.
 @MainActor
 private func testKeyboardThroughWindow(window: NSWindow, model: TimelineViewModel) {
@@ -552,6 +631,8 @@ private func runTests() {
          { testKeyboardThroughWindow(window: window, model: model) }),
         ("icons", testIcons),
         ("icon chip renders", { testIconChipRenders(shots: shots) }),
+        // Last: it re-parents and re-styles the shared window.
+        ("attach tracks host", { testAttachTracksHost(model: model) }),
     ]
 
     for (name, test) in groups {

@@ -291,12 +291,21 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
     private var keyMonitor: Any?
     private var scrollMonitor: Any?
     private var scrollHandler: TimelineScrollHandler?
+    /// Set while the window is a child pinned over the webview's content area.
+    private var hostWindowNumber: Int?
+    /// The attached rect, in the parent's own (bottom-left) coordinates, so the
+    /// child can be re-laid whenever the parent moves or resizes.
+    private var attachedRect: NSRect?
+    private var parentObservers: [NSObjectProtocol] = []
 
     var isVisible: Bool { window?.isVisible ?? false }
 
     /// Existing model, so callers (and tests) can drive the same instance the
     /// window is rendering.
     var currentModel: TimelineViewModel? { model }
+
+    /// Only used by tests, which need to assert on the real window's geometry.
+    var currentWindowForTesting: NSWindow? { window }
 
     @discardableResult
     func show(config: TimelineAPIConfig = .fromEnvironment(), embedded: Bool = false) -> Bool {
@@ -335,11 +344,117 @@ final class TimelineWindowController: NSObject, NSWindowDelegate {
         return true
     }
 
+    /// Pins the timeline over a region of another window, so it replaces a
+    /// slice of that window rather than floating as a second one.
+    ///
+    /// A child window is the only way to put AppKit content over a WKWebView:
+    /// the webview is a single layer-backed surface and nothing can be
+    /// interleaved inside it. The child follows the parent's moves and resizes,
+    /// which the caller cannot do for us — it only knows the rect in its own
+    /// layout, not where the window will be next.
+    @discardableResult
+    func attach(config: TimelineAPIConfig, hostWindowNumber: Int, rect: NSRect) -> Bool {
+        guard let host = resolveHost(hostWindowNumber) else { return false }
+
+        if window == nil {
+            _ = show(config: config, embedded: true)
+        }
+        guard let window else { return false }
+
+        // Borderless: the parent already draws the chrome around this region.
+        window.styleMask = [.borderless, .fullSizeContentView]
+        window.hasShadow = false
+        window.isMovable = false
+
+        self.hostWindowNumber = host.windowNumber
+        attachedRect = rect
+
+        if window.parent !== host {
+            window.parent?.removeChildWindow(window)
+            host.addChildWindow(window, ordered: .above)
+        }
+        applyAttachedFrame(host: host, rect: rect)
+        observeParent(host)
+        window.orderFront(nil)
+        return true
+    }
+
+    /// A negative number means "whatever the app's main window is" — the
+    /// caller is Rust, which holds a Tauri handle rather than an AppKit window
+    /// number, and resolving it there would mean an Objective-C hop for a
+    /// value this side already has.
+    private func resolveHost(_ number: Int) -> NSWindow? {
+        if number >= 0 { return NSApp.window(withWindowNumber: number) }
+        let mine = window
+        if let main = NSApp.mainWindow, main !== mine { return main }
+        return NSApp.windows.first { $0 !== mine && $0.isVisible && $0.parent == nil }
+    }
+
+    /// Moves the pinned region without rebuilding anything.
+    func updateAttachedRect(_ rect: NSRect) {
+        attachedRect = rect
+        guard let number = hostWindowNumber,
+              let host = resolveHost(number) else { return }
+        applyAttachedFrame(host: host, rect: rect)
+    }
+
+    /// `rect` is top-left origin, in points, relative to the host's content
+    /// area — the shape a webview layout can actually report. AppKit wants
+    /// bottom-left in screen space, so the flip happens here rather than being
+    /// duplicated in every caller.
+    private func applyAttachedFrame(host: NSWindow, rect: NSRect) {
+        guard let window else { return }
+        let content = host.contentRect(forFrameRect: host.frame)
+        let y = content.maxY - rect.minY - rect.height
+        window.setFrame(
+            NSRect(x: content.minX + rect.minX, y: y,
+                   width: max(rect.width, 1), height: max(rect.height, 1)),
+            display: true
+        )
+    }
+
+    private func observeParent(_ host: NSWindow) {
+        removeParentObservers()
+        let center = NotificationCenter.default
+        for name in [NSWindow.didResizeNotification, NSWindow.didMoveNotification] {
+            let token = center.addObserver(forName: name, object: host, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let rect = self.attachedRect else { return }
+                    self.applyAttachedFrame(host: host, rect: rect)
+                }
+            }
+            parentObservers.append(token)
+        }
+    }
+
+    private func removeParentObservers() {
+        for token in parentObservers { NotificationCenter.default.removeObserver(token) }
+        parentObservers = []
+    }
+
+    /// Takes the window back out of the parent so it can be closed or shown
+    /// standalone without leaving a detached child behind.
+    func detach() {
+        removeParentObservers()
+        hostWindowNumber = nil
+        attachedRect = nil
+        guard let window else { return }
+        window.parent?.removeChildWindow(window)
+        window.orderOut(nil)
+    }
+
     func hide() {
+        if hostWindowNumber != nil {
+            detach()
+            return
+        }
         window?.orderOut(nil)
     }
 
     func close() {
+        removeParentObservers()
+        hostWindowNumber = nil
+        attachedRect = nil
         removeKeyMonitor()
         model?.stop()
         window?.close()
@@ -440,6 +555,28 @@ public func timeline_show(_ json: UnsafePointer<CChar>?) -> Int32 {
         if let host = obj["host"] as? String, !host.isEmpty { config.host = host }
         if let key = obj["apiKey"] as? String, !key.isEmpty { config.apiKey = key }
         if let value = obj["embedded"] as? Bool { embedded = value }
+        if let host = obj["hostWindow"] as? Int, let r = obj["rect"] as? [String: Any] {
+            let rect = NSRect(
+                x: (r["x"] as? Double) ?? 0,
+                y: (r["y"] as? Double) ?? 0,
+                width: (r["width"] as? Double) ?? 0,
+                height: (r["height"] as? Double) ?? 0
+            )
+            let cfg = config
+            if Thread.isMainThread {
+                return MainActor.assumeIsolated {
+                    TimelineWindowController.shared.attach(
+                        config: cfg, hostWindowNumber: host, rect: rect) ? 0 : -1
+                }
+            }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    _ = TimelineWindowController.shared.attach(
+                        config: cfg, hostWindowNumber: host, rect: rect)
+                }
+            }
+            return 0
+        }
     }
 
     let cfg = config

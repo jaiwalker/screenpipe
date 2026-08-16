@@ -67,8 +67,8 @@ import { mountPipeWatchWriter } from "@/lib/events/pipe-watch-writer";
 import { RecordingStatus, type RecordingDevice } from "@/components/recording-status";
 import Timeline from "@/components/rewind/timeline";
 import {
+  NativeTimeline,
   NativeTimelineBridge,
-  NativeTimelineButton,
 } from "@/components/rewind/native-timeline";
 import { useQueryState } from "nuqs";
 import { listen } from "@tauri-apps/api/event";
@@ -939,14 +939,9 @@ function HomeContent() {
         // to chat (the redirect effect also resets activeSection to "home"). This
         // avoids a flash of the disabled placeholder on reload.
         if (settings.disableTimeline) return null;
-        return (
-          <div className="relative h-full w-full">
-            <Timeline embedded />
-            <div className="absolute right-3 top-3 z-20">
-              <NativeTimelineButton />
-            </div>
-          </div>
-        );
+        // The native window replaces the React timeline where it can run; the
+        // webview one stays as the fallback for hosts without it.
+        return <NativeTimeline fallback={<Timeline embedded />} />;
       case "brain":
         return <BrainSection />;
       case "pipes":

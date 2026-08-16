@@ -150,6 +150,13 @@ pub fn show(config: &NativeTimelineConfig) -> bool {
     }
 }
 
+/// Forwards a payload the caller has already shaped, for the placement path
+/// where the webview supplies fields (`hostWindow`, `rect`) that the typed
+/// config has no reason to carry.
+pub fn show_raw(json: &str) -> bool {
+    ffi::show(json)
+}
+
 pub fn hide() -> bool {
     ffi::hide()
 }

@@ -56,6 +56,33 @@ pub(super) fn install_shortcut_action_callback(app_handle: &tauri::AppHandle) {
     // The native timeline shares the same trampoline lifetime, so install it
     // here rather than adding a second startup hook that could drift.
     crate::native_timeline::set_action_callback(native_timeline_action_callback);
+    install_native_timeline_placement(app_handle);
+}
+
+/// Lets the webview pin the native timeline over a slice of its own layout.
+///
+/// This rides on events rather than commands on purpose: the rect changes on
+/// every resize, and a command would mean a generated binding for a call whose
+/// only job is to forward four numbers. The webview is the only thing that
+/// knows where its content area is, so it has to be the one to say.
+fn install_native_timeline_placement(app_handle: &tauri::AppHandle) {
+    use tauri::Listener;
+
+    let attach_handle = app_handle.clone();
+    app_handle.listen("native-timeline-attach", move |event| {
+        let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
+            return;
+        };
+        // -1 means "the app's main window"; Swift resolves it, because Rust
+        // holds a Tauri handle rather than an AppKit window number.
+        payload["hostWindow"] = serde_json::json!(-1);
+        let _ = attach_handle;
+        crate::native_timeline::show_raw(&payload.to_string());
+    });
+
+    app_handle.listen("native-timeline-detach", move |_| {
+        crate::native_timeline::hide();
+    });
 }
 
 /// Callback invoked from Swift when the native timeline asks the app to do

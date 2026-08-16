@@ -4,42 +4,35 @@
 
 "use client";
 
-// The way into the native Swift timeline, and the way back out of it.
+// The native Swift timeline, mounted where the React one used to be.
 //
-// The Swift window is its own `NSWindow`; it has no webview and cannot open a
-// search modal or start a chat by itself. When its search or chat button is
-// pressed it emits an action over the FFI callback, Rust turns that into a
-// Tauri event, and `NativeTimelineBridge` here is what finally does the thing.
-// Without the bridge mounted those two buttons look broken.
+// The Swift timeline is an `NSWindow` and the app is a WKWebView, and nothing
+// can be interleaved inside a webview's layer — so "put it in the Timeline
+// section" means pinning a borderless child window over exactly the rect this
+// component occupies. The div below is a hole in the layout; the pixels come
+// from AppKit.
 //
-// Recording settings is deliberately not routed: there is no
-// `ShowRewindWindow` variant for it, and guessing one would be a click that
-// silently does nothing.
+// Placement travels as an event rather than a command. The rect changes on
+// every resize and sidebar toggle, and a generated binding for "forward four
+// numbers" earns nothing. Rust listens, Swift does the coordinate flip.
 //
-// This is opt-in. The button sits inside the existing Timeline section and the
-// webview timeline stays exactly where it was, so nothing changes for anyone
-// who does not press it.
+// The window is also the reason for the bridge: it cannot open a search modal
+// or start a chat itself. Those buttons emit an action over FFI, Rust turns it
+// into a Tauri event, and the bridge is what finally performs it.
 
-import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
-import { MonitorPlay } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { emit, listen } from "@tauri-apps/api/event";
 
 import { commands } from "@/lib/utils/tauri";
 import { getApiKey, getApiPort } from "@/lib/api";
-import { Button } from "@/components/ui/button";
-
-/**
- * Opens the native window with the same port and key the webview is using, so
- * it streams from the same local server.
- */
-export async function openNativeTimeline(): Promise<boolean> {
-  return commands.nativeTimelineShow(getApiPort(), getApiKey(), false);
-}
 
 /**
  * Routes the actions the Swift window cannot perform on its own. Mount once,
- * high enough that it outlives navigation — the native window stays open while
- * the user moves around the app.
+ * high enough that it outlives navigation.
+ *
+ * Recording settings is deliberately not routed: there is no
+ * `ShowRewindWindow` variant for it, and guessing one would be a click that
+ * silently does nothing.
  */
 export function NativeTimelineBridge() {
   useEffect(() => {
@@ -62,12 +55,15 @@ export function NativeTimelineBridge() {
 }
 
 /**
- * Renders nothing where the native timeline cannot run — a non-macOS host, or
- * a build whose Swift library was stubbed out.
+ * Reserves the timeline's area and keeps the native window pinned to it.
+ *
+ * Renders `fallback` instead where the native timeline cannot run — a
+ * non-macOS host, or a build whose Swift library was stubbed out — so the
+ * section is never blank.
  */
-export function NativeTimelineButton() {
-  const [available, setAvailable] = useState(false);
-  const [opening, setOpening] = useState(false);
+export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const [available, setAvailable] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -84,21 +80,45 @@ export function NativeTimelineButton() {
     };
   }, []);
 
-  if (!available) return null;
+  useEffect(() => {
+    if (!available) return;
+    const host = hostRef.current;
+    if (!host) return;
 
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      disabled={opening}
-      onClick={() => {
-        setOpening(true);
-        void openNativeTimeline().finally(() => setOpening(false));
-      }}
-      className="gap-1.5"
-    >
-      <MonitorPlay className="h-3.5 w-3.5" />
-      native timeline
-    </Button>
-  );
+    // Rounded, because a fractional rect leaves a seam between the child
+    // window and the webview underneath it.
+    const place = () => {
+      const box = host.getBoundingClientRect();
+      if (box.width < 1 || box.height < 1) return;
+      void emit("native-timeline-attach", {
+        port: getApiPort(),
+        apiKey: getApiKey(),
+        embedded: true,
+        rect: {
+          x: Math.round(box.left),
+          y: Math.round(box.top),
+          width: Math.round(box.width),
+          height: Math.round(box.height),
+        },
+      });
+    };
+
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(host);
+    window.addEventListener("resize", place);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+      // Leaving the section has to take the window with it, or it floats over
+      // whatever the user navigated to.
+      void emit("native-timeline-detach", {});
+    };
+  }, [available]);
+
+  if (available === null) return null;
+  if (!available) return <>{fallback}</>;
+
+  return <div ref={hostRef} className="h-full w-full" />;
 }
