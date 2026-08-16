@@ -5396,7 +5396,11 @@ mod tests {
         let mut out = BoundedOutput::default();
         out.push_line("FIRST_LINE_MARKER");
         for i in 0..40_000 {
-            out.push_line(&format!("{{\"tool_result\":{},\"padding\":\"{}\"}}", i, "x".repeat(64)));
+            out.push_line(&format!(
+                "{{\"tool_result\":{},\"padding\":\"{}\"}}",
+                i,
+                "x".repeat(64)
+            ));
         }
         out.push_line("LAST_LINE_MARKER");
 
@@ -5409,7 +5413,10 @@ mod tests {
             s.trim_end().ends_with("LAST_LINE_MARKER"),
             "tail must survive — the result and any error land there"
         );
-        assert!(s.contains("bytes elided"), "elision must be visible, not silent");
+        assert!(
+            s.contains("bytes elided"),
+            "elision must be visible, not silent"
+        );
         assert!(
             s.len() <= BOUNDED_OUTPUT_HEAD + BOUNDED_OUTPUT_TAIL + 128,
             "bounded output grew to {} bytes",
