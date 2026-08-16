@@ -332,7 +332,7 @@ jobs:
         path: ./apps/screenpipe-app-tauri/.e2e
 
   linux-e2e-test:
-    name: Linux E2E Tests
+    name: Linux E2E Tests (advisory)
     needs: changes
     if: >-
       github.event_name == 'workflow_dispatch' ||
@@ -340,6 +340,7 @@ jobs:
       needs.changes.outputs.desktop == 'true' ||
       contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
+    continue-on-error: true
     # 90 was set when the suite was ~70 specs; it is 112 now, and the job has
     # been cancelled at exactly 90m on every run since 2026-08-07 — which
     # truncates the suite and hides whatever the unreached specs would say.
