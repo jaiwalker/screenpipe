@@ -1660,6 +1660,18 @@ impl SettingsStore {
                 }
             }
 
+            // Migrate legacy integer credits to struct Credits { amount }
+            if let Some(user) = obj.get_mut("user") {
+                if let Some(user_obj) = user.as_object_mut() {
+                    if let Some(n) = user_obj.get("credits").and_then(|v| v.as_i64()) {
+                        user_obj.insert(
+                            "credits".to_string(),
+                            serde_json::json!({ "amount": n }),
+                        );
+                    }
+                }
+            }
+
             // Sanitize unknown provider types in aiPresets to prevent deserialization failures
             let known_providers = [
                 "openai",
