@@ -103,14 +103,45 @@ export function NativeTimeline({ fallback }: { fallback: React.ReactNode }) {
       });
     };
 
+    // A child window sits above the webview by construction, so anything the
+    // app draws over the timeline — the command palette, a dialog, a dropdown —
+    // would be behind it. Nothing in the DOM can stack above an AppKit window,
+    // so the window has to get out of the way instead.
+    const OVERLAY_SELECTOR =
+      '[role="dialog"], [role="alertdialog"], [data-radix-popper-content-wrapper]';
+    let occluded = false;
+    let queued = 0;
+
+    const sync = () => {
+      queued = 0;
+      const nowOccluded = document.querySelector(OVERLAY_SELECTOR) !== null;
+      if (nowOccluded !== occluded) {
+        occluded = nowOccluded;
+        if (occluded) void emit("native-timeline-detach", {});
+        else place();
+        return;
+      }
+      if (!occluded) place();
+    };
+
+    const schedule = () => {
+      if (queued) return;
+      queued = requestAnimationFrame(sync);
+    };
+
     place();
-    const observer = new ResizeObserver(place);
-    observer.observe(host);
-    window.addEventListener("resize", place);
+    const resize = new ResizeObserver(schedule);
+    resize.observe(host);
+    // Overlays mount anywhere under body, so the whole subtree is the target.
+    const overlays = new MutationObserver(schedule);
+    overlays.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", schedule);
 
     return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", place);
+      if (queued) cancelAnimationFrame(queued);
+      resize.disconnect();
+      overlays.disconnect();
+      window.removeEventListener("resize", schedule);
       // Leaving the section has to take the window with it, or it floats over
       // whatever the user navigated to.
       void emit("native-timeline-detach", {});
