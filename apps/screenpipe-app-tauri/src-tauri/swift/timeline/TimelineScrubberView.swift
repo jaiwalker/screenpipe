@@ -47,7 +47,6 @@ struct ScrubberLayout {
         return viewport.start + local
     }
 }
-
 struct TimelineScrubberView: View {
     @ObservedObject var model: TimelineViewModel
 
@@ -351,4 +350,3 @@ struct TimelineGroupBadge: View {
         )
     }
 }
-
