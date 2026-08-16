@@ -40,6 +40,14 @@ final class ThumbnailLoader: ObservableObject {
         }
     }
 
+    /// Only used by tests, so the card can be measured against a real image
+    /// without a server.
+    func setImageForTesting(_ image: NSImage?) {
+        self.image = image
+        failed = image == nil
+        loadedFrameId = "test"
+    }
+
     func cancel() {
         task?.cancel()
         task = nil
@@ -108,7 +116,10 @@ struct TimelineHoverPreview: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .frame(width: 256)
+        // Height as well as width: a capture is whatever shape the display is,
+        // and a resizable image with no height constraint reports its full
+        // pixel height as ideal, which grows the card to fill the window.
+        .frame(width: 256, height: 144)
         .clipped()
     }
 

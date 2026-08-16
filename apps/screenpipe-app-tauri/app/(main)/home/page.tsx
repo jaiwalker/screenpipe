@@ -66,6 +66,10 @@ import { mountPipeRunRecorder } from "@/lib/events/pipe-run-recorder";
 import { mountPipeWatchWriter } from "@/lib/events/pipe-watch-writer";
 import { RecordingStatus, type RecordingDevice } from "@/components/recording-status";
 import Timeline from "@/components/rewind/timeline";
+import {
+  NativeTimelineBridge,
+  NativeTimelineButton,
+} from "@/components/rewind/native-timeline";
 import { useQueryState } from "nuqs";
 import { listen } from "@tauri-apps/api/event";
 import { useSettings } from "@/lib/hooks/use-settings";
@@ -935,7 +939,14 @@ function HomeContent() {
         // to chat (the redirect effect also resets activeSection to "home"). This
         // avoids a flash of the disabled placeholder on reload.
         if (settings.disableTimeline) return null;
-        return <Timeline embedded />;
+        return (
+          <div className="relative h-full w-full">
+            <Timeline embedded />
+            <div className="absolute right-3 top-3 z-20">
+              <NativeTimelineButton />
+            </div>
+          </div>
+        );
       case "brain":
         return <BrainSection />;
       case "pipes":
@@ -1110,6 +1121,9 @@ function HomeContent() {
           and global shortcuts already own. Each row prints its shortcut, so
           palette use teaches the direct key. Home window only: the settings
           page binds its own ⌘K for search focus while mounted. */}
+      {/* Routes actions the native timeline window cannot perform itself. */}
+      <NativeTimelineBridge />
+
       <CommandPalette
         deps={{
           openSearch: () => {

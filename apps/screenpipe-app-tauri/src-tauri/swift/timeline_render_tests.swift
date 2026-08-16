@@ -573,6 +573,29 @@ private func testHoverPreviewAndPopover(shots: String) {
         failures.append("hover preview did not render")
     }
 
+    // The card must stay a card. A capture is whatever shape the display is,
+    // and an unconstrained resizable image reports its full pixel height as
+    // ideal — which once grew the preview until it covered the window. Render
+    // into a fixed host and that can never show up, so measure the size the
+    // view actually asks for.
+    let tall = NSImage(size: NSSize(width: 1200, height: 3000))
+    tall.lockFocus()
+    NSColor.systemTeal.setFill()
+    NSRect(x: 0, y: 0, width: 1200, height: 3000).fill()
+    tall.unlockFocus()
+
+    let measuringLoader = ThumbnailLoader()
+    measuringLoader.setImageForTesting(tall)
+    let measured = NSHostingView(
+        rootView: TimelineHoverPreview(
+            frame: model.frames[3], carriedURL: nil, loader: measuringLoader
+        )
+    ).fittingSize
+    expect(measured.height > 0 && measured.height <= 320,
+           "a tall capture must not stretch the hover card, got \(measured.height)")
+    expect(measured.width > 0 && measured.width <= 320,
+           "the hover card must stay its declared width, got \(measured.width)")
+
     guard let group = model.appGroups.first(where: { $0.frameCount > 1 }) else {
         failures.append("no multi-frame group for the popover test")
         return
