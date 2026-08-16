@@ -51,6 +51,7 @@ jobs:
               - 'apps/screenpipe-app-tauri/**'
               - 'crates/**'
               - 'packages/cli/**'
+              - 'packages/e2e/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -58,6 +59,23 @@ jobs:
               - '.github/actions/**'
               - '.github/scripts/**'
               - '.github/workflows/e2e-test.yml'
+
+  e2e-runner-unit:
+    name: Unified E2E runner unit tests
+    needs: changes
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      needs.changes.outputs.desktop == 'true' ||
+      contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - run: bun test packages/e2e/src/app-suite.test.ts
 
   windows-e2e-test:
     name: Windows E2E Tests (advisory)
@@ -283,7 +301,12 @@ jobs:
     - name: Verify background AI-tool connection
       shell: pwsh
       working-directory: ./apps/screenpipe-app-tauri
-      run: bun run test:e2e:onboarding-background-ai-tools
+      run: >-
+        bun ../../packages/e2e/src/runner.ts
+        --suite app
+        --skip-app-build
+        --app-seed "no-recording,background-ai-tools"
+        --spec e2e/specs/onboarding-background-ai-tools.spec.ts
 
     - name: Run E2E Tests
       shell: pwsh
@@ -292,7 +315,7 @@ jobs:
         RECORD_VIDEO: "true"
       run: |
         Remove-Item -LiteralPath ./e2e/results -Recurse -Force -ErrorAction SilentlyContinue
-        bun run test:e2e
+        bun ../../packages/e2e/src/runner.ts --suite app --skip-app-build
 
     - name: Run Windows Core Recording E2E
       shell: pwsh
@@ -646,9 +669,13 @@ jobs:
         export DISPLAY=:99
         export RECORD_VIDEO=1
 
-        bun run test:e2e:onboarding-background-ai-tools
+        bun ../../packages/e2e/src/runner.ts \
+          --suite app \
+          --skip-app-build \
+          --app-seed "no-recording,background-ai-tools" \
+          --spec e2e/specs/onboarding-background-ai-tools.spec.ts
         rm -rf ./e2e/results
-        bun run test:e2e
+        bun ../../packages/e2e/src/runner.ts --suite app --skip-app-build
 
     - name: Generate E2E Coverage Report
       if: always()
@@ -934,7 +961,12 @@ jobs:
     - name: Verify background AI-tool connection
       shell: bash
       working-directory: ./apps/screenpipe-app-tauri
-      run: bun run test:e2e:onboarding-background-ai-tools
+      run: >-
+        bun ../../packages/e2e/src/runner.ts
+        --suite app
+        --skip-app-build
+        --app-seed "no-recording,background-ai-tools"
+        --spec e2e/specs/onboarding-background-ai-tools.spec.ts
 
     - name: Run E2E Tests
       # ADVISORY (non-blocking): the full serial suite (maxInstances:1) with
@@ -953,7 +985,7 @@ jobs:
         RECORD_VIDEO: "true"
       run: |
         rm -rf ./e2e/results
-        bun run test:e2e
+        bun ../../packages/e2e/src/runner.ts --suite app --skip-app-build
 
     - name: Generate E2E Coverage Report
       if: always()
