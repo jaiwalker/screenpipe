@@ -731,6 +731,40 @@ impl SCServer {
                 }
             });
 
+            // Spawn periodic accessibility pipeline metrics reporter (every 60s).
+            //
+            // `record_tree_walk` has always accumulated these counters on every
+            // production walk, and its own doc comment says they exist so "the
+            // health endpoint AND analytics surface real ax_* counters instead of
+            // zeros" — but only `/health` ever read them. The cost of the one
+            // subsystem large enough to rival capture was measured per-process and
+            // then discarded unless someone curled localhost on that exact machine.
+            //
+            // That gap is load-bearing: vision and audio both report, so fleet
+            // analysis can price them, and a11y could only be reasoned about by
+            // elimination. Emitting the existing snapshot costs one mutex read a
+            // minute and makes walk volume, walk latency and truncation visible
+            // next to the pipelines they compete with for the same cores.
+            //
+            // Counts and latencies only. `total_text_chars` is a character count,
+            // never the text — nothing here can carry window titles or content.
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    let snap = crate::ui_recorder::tree_walker_snapshot();
+                    // Same shape as the vision/audio reporters: stay silent until
+                    // the pipeline has actually done work, so idle installs and
+                    // platforms without a11y don't emit a stream of zeros.
+                    if snap.walks_total > 0 {
+                        analytics::capture_event_nonblocking(
+                            "a11y_pipeline_health",
+                            crate::ui_recorder::a11y_health_payload(&snap),
+                        );
+                    }
+                }
+            });
+
             // Permanent subscriber that forwards allowlisted piggyback telemetry
             // (meeting summaries + mic capture health) from the in-process events
             // bus to PostHog. Runs in both CLI and app-embedded modes since it's

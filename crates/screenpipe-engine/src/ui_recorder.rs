@@ -474,6 +474,36 @@ pub fn tree_walker_snapshot() -> TreeWalkerSnapshot {
         .unwrap_or_default()
 }
 
+/// Shape the snapshot into the `a11y_pipeline_health` analytics payload.
+///
+/// Split out from the reporter task in `server.rs` purely so it is reachable
+/// from a test: a spawned 60s interval loop is not, and a payload that silently
+/// mapped the wrong counter would look identical in fleet data to a subsystem
+/// that behaves differently than we think.
+///
+/// Counts, durations and rates only. `total_text_chars` is a character count,
+/// never the text, so nothing here can carry a window title or its contents.
+pub fn a11y_health_payload(snap: &TreeWalkerSnapshot) -> serde_json::Value {
+    serde_json::json!({
+        "walks_total": snap.walks_total,
+        // stored vs deduped prices the walk that produced nothing new: work
+        // performed with nothing retained.
+        "walks_stored": snap.walks_stored,
+        "walks_deduped": snap.walks_deduped,
+        "walks_empty": snap.walks_empty,
+        "walks_error": snap.walks_error,
+        "walks_truncated": snap.walks_truncated,
+        "walks_truncated_timeout": snap.walks_truncated_timeout,
+        "walks_truncated_max_nodes": snap.walks_truncated_max_nodes,
+        "truncation_rate": snap.truncation_rate,
+        "avg_walk_duration_ms": snap.avg_walk_duration_ms,
+        "max_walk_duration_ms": snap.max_walk_duration_ms,
+        "avg_nodes_per_walk": snap.avg_nodes_per_walk,
+        "max_depth_reached": snap.max_depth_reached,
+        "total_text_chars": snap.total_text_chars,
+    })
+}
+
 /// Coarse-grained UI-recorder state — the one-field summary the UI cares
 /// about most. Derived from the per-modality bools below; included
 /// alongside them so consumers can pick the granularity that fits.
@@ -2422,5 +2452,97 @@ mod tests {
         assert_eq!(snap.truncation_rate, 0.0);
         assert_eq!(snap.avg_walk_duration_ms, 0);
         assert_eq!(snap.avg_nodes_per_walk, 0);
+    }
+
+    /// Every counter must reach the payload under its own name. A wrong mapping
+    /// here is invisible in fleet data — it reads as a subsystem behaving
+    /// differently rather than as a reporting bug — so pin all of them.
+    #[test]
+    fn a11y_payload_carries_every_counter() {
+        let mut acc = TreeWalkerAccumulator::default();
+        apply(
+            &mut acc,
+            TreeWalkOutcome::Stored {
+                duration_ms: 40,
+                node_count: 900,
+                max_depth: 12,
+                text_chars: 3000,
+                truncated: true,
+                truncated_timeout: true,
+                truncated_max_nodes: false,
+            },
+        );
+        apply(
+            &mut acc,
+            TreeWalkOutcome::Deduped {
+                duration_ms: 20,
+                node_count: 100,
+                max_depth: 4,
+                text_chars: 500,
+                truncated: false,
+                truncated_timeout: false,
+                truncated_max_nodes: false,
+            },
+        );
+        apply(&mut acc, TreeWalkOutcome::Empty);
+        apply(&mut acc, TreeWalkOutcome::Error);
+
+        let snap = acc.snapshot();
+        let payload = a11y_health_payload(&snap);
+
+        assert_eq!(payload["walks_total"], 4);
+        assert_eq!(payload["walks_stored"], 1);
+        assert_eq!(payload["walks_deduped"], 1);
+        assert_eq!(payload["walks_empty"], 1);
+        assert_eq!(payload["walks_error"], 1);
+        assert_eq!(payload["walks_truncated"], 1);
+        assert_eq!(payload["walks_truncated_timeout"], 1);
+        assert_eq!(payload["walks_truncated_max_nodes"], 0);
+        assert_eq!(payload["truncation_rate"], 0.25);
+        // averages divide by walks_total, including the empty/error walks that
+        // contribute no duration or nodes: (40+20)/4 and (900+100)/4.
+        assert_eq!(payload["avg_walk_duration_ms"], 15);
+        assert_eq!(payload["max_walk_duration_ms"], 40);
+        assert_eq!(payload["avg_nodes_per_walk"], 250);
+        assert_eq!(payload["max_depth_reached"], 12);
+        assert_eq!(payload["total_text_chars"], 3500);
+    }
+
+    /// The payload is counts and durations. Nothing added to it may carry
+    /// captured content — a window title reaching PostHog would be a privacy
+    /// incident, not a bug — so assert the key set exactly.
+    #[test]
+    fn a11y_payload_exposes_no_free_text() {
+        let payload = a11y_health_payload(&TreeWalkerAccumulator::default().snapshot());
+        let object = payload.as_object().expect("payload is an object");
+
+        for (key, value) in object {
+            assert!(
+                value.is_number(),
+                "{key} is not numeric — only counts, durations and rates may be reported",
+            );
+        }
+
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "avg_nodes_per_walk",
+                "avg_walk_duration_ms",
+                "max_depth_reached",
+                "max_walk_duration_ms",
+                "total_text_chars",
+                "truncation_rate",
+                "walks_deduped",
+                "walks_empty",
+                "walks_error",
+                "walks_stored",
+                "walks_total",
+                "walks_truncated",
+                "walks_truncated_max_nodes",
+                "walks_truncated_timeout",
+            ],
+        );
     }
 }
