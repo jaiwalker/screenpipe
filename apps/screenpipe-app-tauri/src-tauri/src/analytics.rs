@@ -295,6 +295,7 @@ impl AnalyticsManager {
                         if e_str.contains("error sending request")
                             || e_str.contains("Connection refused")
                             || e_str.contains("os error")
+                            || e_str.contains("error decoding response body")
                         {
                             warn!("backend not yet available for health check: {}", e_str);
                         } else {
