@@ -1629,7 +1629,29 @@ impl SettingsStore {
     /// in the stored JSON, serde rejects it as a duplicate field.
     /// Also sanitize unknown AI provider types to prevent deserialization failures
     /// (e.g. synced settings from a newer version with a provider this version doesn't know).
+    /// Recursively remove any JSON object key whose value is `null`.
+    /// This allows `#[serde(default)]` to populate those fields with their
+    /// Rust defaults instead of serde hard-failing with
+    /// "invalid type: null, expected a string" (or similar).
+    fn strip_nulls(val: Value) -> Value {
+        match val {
+            Value::Object(map) => {
+                let cleaned = map
+                    .into_iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, v)| (k, Self::strip_nulls(v)))
+                    .collect();
+                Value::Object(cleaned)
+            }
+            Value::Array(arr) => {
+                Value::Array(arr.into_iter().map(|v| Self::strip_nulls(v)).collect())
+            }
+            other => other,
+        }
+    }
+
     fn sanitize_legacy_fields(mut val: Value) -> Value {
+        val = Self::strip_nulls(val);
         if let Some(obj) = val.as_object_mut() {
             if obj.contains_key("enableAccessibility") {
                 obj.remove("enableUiEvents");
