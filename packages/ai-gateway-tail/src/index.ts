@@ -5,6 +5,7 @@
 const AUTH_PREFIX = 'screenpipe.ai-gateway-auth ';
 const ROUTE_PREFIX = 'screenpipe.ai-gateway-route ';
 const MAX_BATCH = 500;
+const SUCCESS_SAMPLE_RATE = 0.02;
 
 interface CollectorBinding {
 	fetch(request: Request): Promise<Response>;
@@ -201,11 +202,26 @@ export function normalizeTailItem(item: TailItem): AiGatewayAuditEvent | null {
 	};
 }
 
+function stableSample(key: string): number {
+	let hash = 2166136261;
+	for (let index = 0; index < key.length; index += 1) {
+		hash ^= key.charCodeAt(index);
+		hash = Math.imul(hash, 16777619);
+	}
+	return (hash >>> 0) / 4_294_967_296;
+}
+
+export function shouldKeepAuditEvent(event: AiGatewayAuditEvent): boolean {
+	if (event.outcome === 'failure' || event.status_code >= 400 || event.admission_gate) return true;
+	return stableSample(event.event_id) < SUCCESS_SAMPLE_RATE;
+}
+
 async function exportTailBatch(items: TailItem[], env: Env): Promise<void> {
 	if (!env.AI_GATEWAY_DRAIN_KEY) throw new Error('AI gateway drain key is not configured');
 	const events = items
 		.map(normalizeTailItem)
 		.filter((event): event is AiGatewayAuditEvent => event !== null)
+		.filter(shouldKeepAuditEvent)
 		.slice(0, MAX_BATCH);
 	if (events.length === 0) return;
 	const response = await env.COLLECTOR.fetch(new Request('https://collector.internal/ingest/ai-gateway', {
