@@ -689,6 +689,8 @@ export default function ShortcutReminderPage() {
 
   const disclosure = hoveredControl === "search"
     ? ["search", searchShortcut]
+    : hoveredControl === "brand"
+      ? ["screenpipe", "right-click"]
     : hoveredControl === "chat"
       ? ["ask chat", chatShortcut]
       : hoveredControl === "timeline"
@@ -800,6 +802,31 @@ export default function ShortcutReminderPage() {
         }}
       >
         <button
+          title="screenpipe — right-click for options"
+          aria-label="screenpipe — open timeline; right-click for options"
+          className={dockButtonClass}
+          style={dockButtonStyle}
+          onMouseEnter={() => setHoveredControl("brand")}
+          onMouseDown={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={openTimeline}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setSettingsOpen(true);
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className="bg-contain bg-center bg-no-repeat"
+            style={{
+              width: `${12 * overlayScale}px`,
+              height: `${12 * overlayScale}px`,
+              backgroundImage: "url('/32x32.png')",
+            }}
+          />
+        </button>
+        <button
           title="Open search"
           className={dockButtonClass}
           style={dockButtonStyle}
@@ -859,10 +886,7 @@ export default function ShortcutReminderPage() {
           onMouseEnter={() => setHoveredControl("settings")}
           onMouseDown={(e) => e.stopPropagation()}
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={(e) => {
-            e.stopPropagation();
-            setSettingsOpen((open) => !open);
-          }}
+          onClick={handleOpenSettings}
         >
           <Settings style={{ width: `${12 * overlayScale}px`, height: `${12 * overlayScale}px` }} />
         </button>
