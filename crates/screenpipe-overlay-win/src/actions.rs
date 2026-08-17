@@ -29,7 +29,7 @@ pub fn action_for(state: &OverlayState, control: Control) -> Option<String> {
         Control::Pill | Control::Brand | Control::Timeline => "open_timeline",
         Control::Search => "open_search",
         Control::Chat => "open_chat",
-        Control::Settings => "open_overlay_settings",
+        Control::Settings => return None,
         Control::RestartRecording => "restart_recording",
         Control::DismissIncident => "dismiss_incident",
         // The audio meter is a status cell, not a button — same as the mac
@@ -115,10 +115,7 @@ mod tests {
         assert_eq!(action_for(&s, Control::Timeline).unwrap(), "open_timeline");
         assert_eq!(action_for(&s, Control::Pill).unwrap(), "open_timeline");
         assert_eq!(action_for(&s, Control::Brand).unwrap(), "open_timeline");
-        assert_eq!(
-            action_for(&s, Control::Settings).unwrap(),
-            "open_overlay_settings"
-        );
+        assert_eq!(action_for(&s, Control::Settings), None);
         assert_eq!(
             action_for(&s, Control::RestartRecording).unwrap(),
             "restart_recording"

@@ -128,44 +128,44 @@ private func testMarginScales() {
     expectClose(top.y, visible.maxY - 8 - 16, "scaled top y")
 }
 
-/// The brand mark stays in the first expanded cell at either screen edge. The
+/// The brand mark stays in the rightmost expanded cell at either screen edge. The
 /// native context-menu handler uses this exact hit test, so a right-click on a
-/// neighboring search cell must never open the brand menu.
-private func testExpandedBrandCell() {
+/// neighboring audio cell must never open the brand menu.
+private func testExpandedBrandCellAtRight() {
     let bounds = NSRect(x: 0, y: 0, width: 160, height: 62)
     let topBrand = dockControl(
-        at: NSPoint(x: 10, y: 47),
+        at: NSPoint(x: 145, y: 47),
         in: bounds,
         expanded: true,
         disclosureDown: true,
         horizontal: .center,
         scale: 1
     )
-    expect(topBrand?.0 == "brand" && topBrand?.1 == 0, "brand should be first in top dock")
+    expect(topBrand?.0 == "brand" && topBrand?.1 == 4, "brand should be last in top dock")
 
     let search = dockControl(
-        at: NSPoint(x: 35, y: 47),
+        at: NSPoint(x: 15, y: 47),
         in: bounds,
         expanded: true,
         disclosureDown: true,
         horizontal: .center,
         scale: 1
     )
-    expect(search?.0 == "search" && search?.1 == 1, "search should follow brand")
+    expect(search?.0 == "search" && search?.1 == 0, "search should be first")
 
     let bottomBrand = dockControl(
-        at: NSPoint(x: 10, y: 15),
+        at: NSPoint(x: 145, y: 15),
         in: bounds,
         expanded: true,
         disclosureDown: false,
         horizontal: .center,
         scale: 1
     )
-    expect(bottomBrand?.0 == "brand", "brand should stay first in bottom dock")
+    expect(bottomBrand?.0 == "brand", "brand should stay last in bottom dock")
 
     expect(
         dockControl(
-            at: NSPoint(x: 10, y: 10),
+            at: NSPoint(x: 145, y: 10),
             in: bounds,
             expanded: true,
             disclosureDown: true,
@@ -176,7 +176,7 @@ private func testExpandedBrandCell() {
     )
     expect(
         dockControl(
-            at: NSPoint(x: 10, y: 47),
+            at: NSPoint(x: 145, y: 47),
             in: bounds,
             expanded: false,
             disclosureDown: true,
@@ -505,7 +505,7 @@ struct ShortcutReminderTests {
     static func main() {
         testAnchorPlacement()
         testMarginScales()
-        testExpandedBrandCell()
+        testExpandedBrandCellAtRight()
         testPadStaysOnScreen()
         testEdgeCentreSet()
         testLegacyCornersMigrate()

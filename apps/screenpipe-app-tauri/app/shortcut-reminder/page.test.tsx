@@ -319,6 +319,7 @@ describe("recording health hover detail", () => {
     fireEvent.mouseEnter(await screen.findByTestId("shortcut-reminder-root"));
     const brand = await screen.findByTitle("screenpipe — right-click for options");
     expect(brand).toBeVisible();
+    expect(brand.parentElement?.lastElementChild).toBe(brand);
     fireEvent.contextMenu(brand);
 
     expect(screen.getByRole("menu", { name: "Shortcut reminder options" })).toBeVisible();
@@ -332,11 +333,8 @@ describe("recording health hover detail", () => {
     fireEvent.contextMenu(screen.getByTitle("screenpipe — right-click for options"));
     fireEvent.click(screen.getByTitle("Open overlay settings"));
     expect(mocks.showWindow).toHaveBeenCalledWith({ Home: { page: "display" } });
-
-    mocks.showWindow.mockClear();
-    fireEvent.click(screen.getByTitle("Overlay settings"));
-    expect(mocks.showWindow).toHaveBeenCalledWith({ Home: { page: "display" } });
     expect(screen.queryByRole("menu", { name: "Shortcut reminder options" })).toBeNull();
+    expect(screen.queryByTitle("Overlay settings")).toBeNull();
   });
 
   it("keeps a pinned transcript open after the pointer leaves", async () => {
