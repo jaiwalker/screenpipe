@@ -4,7 +4,13 @@
 
 import React, { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import {
   interpolateCanvasFocusViewport,
   isTrustedCanvasMove,
@@ -133,10 +139,7 @@ beforeEach(() => {
   eventMocks.listeners.clear();
   eventMocks.listen.mockClear();
   eventMocks.listen.mockImplementation(
-    async (
-      event: string,
-      handler: (event: { payload: unknown }) => void,
-    ) => {
+    async (event: string, handler: (event: { payload: unknown }) => void) => {
       eventMocks.listeners.set(event, handler);
       return () => eventMocks.listeners.delete(event);
     },
@@ -310,9 +313,7 @@ describe("LiveViewCanvas", () => {
       onRegenerate: vi.fn(),
       onAiEdit: vi.fn().mockResolvedValue(true),
     };
-    const result = render(
-      <LiveViewCanvas {...props} focusSlotId={null} />,
-    );
+    const result = render(<LiveViewCanvas {...props} focusSlotId={null} />);
     onChange.mockClear();
 
     vi.useFakeTimers();
@@ -322,9 +323,7 @@ describe("LiveViewCanvas", () => {
       vi.stubGlobal("requestAnimationFrame", requestAnimationFrame);
       vi.stubGlobal("cancelAnimationFrame", cancelAnimationFrame);
 
-      result.rerender(
-        <LiveViewCanvas {...props} focusSlotId="focus-time" />,
-      );
+      result.rerender(<LiveViewCanvas {...props} focusSlotId="focus-time" />);
 
       expect(requestAnimationFrame).toHaveBeenCalledTimes(1);
       expect(onChange).not.toHaveBeenCalled();
@@ -553,9 +552,15 @@ describe("LiveViewCanvas", () => {
     });
     const arrow = screen.getByTestId(/^canvas-arrow-/);
     fireEvent.pointerDown(arrow, { pointerId: 5 });
+    const inspector = screen.getByTestId("canvas-handoff-inspector");
+    expect(inspector.textContent).toContain("Focus time → Meetings");
+    expect(inspector.textContent).toContain("daily-summary");
+    expect(inspector.textContent).toContain("1 supporting evidence");
+    expect(inspector.textContent).toContain("does not prove causal dependency");
     openCanvasTools();
     fireEvent.click(screen.getByTestId("canvas-delete-selection"));
     expect(screen.queryByTestId(/^canvas-arrow-/)).toBeNull();
+    expect(screen.queryByTestId("canvas-handoff-inspector")).toBeNull();
   });
 
   it("lets keyboard users select and move a Block from its move handle", () => {
@@ -641,10 +646,7 @@ describe("LiveViewCanvas", () => {
     const onPersist = vi.fn();
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     render(
-      <CanvasHarness
-        initialDocument={initialDocument}
-        onPersist={onPersist}
-      />,
+      <CanvasHarness initialDocument={initialDocument} onPersist={onPersist} />,
     );
     const surface = screen.getByTestId("live-view-canvas-surface");
     fireEvent.pointerEnter(surface, { clientX: 250, clientY: 200 });
@@ -670,16 +672,10 @@ describe("LiveViewCanvas", () => {
 
     await waitFor(() => expect(onPersist).toHaveBeenCalledTimes(1));
     const persisted = onPersist.mock.calls[0][0] as BrainViewCanvasDocument;
-    expect(persisted.viewport.zoom).toBeCloseTo(
-      initialDocument.viewport.zoom,
-    );
+    expect(persisted.viewport.zoom).toBeCloseTo(initialDocument.viewport.zoom);
     const worldBefore = {
-      x:
-        (250 - initialDocument.viewport.x) /
-        initialDocument.viewport.zoom,
-      y:
-        (200 - initialDocument.viewport.y) /
-        initialDocument.viewport.zoom,
+      x: (250 - initialDocument.viewport.x) / initialDocument.viewport.zoom,
+      y: (200 - initialDocument.viewport.y) / initialDocument.viewport.zoom,
     };
     expect((250 - persisted.viewport.x) / persisted.viewport.zoom).toBeCloseTo(
       worldBefore.x,
@@ -779,9 +775,8 @@ describe("LiveViewCanvas", () => {
     act(() => {
       eventMocks.listeners.get("native-magnify")?.({ payload: 0.1 });
     });
-    const afterNativePinch = screen.getByTestId(
-      "canvas-zoom-reset",
-    ).textContent;
+    const afterNativePinch =
+      screen.getByTestId("canvas-zoom-reset").textContent;
 
     // One pinch, one zoom: the duplicate ctrl+wheel for those same fingers is
     // swallowed instead of compounding on top of the native step.

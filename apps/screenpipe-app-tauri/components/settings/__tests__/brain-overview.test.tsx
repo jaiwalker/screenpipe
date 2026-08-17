@@ -1448,6 +1448,11 @@ describe("BrainOverview", () => {
     expect(
       screen.getByTestId("live-view-template-outcome-process-map").textContent,
     ).toContain("Choose a safe improvement");
+    expect(screen.queryByText("what this helps you decide")).toBeNull();
+    expect(screen.queryByText("possible starting points")).toBeNull();
+    expect(
+      screen.getAllByRole("button", { name: "preview build" }).length,
+    ).toBe(2);
   });
 
   it("keeps a template-generated new dashboard in review until it is saved", async () => {

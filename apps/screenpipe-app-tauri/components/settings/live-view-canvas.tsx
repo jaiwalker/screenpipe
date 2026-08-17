@@ -633,9 +633,7 @@ export function LiveViewCanvas({
         1,
         (timestamp - startedAt) / PROPOSAL_FOCUS_DURATION_MS,
       );
-      updateFocusViewport(
-        interpolateCanvasFocusViewport(from, to, progress),
-      );
+      updateFocusViewport(interpolateCanvasFocusViewport(from, to, progress));
       if (progress < 1) {
         focusAnimationFrameRef.current = window.requestAnimationFrame(animate);
       } else {
@@ -1432,6 +1430,51 @@ export function LiveViewCanvas({
   );
 
   const selectedCanDelete = selection.some((id) => !id.startsWith("block:"));
+  const selectedArrowId = selection.find((id) => id.startsWith("arrow:"));
+  const selectedArrow = selectedArrowId
+    ? document.arrows.find((arrow) => `arrow:${arrow.id}` === selectedArrowId)
+    : undefined;
+  const describeEndpoint = (nodeId: string) => {
+    if (nodeId.startsWith("block:")) {
+      const slot = slotsById.get(nodeId.slice("block:".length));
+      if (slot) {
+        return {
+          title: slot.title,
+          type: "Block",
+          intent: slot.intent,
+          helper: slot.value?.sourcePipe ?? slot.binding?.pipeName ?? null,
+          evidenceCount: slot.value?.evidence.length ?? 0,
+        };
+      }
+    }
+    if (nodeId.startsWith("note:")) {
+      const note = document.notes.find(
+        (candidate) => candidate.id === nodeId.slice("note:".length),
+      );
+      if (note) {
+        return {
+          title: note.text.trim() || "Untitled note",
+          type: "Note",
+          intent: "Manual canvas context",
+          helper: null,
+          evidenceCount: 0,
+        };
+      }
+    }
+    return {
+      title: "Unavailable endpoint",
+      type: "Unknown",
+      intent: "This endpoint is no longer present on the canvas.",
+      helper: null,
+      evidenceCount: 0,
+    };
+  };
+  const selectedArrowFrom = selectedArrow
+    ? describeEndpoint(selectedArrow.fromId)
+    : null;
+  const selectedArrowTo = selectedArrow
+    ? describeEndpoint(selectedArrow.toId)
+    : null;
   const activeTool =
     TOOL_OPTIONS.find((option) => option.value === tool) ?? TOOL_OPTIONS[0];
   const ActiveToolIcon = activeTool.icon;
@@ -1725,13 +1768,69 @@ export function LiveViewCanvas({
           choose another Block or note to connect
         </div>
       )}
+      {selectedArrow && selectedArrowFrom && selectedArrowTo && (
+        <aside
+          data-testid="canvas-handoff-inspector"
+          className="absolute bottom-3 right-3 z-30 w-[min(380px,calc(100%-1.5rem))] border border-foreground bg-background p-3 shadow-lg shadow-black/10"
+          aria-label="Selected process handoff"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-mono text-[9px] uppercase tracking-wider text-muted-foreground">
+                selected handoff
+              </p>
+              <h3 className="mt-1 text-sm font-medium">
+                {selectedArrowFrom.title} → {selectedArrowTo.title}
+              </h3>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 shrink-0 rounded-none"
+              aria-label="close handoff details"
+              onClick={() => setCanvasSelection([])}
+            >
+              <X className="h-3.5 w-3.5" aria-hidden="true" />
+            </Button>
+          </div>
+          {selectedArrow.label && (
+            <p className="mt-2 border border-border px-2 py-1 font-mono text-[10px]">
+              {selectedArrow.label}
+            </p>
+          )}
+          <div className="mt-3 grid grid-cols-2 divide-x divide-border border border-border">
+            {[selectedArrowFrom, selectedArrowTo].map((endpoint, index) => (
+              <div key={`${selectedArrow.id}:${index}`} className="min-w-0 p-2">
+                <p className="font-mono text-[8px] uppercase tracking-wider text-muted-foreground">
+                  {index === 0 ? "source" : "destination"} · {endpoint.type}
+                </p>
+                <p className="mt-1 truncate text-xs font-medium">
+                  {endpoint.title}
+                </p>
+                <p className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-muted-foreground">
+                  {endpoint.intent}
+                </p>
+                <p className="mt-2 font-mono text-[9px] text-muted-foreground">
+                  {endpoint.helper ? `${endpoint.helper} · ` : ""}
+                  {endpoint.evidenceCount} supporting evidence
+                </p>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 border-l-2 border-foreground pl-2 text-[10px] leading-relaxed text-muted-foreground">
+            This connector organizes the dashboard relationship. It does not
+            prove causal dependency, elapsed handoff time, or automation
+            readiness.
+          </p>
+        </aside>
+      )}
       {!toolsOpen && (
         <div
           data-testid="canvas-interaction-hint"
           className="pointer-events-none absolute right-3 top-3 z-20 max-w-[calc(100%-11rem)] border border-border bg-background/95 px-2 py-1 text-right font-mono text-[9px] leading-tight text-muted-foreground"
         >
-          drag nodes · pan tool or middle-drag · pinch or ctrl/⌘ + wheel to
-          zoom
+          drag nodes · pan tool or middle-drag · pinch or ctrl/⌘ + wheel to zoom
         </div>
       )}
     </section>
