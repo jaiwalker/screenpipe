@@ -1195,8 +1195,12 @@ fn create_dynamic_menu(
     //             .build(app)?,
     //     );
 
-    // --- Settings + Quit ---
+    // --- Support, Settings + Quit ---
     menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
+    if !data.app_ui_hidden {
+        menu_builder = menu_builder
+            .item(&MenuItemBuilder::with_id("feedback", "Send logs & feedback").build(app)?);
+    }
     if !data.app_ui_hidden && !is_tray_item_hidden("tray_settings") {
         menu_builder = menu_builder.item(
             &MenuItemBuilder::with_id("settings", "Settings...")
@@ -1292,6 +1296,7 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                 | "show_chat"
                 | "open_app"
                 | "settings"
+                | "feedback"
                 | "upgrade"
                 | "onboarding"
         )
