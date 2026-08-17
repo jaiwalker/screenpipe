@@ -157,17 +157,24 @@ export function createTemplateCanvasDocument(
       height: 280,
     },
     { slotId: "handoffs", x: 896, y: 240, width: 360, height: 280 },
-    { slotId: "bottlenecks", x: 896, y: 608, width: 360, height: 280 },
+    { slotId: "bottlenecks", x: 1312, y: 240, width: 360, height: 280 },
+    {
+      slotId: "annual-value-case",
+      x: 1312,
+      y: 608,
+      width: 360,
+      height: 280,
+    },
     {
       slotId: "controls-and-exceptions",
-      x: 480,
+      x: 896,
       y: 608,
       width: 360,
       height: 280,
     },
     {
       slotId: "improvement-path",
-      x: 64,
+      x: 480,
       y: 608,
       width: 360,
       height: 280,
@@ -177,7 +184,8 @@ export function createTemplateCanvasDocument(
     ["trigger-and-outcome", "observed-steps", "starts"],
     ["observed-steps", "handoffs", "moves through"],
     ["handoffs", "bottlenecks", "reveals"],
-    ["bottlenecks", "controls-and-exceptions", "must preserve"],
+    ["bottlenecks", "annual-value-case", "quantifies"],
+    ["annual-value-case", "controls-and-exceptions", "must preserve"],
     ["controls-and-exceptions", "improvement-path", "enables"],
   ] as const;
   const arrows = connections
@@ -194,12 +202,12 @@ export function createTemplateCanvasDocument(
     viewId: view.id,
     revision: 0,
     mode: "canvas",
-    viewport: { x: 16, y: 8, zoom: 0.82 },
+    viewport: { x: 16, y: 8, zoom: 0.68 },
     blocks,
     notes: [
       {
         id: "process-map-guide",
-        text: "Observed workflow → handoffs → friction → controls → improvement\n\nMove the Blocks and connections until the map matches how the work actually happens.",
+        text: "Observed workflow → handoffs → friction → modeled value → controls → improvement\n\nMove the Blocks and connections until the map matches how the work actually happens. Dollar values remain scenarios until costs and realization are known.",
         x: 64,
         y: 64,
         width: 776,

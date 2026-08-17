@@ -403,4 +403,26 @@ describe("buildLiveViewGenerationPrompt", () => {
     expect(prompt).toContain("at most 2 distinct");
     expect(prompt).not.toContain("action=pipes");
   });
+
+  it("designs complete views from the decision backward and bounds financial claims", () => {
+    const prompt = buildLiveViewGenerationPrompt({
+      prompt: "show which workflow is worth automating",
+      scope: "dashboard",
+      preset: {} as any,
+      userToken: null,
+      pipes: [],
+    });
+
+    expect(prompt).toContain("Design from the decision backward");
+    expect(prompt).toContain("the outcome or decision");
+    expect(prompt).toContain("the evidence and baseline");
+    expect(prompt).toContain("a success or stop condition");
+    expect(prompt).toContain("show the formula and visible inputs");
+    expect(prompt).toContain("modeled annual hours");
+    expect(prompt).toContain("implementation and operating costs");
+    expect(prompt).toContain(
+      "Never label modeled capacity as realized savings",
+    );
+    expect(prompt).toContain("Do not use a synthetic score");
+  });
 });

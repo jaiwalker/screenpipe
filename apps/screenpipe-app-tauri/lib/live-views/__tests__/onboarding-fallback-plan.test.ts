@@ -139,6 +139,31 @@ describe("buildFallbackLiveViewPlan", () => {
     );
   });
 
+  it("keeps process automation outcome-first with an honest annual value model", () => {
+    const plan = buildFallbackLiveViewPlan({
+      goal: "automate repeated work",
+      goalCategory: "process_automation",
+      candidateSlugs: ["workflow-discovery"],
+      maxSelectedPipes: 1,
+    });
+    const model = plan?.blocks.find(
+      (block) => block.title === "Annual opportunity model",
+    );
+    const trial = plan?.blocks.find(
+      (block) => block.title === "One automation candidate",
+    );
+
+    expect(model?.component).toBe("table.v1");
+    expect(model?.intent).toContain("modeled annual hours");
+    expect(model?.intent).toContain("$50, $100, and $150");
+    expect(model?.intent).toContain("contribution margin");
+    expect(model?.intent).toContain("Label dollars as scenarios");
+    expect(model?.intent).toContain(
+      "do not claim net savings, revenue, or payback",
+    );
+    expect(trial?.intent).toContain("condition that should stop the trial");
+  });
+
   it("keeps every goal's recommended slugs reachable from the Store list", () => {
     // Guards against a goal whose recommended pipes were renamed without
     // updating the fallback, which would silently downgrade its dashboard.

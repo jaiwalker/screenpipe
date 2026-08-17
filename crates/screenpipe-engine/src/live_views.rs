@@ -384,6 +384,9 @@ pub struct LiveViewKit {
     pub id: String,
     pub title: String,
     pub description: String,
+    pub outcome: String,
+    pub decisions: Vec<String>,
+    pub trust_boundary: String,
     pub version: u64,
     pub pipes: Vec<LiveViewKitPipe>,
     pub template: LiveViewTemplate,
@@ -574,6 +577,16 @@ fn validate_title(value: &str, label: &str) -> Result<(), LiveViewError> {
     Ok(())
 }
 
+fn validate_bounded_text(value: &str, label: &str, maximum: usize) -> Result<(), LiveViewError> {
+    let length = value.trim().chars().count();
+    if length == 0 || length > maximum {
+        return Err(LiveViewError::invalid(format!(
+            "{label} must be between 1 and {maximum} characters"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_blocks(blocks: &[LiveViewTemplateBlock]) -> Result<(), LiveViewError> {
     if blocks.len() > MAX_BLOCKS {
         return Err(LiveViewError::invalid(format!(
@@ -676,6 +689,23 @@ pub fn validate_live_view_kit(kit: &LiveViewKit) -> Result<(), LiveViewError> {
     validate_slug(&kit.id, "Live View kit id")?;
     validate_title(&kit.title, "Live View kit title")?;
     validate_title(&kit.description, "Live View kit description")?;
+    validate_bounded_text(&kit.outcome, "Live View kit outcome", 200)?;
+    validate_bounded_text(&kit.trust_boundary, "Live View kit trust boundary", 240)?;
+    if !(2..=4).contains(&kit.decisions.len()) {
+        return Err(LiveViewError::invalid(
+            "Live View kit decisions must contain between 2 and 4 questions",
+        ));
+    }
+    let mut decisions = HashSet::new();
+    for decision in &kit.decisions {
+        validate_bounded_text(decision, "Live View kit decision", 160)?;
+        if !decisions.insert(decision.trim()) {
+            return Err(LiveViewError::invalid(format!(
+                "duplicate decision in Live View kit '{}'",
+                kit.id
+            )));
+        }
+    }
     if kit.version == 0 {
         return Err(LiveViewError::invalid(
             "Live View kit version must be greater than zero",
@@ -1669,6 +1699,7 @@ mod tests {
                 "observed-steps",
                 "handoffs",
                 "bottlenecks",
+                "annual-value-case",
                 "controls-and-exceptions",
                 "improvement-path",
             ]

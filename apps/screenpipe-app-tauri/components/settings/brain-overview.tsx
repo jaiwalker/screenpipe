@@ -94,6 +94,7 @@ import {
   type LiveViewGenerationScope,
 } from "@/lib/live-views/generate-live-view-with-pi";
 import { createOnboardingLiveView } from "@/lib/live-views/onboarding-live-view";
+import { buildLiveViewTemplateAgentRequest } from "@/lib/live-views/template-agent-request";
 /** What an inline Live View AI request is allowed to change. */
 type LiveViewBuilderTarget =
   | { scope: "dashboard"; operation: "create" | "edit" | "replace" }
@@ -2243,7 +2244,7 @@ export function BrainOverview({
     setSaving(true);
     try {
       const opened = await runLiveViewBuilderAgentInline({
-        request: `Build a useful Live View for the “${kit.title}” outcome. Use the template as guidance, then personalize the Blocks and Pipe strategy from a small relevant sample of my local data.`,
+        request: buildLiveViewTemplateAgentRequest(kit),
         target: {
           scope: "dashboard",
           operation: creatingNew ? "create" : "replace",

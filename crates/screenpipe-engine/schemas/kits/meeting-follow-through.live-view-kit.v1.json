@@ -3,7 +3,14 @@
   "id": "meeting-follow-through",
   "title": "Meeting follow-through",
   "description": "Turn your latest meeting into decisions, owned actions, open loops, and a clear next step.",
-  "version": 1,
+  "outcome": "Leave the latest meeting with a source-backed record of what was decided, who owns what, and what should happen next.",
+  "decisions": [
+    "What was explicitly decided?",
+    "Which action is mine, and when is it due?",
+    "What unresolved question needs follow-through first?"
+  ],
+  "trustBoundary": "Suggestions are not promoted to decisions, and owners or deadlines appear only when they were actually stated.",
+  "version": 2,
   "pipes": [
     {
       "name": "meeting-summary",

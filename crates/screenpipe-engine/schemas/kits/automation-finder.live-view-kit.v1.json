@@ -3,7 +3,14 @@
   "id": "automation-finder",
   "title": "Automation finder",
   "description": "Find one repeated workflow worth automating and turn it into a safe, testable first step.",
-  "version": 1,
+  "outcome": "Choose one source-backed automation trial with a modeled annual value range, explicit costs, and a human-controlled success test.",
+  "decisions": [
+    "Is this workflow repeated and costly enough to automate?",
+    "How many annual hours and how much illustrative value could be recovered?",
+    "What is the smallest safe trial, and what would stop it?"
+  ],
+  "trustBoundary": "Hours and dollars are modeled scenarios from visible assumptions, not realized savings, booked revenue, or a promise of payback.",
+  "version": 2,
   "pipes": [
     {
       "name": "automate-my-work",
@@ -58,11 +65,23 @@
         }
       },
       {
+        "id": "annual-value-case",
+        "title": "Annual opportunity model",
+        "kind": "table.v1",
+        "width": 12,
+        "order": 3,
+      "intent": "Show the selected workflow's observed frequency, observed minutes-per-run range, conservative automatable share, and working periods per year. Show the formula that produces modeled annual hours, then illustrate gross capacity at $50, $100, and $150 per recovered hour. For revenue work, show baseline eligible volume times a source-backed conversion change times contribution margin, or mark it unavailable. Label every dollar figure as a scenario, not realized savings or booked revenue. List unknown build, run, maintenance, review, adoption, and realization costs; do not calculate net value or payback without those inputs.",
+        "source": {
+          "type": "pipe.v1",
+          "pipeName": "automate-my-work"
+        }
+      },
+      {
         "id": "current-coverage",
         "title": "What is already covered",
         "kind": "table.v1",
         "width": 6,
-        "order": 3,
+        "order": 4,
         "intent": "Map which steps of the selected workflow are already handled by software or AI and which steps still require manual work.",
         "source": {
           "type": "pipe.v1",
@@ -74,7 +93,7 @@
         "title": "Safe first version",
         "kind": "markdown.v1",
         "width": 6,
-        "order": 4,
+        "order": 5,
         "intent": "Propose the smallest safe automation that removes meaningful work while keeping risky decisions or external writes behind human approval.",
         "source": {
           "type": "pipe.v1",
@@ -86,8 +105,8 @@
         "title": "How to know it worked",
         "kind": "list.v1",
         "width": 12,
-        "order": 5,
-        "intent": "Define measurable checks for whether the proposed automation saves time and remains correct, including a bounded initial trial.",
+        "order": 6,
+        "intent": "Define a bounded initial trial with an artifact-level success check, a before/after time measure, an accuracy or exception threshold, a human approval point, and an explicit stop condition. Separate first-run correctness from later realized time or financial value.",
         "source": {
           "type": "pipe.v1",
           "pipeName": "automate-my-work"

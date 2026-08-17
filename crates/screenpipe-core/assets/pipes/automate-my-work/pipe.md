@@ -49,7 +49,7 @@ A workflow qualifies only when the evidence shows it on at least 2 different day
 
 ### 4. Choose one next action
 
-Score the strongest candidates internally on recurrence, observed manual effort, user-visible benefit, trigger clarity, data availability, existing coverage, and risk. Recommend exactly one next action: CREATE one new pipe or REPAIR one named existing pipe. If nothing clears the recurrence and value gates, recommend nothing.
+Score the strongest candidates internally on recurrence, observed manual effort, user-visible benefit, trigger clarity, data availability, existing coverage, and risk. For the strongest candidate, model annual hours only from visible inputs: observed frequency, a source-backed minutes-per-run range, a conservative automatable share, and explicit working periods per year. If any input is missing, mark the annual model unavailable instead of filling it with a guess. Recommend exactly one next action: CREATE one new pipe or REPAIR one named existing pipe. If nothing clears the recurrence and value gates, recommend nothing.
 
 The recommendation must be read-only: it may query screenpipe and write one declared result inside its own output directory, but it must not send messages, call outbound services, modify user files, or take destructive action.
 
@@ -75,6 +75,16 @@ End with exactly: **No automation proposed — I need more repeated evidence.**
 **Frequency:** [observed occurrences across distinct days]
 **Observed effort:** [source-backed minutes or steps; label any estimate]
 **Confidence:** high / medium / low
+
+## Annual opportunity model
+**Formula:** [frequency × minutes per run × automatable share × working periods ÷ 60]
+**Observed inputs:** [each value, range, source, and assumption]
+**Modeled annual hours:** [conservative range, or unavailable with the missing input]
+**Illustrative gross capacity:** [annual hours × $50 / $100 / $150 per recovered hour, or unavailable]
+**Revenue scenario, only when applicable:** [baseline eligible volume × source-backed conversion change × contribution margin, or unavailable]
+**Costs not included:** [build, model/API, maintenance, review, adoption, and realization costs]
+
+Label every dollar figure as an illustrative scenario. Never present it as realized savings, booked revenue, net value, or payback. Do not call recovered capacity revenue or invent a conversion lift; mark the revenue case unavailable without separate baseline, conversion, and margin evidence.
 
 ## Best automation
 **Action:** CREATE [slug] / REPAIR [existing slug]

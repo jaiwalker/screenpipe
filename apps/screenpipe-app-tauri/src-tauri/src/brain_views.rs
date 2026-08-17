@@ -16,8 +16,8 @@ use screenpipe_engine::live_views::{
     LiveViewSource, LiveViewTemplateBlock, LiveViewTimeRange, SaveLiveViewRequest,
 };
 use screenpipe_engine::structured_outputs::{
-    OutputFeedbackRating, OutputFeedbackSummary, OutputItemActionSummary,
-    OutputItemDisposition, StructuredOutputValue,
+    OutputFeedbackRating, OutputFeedbackSummary, OutputItemActionSummary, OutputItemDisposition,
+    StructuredOutputValue,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -507,6 +507,9 @@ pub struct BrainViewTemplateKit {
     pub id: String,
     pub title: String,
     pub description: String,
+    pub outcome: String,
+    pub decisions: Vec<String>,
+    pub trust_boundary: String,
     pub version: u64,
     pub time_range: BrainViewTimeRange,
     pub period_policy: BrainViewPeriodPolicy,
@@ -520,6 +523,9 @@ impl From<LiveViewKit> for BrainViewTemplateKit {
             id: kit.id,
             title: kit.title,
             description: kit.description,
+            outcome: kit.outcome,
+            decisions: kit.decisions,
+            trust_boundary: kit.trust_boundary,
             version: kit.version,
             time_range: kit.template.time_range.into(),
             period_policy: kit.template.period_policy.into(),

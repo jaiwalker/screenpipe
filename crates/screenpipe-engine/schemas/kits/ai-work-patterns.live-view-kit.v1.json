@@ -3,7 +3,14 @@
   "id": "ai-work-patterns",
   "title": "AI work patterns",
   "description": "See which AI tools helped, what you used them for, and where your workflow could improve.",
-  "version": 1,
+  "outcome": "Understand which AI-assisted work produced a visible result and choose one small improvement to test next.",
+  "decisions": [
+    "Which jobs did I repeatedly use AI to complete?",
+    "Where is there evidence of a useful result rather than tool usage alone?",
+    "What workflow improvement should I test next?"
+  ],
+  "trustBoundary": "Tool usage alone is not treated as productivity or impact; usefulness is reported only when surrounding work supports it.",
+  "version": 2,
   "pipes": [
     {
       "name": "ai-habits",

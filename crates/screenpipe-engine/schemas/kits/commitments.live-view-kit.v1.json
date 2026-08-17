@@ -3,7 +3,14 @@
   "id": "commitments",
   "title": "Commitments",
   "description": "One living inbox for promises, requests, waiting, corrections, and follow-through.",
-  "version": 1,
+  "outcome": "Know which explicit commitment needs attention now, what is waiting on someone else, and what still requires review.",
+  "decisions": [
+    "Which commitment is due or overdue now?",
+    "What am I waiting on, and from whom?",
+    "Which ownership, deadline, or completion claim needs review?"
+  ],
+  "trustBoundary": "Silence never counts as completion, and uncertain ownership, dates, or state stay marked for review.",
+  "version": 2,
   "pipes": [
     {
       "name": "commitments",

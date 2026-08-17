@@ -3,7 +3,14 @@
   "id": "daily-memory",
   "title": "Daily memory",
   "description": "Remember what changed, recover loose ends, and know exactly where to resume tomorrow.",
-  "version": 1,
+  "outcome": "End the day knowing what moved forward, what remains open, and the exact first step for the next session.",
+  "decisions": [
+    "What did I actually finish or materially advance?",
+    "Which loose end is most likely to be forgotten?",
+    "Where should I resume next?"
+  ],
+  "trustBoundary": "Results come only from captured activity and explicit commitments; sparse capture stays visible instead of being filled with guesses.",
+  "version": 2,
   "pipes": [
     {
       "name": "day-recap",

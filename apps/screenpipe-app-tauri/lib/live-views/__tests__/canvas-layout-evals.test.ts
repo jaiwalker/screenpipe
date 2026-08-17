@@ -82,6 +82,7 @@ describe("Live View Canvas layout evals", () => {
       "observed-steps",
       "handoffs",
       "bottlenecks",
+      "annual-value-case",
       "controls-and-exceptions",
       "improvement-path",
     ];
@@ -101,11 +102,12 @@ describe("Live View Canvas layout evals", () => {
       "starts",
       "moves through",
       "reveals",
+      "quantifies",
       "must preserve",
       "enables",
     ]);
     expect(document?.notes[0].text).toContain(
-      "Observed workflow → handoffs → friction → controls → improvement",
+      "Observed workflow → handoffs → friction → modeled value → controls → improvement",
     );
     expect(
       createTemplateCanvasDocument("daily-memory", processView),

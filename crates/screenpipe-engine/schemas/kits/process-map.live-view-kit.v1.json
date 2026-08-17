@@ -3,7 +3,14 @@
   "id": "process-map",
   "title": "Process map",
   "description": "Map one repeated workflow from trigger to handoffs, friction, controls, and a safe improvement.",
-  "version": 1,
+  "outcome": "See one observed workflow end to end, quantify its annual opportunity, and choose a safe improvement without removing necessary controls.",
+  "decisions": [
+    "Where does the workflow slow down or create rework?",
+    "How many annual hours and how much illustrative value are at stake?",
+    "Which control must remain human-owned in the first trial?"
+  ],
+  "trustBoundary": "Unobserved transitions remain unknown, and modeled hours or dollars are scenarios rather than realized savings or revenue.",
+  "version": 2,
   "pipes": [
     {
       "name": "automate-my-work",
@@ -70,11 +77,23 @@
         }
       },
       {
+        "id": "annual-value-case",
+        "title": "Annual opportunity model",
+        "kind": "table.v1",
+        "width": 12,
+        "order": 4,
+      "intent": "Quantify the observed bottleneck with frequency, minutes-per-run range, conservative automatable share, and working periods per year. Show the formula for modeled annual hours and illustrative gross capacity at $50, $100, and $150 per recovered hour. For revenue work, show baseline eligible volume times a source-backed conversion change times contribution margin, or mark it unavailable. Keep build, run, maintenance, review, adoption, and realization costs separate, and do not claim net savings, revenue, or payback without those inputs.",
+        "source": {
+          "type": "pipe.v1",
+          "pipeName": "automate-my-work"
+        }
+      },
+      {
         "id": "controls-and-exceptions",
         "title": "Controls and exceptions",
         "kind": "table.v1",
         "width": 6,
-        "order": 4,
+        "order": 5,
         "intent": "Map observed review steps, approvals, exception paths, and safety checks in the selected workflow. Keep risky decisions and external writes explicitly human-controlled.",
         "source": {
           "type": "pipe.v1",
@@ -86,7 +105,7 @@
         "title": "Safe improvement path",
         "kind": "markdown.v1",
         "width": 6,
-        "order": 5,
+        "order": 6,
         "intent": "Recommend the smallest source-backed process improvement or automation trial, including what remains human-approved and how to measure success before expanding it.",
         "source": {
           "type": "pipe.v1",

@@ -147,11 +147,18 @@ const FALLBACK_SHAPES: Record<OnboardingGoalCategory, FallbackShape> = {
         width: 6,
       },
       {
+        title: "Annual opportunity model",
+        intent:
+          "Show observed frequency, minutes-per-run range, conservative automatable share, and working periods per year. Show the formula for modeled annual hours and illustrative gross capacity at $50, $100, and $150 per recovered hour. For revenue work, require baseline eligible volume, a source-backed conversion change, and contribution margin or mark the case unavailable. Label dollars as scenarios, list missing build, run, maintenance, review, adoption, and realization costs, and do not claim net savings, revenue, or payback.",
+        component: "table.v1",
+        width: 6,
+      },
+      {
         title: "One automation candidate",
         intent:
-          "Describe a single repeated workflow worth automating, the exact steps observed, and what a human would still need to approve.",
+          "Describe a single repeated workflow worth automating, the exact steps observed, what a human would still need to approve, the first-run artifact that proves correctness, and the condition that should stop the trial.",
         component: "markdown.v1",
-        width: 6,
+        width: 12,
       },
     ],
   },

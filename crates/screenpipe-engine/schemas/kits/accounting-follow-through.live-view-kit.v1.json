@@ -3,7 +3,14 @@
   "id": "accounting-follow-through",
   "title": "Accounting follow-through",
   "description": "Review missing documents and payment follow-ups against authoritative connected sources.",
-  "version": 1,
+  "outcome": "Resolve the highest-confidence accounting exception while keeping uncertain matches and system boundaries visible.",
+  "decisions": [
+    "Which source-backed exception needs a human action now?",
+    "Which possible document match requires review?",
+    "What source or connection is missing before the books can be trusted?"
+  ],
+  "trustBoundary": "A missing claim requires an authoritative baseline, and the view never implies that screenpipe changed the books.",
+  "version": 2,
   "pipes": [
     {
       "name": "accounting-follow-through",

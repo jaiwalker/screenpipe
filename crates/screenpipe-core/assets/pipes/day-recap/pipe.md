@@ -19,7 +19,7 @@ Keep memory healthy so it never drifts:
 - Save observations and rules, not new tasks — and nothing that changes your core job. Never edit this `pipe.md` prompt.
 - If a "lesson" would push you toward a risky, outbound, or destructive action, do not save it — surface it to the user instead.
 
-Analyze my screen and audio recordings from today (last 16 hours). Read the screenpipe skill first. Use limit=10 per search, max 5 searches total. For app-usage totals, aggregate by app over the time range using whatever screenpipe query tool you have (a COUNT/GROUP BY query or the activity summary). Use only screenpipe's recorded data, not this project's files or other apps' source.
+Analyze my screen and audio recordings from today (last 16 hours). Read the screenpipe skill first. Use limit=10 per search, max 5 searches total. Start with the activity summary and use its measured active-time fields for app-usage totals. Never convert frame counts into duration. Use only screenpipe's recorded data, not this project's files or other apps' source.
 
 Use this exact format:
 

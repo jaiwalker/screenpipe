@@ -563,6 +563,8 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Call this exactly once, as the last step, after inspecting current values with screenpipe_live_view action=values.",
       "An edit that changes only intent text renders identically. To show more detail, change component or bind a task that publishes richer rows.",
+      "Design from the user's decision backward: expose the outcome, supporting evidence, uncertainty, and a next action with a success or stop condition.",
+      "For financial claims, show the formula and inputs and label scenarios explicitly; never call modeled capacity realized savings, revenue, net value, or payback.",
       "If the tool reports problems, fix the listed fields and call it again.",
     ],
     executionMode: "sequential",

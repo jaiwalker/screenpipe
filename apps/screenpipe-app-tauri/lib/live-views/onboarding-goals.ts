@@ -52,7 +52,7 @@ export const ONBOARDING_GOALS: OnboardingGoalSuggestion[] = [
     title: "automate repeated work",
     description: "turn real steps into a workflow or SOP",
     prompt:
-      "Build a process discovery dashboard from repeated captured work. Show a source-backed workflow map, concrete steps and exceptions, likely time cost, and one small human-reviewed automation opportunity.",
+      "Build a process discovery dashboard from repeated captured work. Lead with the decision: show a source-backed workflow map, concrete steps and exceptions, a formula-based annual hours range, illustrative dollar scenarios with costs and assumptions visible, and one small human-reviewed automation trial with a stop condition. Never present modeled capacity as realized savings or revenue.",
     preferredStorePipeSlugs: [
       "workflow-discovery",
       "workflow-automation-scout",

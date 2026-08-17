@@ -3,7 +3,14 @@
   "id": "time-and-focus",
   "title": "Time & focus",
   "description": "See active time, focus, app usage, and the shape of your day.",
-  "version": 1,
+  "outcome": "See where measured active time went and choose one concrete change to protect the next focused work period.",
+  "decisions": [
+    "Which projects and applications received the most active time?",
+    "Where did task switching break sustained work?",
+    "What is one evidence-backed adjustment for the next period?"
+  ],
+  "trustBoundary": "Active time excludes idle gaps; project labels and focus patterns remain unavailable where capture cannot support them.",
+  "version": 2,
   "pipes": [
     {
       "name": "time-breakdown",
@@ -34,12 +41,12 @@
         }
       },
       {
-        "id": "focus-score",
-        "title": "Focus score",
+        "id": "sustained-work",
+        "title": "Longest sustained work",
         "kind": "metric.v1",
         "width": 3,
         "order": 1,
-        "intent": "Estimate a 0 to 100 focus score for the selected period from sustained work intervals versus frequent application and task switching. Explain the basis in the delta field.",
+        "intent": "Report the longest evidence-backed interval of active work on one project or workstream. State the continuity and idle-gap rule in the delta field; return unavailable when project continuity cannot be supported.",
         "source": {
           "type": "pipe.v1",
           "pipeName": "time-breakdown"
@@ -58,12 +65,12 @@
         }
       },
       {
-        "id": "focus-over-time",
-        "title": "Focus over time",
+        "id": "workstream-transitions",
+        "title": "Workstream transitions",
         "kind": "line-chart.v1",
         "width": 6,
         "order": 3,
-        "intent": "Show how focused active work changed across the selected period using evenly spaced timestamps and a consistent 0 to 100 focus measure.",
+        "intent": "Count evidence-backed transitions between different projects or workstreams in evenly spaced intervals. Do not count application changes inside the same supported workstream, and show coverage gaps instead of assigning a focus score.",
         "source": {
           "type": "pipe.v1",
           "pipeName": "time-breakdown"
@@ -88,6 +95,18 @@
         "width": 6,
         "order": 5,
         "intent": "Show the major work intervals in chronological order for the selected period, with timestamps, applications, and concise activity context.",
+        "source": {
+          "type": "pipe.v1",
+          "pipeName": "time-breakdown"
+        }
+      },
+      {
+        "id": "next-focus-change",
+        "title": "One change for the next period",
+        "kind": "markdown.v1",
+        "width": 12,
+        "order": 6,
+        "intent": "Recommend one small, reversible change to protect sustained work in the next period, tied to a specific measured pattern above. Define what to observe next time and avoid treating application category as productivity.",
         "source": {
           "type": "pipe.v1",
           "pipeName": "time-breakdown"

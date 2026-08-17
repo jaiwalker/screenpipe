@@ -107,7 +107,7 @@ A workflow qualifies only when the evidence shows it on at least 2 different day
 
 ### 4. Choose one next action
 
-Score the strongest candidates internally on recurrence, observed manual effort, user-visible benefit, trigger clarity, data availability, existing coverage, and risk. Recommend exactly one next action: CREATE one new pipe or REPAIR one named existing pipe. If nothing clears the recurrence and value gates, recommend nothing.
+Score the strongest candidates internally on recurrence, observed manual effort, user-visible benefit, trigger clarity, data availability, existing coverage, and risk. For the strongest candidate, model annual hours only from visible inputs: observed frequency, a source-backed minutes-per-run range, a conservative automatable share, and explicit working periods per year. If any input is missing, mark the annual model unavailable instead of filling it with a guess. Recommend exactly one next action: CREATE one new pipe or REPAIR one named existing pipe. If nothing clears the recurrence and value gates, recommend nothing.
 
 The recommendation must be read-only: it may query screenpipe and write one declared result inside its own output directory, but it must not send messages, call outbound services, modify user files, or take destructive action.
 
@@ -133,6 +133,16 @@ End with exactly: **No automation proposed — I need more repeated evidence.**
 **Frequency:** [observed occurrences across distinct days]
 **Observed effort:** [source-backed minutes or steps; label any estimate]
 **Confidence:** high / medium / low
+
+## Annual opportunity model
+**Formula:** [frequency × minutes per run × automatable share × working periods ÷ 60]
+**Observed inputs:** [each value, range, source, and assumption]
+**Modeled annual hours:** [conservative range, or unavailable with the missing input]
+**Illustrative gross capacity:** [annual hours × $50 / $100 / $150 per recovered hour, or unavailable]
+**Revenue scenario, only when applicable:** [baseline eligible volume × source-backed conversion change × contribution margin, or unavailable]
+**Costs not included:** [build, model/API, maintenance, review, adoption, and realization costs]
+
+Label every dollar figure as an illustrative scenario. Never present it as realized savings, booked revenue, net value, or payback. Do not call recovered capacity revenue or invent a conversion lift; mark the revenue case unavailable without separate baseline, conversion, and margin evidence.
 
 ## Best automation
 **Action:** CREATE [slug] / REPAIR [existing slug]
@@ -204,7 +214,7 @@ export const FALLBACK_TEMPLATES: TemplatePipe[] = [
     description: "Today's accomplishments, key moments, and unfinished work",
     icon: "\u{1F4CB}",
     featured: true,
-    prompt: `Analyze my screen and audio recordings from today (last 16 hours). Read the screenpipe skill first. Use limit=10 per search, max 5 searches total. For app-usage totals, aggregate by app over the time range using whatever screenpipe query tool you have (a COUNT/GROUP BY query or the activity summary). Use only screenpipe's recorded data, not this project's files or other apps' source.
+    prompt: `Analyze my screen and audio recordings from today (last 16 hours). Read the screenpipe skill first. Use limit=10 per search, max 5 searches total. Start with the activity summary and use its measured active-time fields for app-usage totals. Never convert frame counts into duration. Use only screenpipe's recorded data, not this project's files or other apps' source.
 
 Use this exact format:
 
@@ -231,7 +241,7 @@ Only report what you can verify from the data. End with: "**Next step:** [most i
     description: "Where your time went — by app, project, and category",
     icon: "⏱",
     featured: true,
-    prompt: `Analyze my app usage from today (last 12 hours). Read the screenpipe skill first. Use limit=10 per search, max 4 searches. For time per app, aggregate frames by app over the range using whatever screenpipe query tool you have (a COUNT/GROUP BY query or the activity summary). Use only screenpipe's recorded data, not this project's files or other apps' source.
+    prompt: `Analyze my app usage from today (last 12 hours). Read the screenpipe skill first. Use limit=10 per search, max 4 searches. Start with the activity summary and use its measured active-time fields for time by app. Never convert frame counts into duration. Use only screenpipe's recorded data, not this project's files or other apps' source.
 
 Use this exact format with durations and percentages:
 
@@ -244,10 +254,13 @@ Use this exact format with durations and percentages:
 ## By Project
 - Group related activity by project/topic. Name specific repos or tasks.
 
-## Focus Score
-- focused / total as a percentage. Focused = coding + writing; unfocused = browsing + app-switching.
+## Sustained Work
+- Longest evidence-backed interval on one project or workstream, with the continuity and idle-gap rule used. If project continuity is unclear, say unavailable. Do not turn application categories into a focus or productivity score.
 
-End with: "**Suggestion:** [one specific change to improve tomorrow]"`,
+## Workstream Transitions
+- Evidence-backed transitions between different projects or workstreams. Do not count application changes within the same supported workstream.
+
+End with: "**Next experiment:** [one small reversible change, the measured pattern behind it, and what to observe next time]"`,
   },
   {
     name: "missed-todos",

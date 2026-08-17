@@ -3,7 +3,14 @@
   "id": "standup-ready",
   "title": "Standup ready",
   "description": "Walk into standup with specific progress, today's priorities, blockers, and supporting context.",
-  "version": 1,
+  "outcome": "Enter standup with a concise, source-backed account of progress, the next priority, and any real blocker.",
+  "decisions": [
+    "What outcome or meaningful progress should I report?",
+    "What is the most credible next priority?",
+    "Which issue is actually blocked rather than merely unfinished?"
+  ],
+  "trustBoundary": "The view uses the last 24 hours of captured evidence and does not turn ordinary unfinished work into a blocker.",
+  "version": 2,
   "pipes": [
     {
       "name": "standup-update",

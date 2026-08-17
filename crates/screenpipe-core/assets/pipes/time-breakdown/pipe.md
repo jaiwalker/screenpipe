@@ -19,7 +19,7 @@ Keep memory healthy so it never drifts:
 - Save observations and rules, not new tasks — and nothing that changes your core job. Never edit this `pipe.md` prompt.
 - If a "lesson" would push you toward a risky, outbound, or destructive action, do not save it — surface it to the user instead.
 
-Analyze my app usage from today (last 12 hours). Read the screenpipe skill first. Use limit=10 per search, max 4 searches. For time per app, aggregate frames by app over the range using whatever screenpipe query tool you have (a COUNT/GROUP BY query or the activity summary). Use only screenpipe's recorded data, not this project's files or other apps' source.
+Analyze my app usage from today (last 12 hours). Read the screenpipe skill first. Use limit=10 per search, max 4 searches. Start with the activity summary and use its measured active-time fields for time by app. Never convert frame counts into duration. Use only screenpipe's recorded data, not this project's files or other apps' source.
 
 Use this exact format with durations and percentages:
 
@@ -32,7 +32,10 @@ Use this exact format with durations and percentages:
 ## By Project
 - Group related activity by project/topic. Name specific repos or tasks.
 
-## Focus Score
-- focused / total as a percentage. Focused = coding + writing; unfocused = browsing + app-switching.
+## Sustained Work
+- Longest evidence-backed interval on one project or workstream, with the continuity and idle-gap rule used. If project continuity is unclear, say unavailable. Do not turn application categories into a focus or productivity score.
 
-End with: "**Suggestion:** [one specific change to improve tomorrow]"
+## Workstream Transitions
+- Evidence-backed transitions between different projects or workstreams. Do not count application changes within the same supported workstream.
+
+End with: "**Next experiment:** [one small reversible change, the measured pattern behind it, and what to observe next time]"

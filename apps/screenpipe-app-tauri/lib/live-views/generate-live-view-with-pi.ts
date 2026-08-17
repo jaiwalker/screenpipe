@@ -338,7 +338,11 @@ Work in this order:
 2. ${options.pipeAvailability === "store" ? "Choose from the installable tasks listed below." : "Look up scheduled tasks only if a section needs one."}
 3. Call screenpipe_live_view_propose once with the finished change. Fix and retry if it reports problems.
 
-Each Block needs a precise, source-backed intent covering the selected period and how missing evidence is handled. Avoid duplicate Blocks. Reuse the id of every Block you edit.
+Design from the decision backward, not from a list of available metrics. A complete new dashboard should make four things obvious: the outcome or decision, the evidence and baseline behind it, uncertainty or missing coverage, and the next action with a success or stop condition. Use separate Blocks when that makes the reasoning inspectable.
+
+Each Block needs a precise, source-backed intent covering the selected period and how missing evidence is handled. Avoid duplicate Blocks. Reuse the id of every Block you edit. Do not use a synthetic score when the underlying measured quantity can be shown directly.
+
+When money is material to the user's goal, show the formula and visible inputs before the result. Separate observed frequency and time, modeled annual hours, illustrative hourly-rate scenarios, implementation and operating costs, and realization assumptions. Never label modeled capacity as realized savings, booked revenue, net value, or payback.
 ${storeCandidates}
 
 ${editing ? EDIT_EXAMPLES : ""}

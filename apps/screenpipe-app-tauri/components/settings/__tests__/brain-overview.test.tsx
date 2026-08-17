@@ -283,7 +283,10 @@ const dailyMemoryTemplate = {
   id: "daily-memory",
   title: "Daily memory",
   description: "Remember what changed and where to resume.",
-  version: 1,
+  outcome: "Know what moved forward and where to resume next.",
+  decisions: ["What changed?", "Where should I resume?"],
+  trustBoundary: "Only captured work is included.",
+  version: 2,
   timeRange: "today" as const,
   periodPolicy: { type: "fixed.v1" as const, value: "today" as const },
   pipes: [
@@ -316,7 +319,10 @@ const processMapTemplate = {
   id: "process-map",
   title: "Process map",
   description: "Map one repeated workflow from trigger to improvement.",
-  version: 1,
+  outcome: "Choose a safe improvement from an observed process.",
+  decisions: ["Where is the bottleneck?", "What should change first?"],
+  trustBoundary: "Unobserved transitions remain unknown.",
+  version: 2,
   timeRange: "7d" as const,
   periodPolicy: {
     type: "selectable.v1" as const,
@@ -328,6 +334,7 @@ const processMapTemplate = {
     "observed-steps",
     "handoffs",
     "bottlenecks",
+    "annual-value-case",
     "controls-and-exceptions",
     "improvement-path",
   ].map((id, order) => ({
@@ -1438,6 +1445,9 @@ describe("BrainOverview", () => {
     ).toContain("min-h-full");
     expect(screen.getByTestId("live-view-template-daily-memory")).toBeTruthy();
     expect(screen.getByTestId("live-view-template-process-map")).toBeTruthy();
+    expect(
+      screen.getByTestId("live-view-template-outcome-process-map").textContent,
+    ).toContain("Choose a safe improvement");
   });
 
   it("keeps a template-generated new dashboard in review until it is saved", async () => {
@@ -1492,6 +1502,15 @@ describe("BrainOverview", () => {
       await screen.findByTestId("preview-live-view-template-daily-memory"),
     );
     fireEvent.click(await screen.findByTestId("overview-apply-template"));
+
+    await waitFor(() =>
+      expect(mocks.generateLiveViewWithPi).toHaveBeenCalledTimes(1),
+    );
+    const builderRequest = mocks.generateLiveViewWithPi.mock.calls[0][0].prompt;
+    expect(builderRequest).toContain(dailyMemoryTemplate.outcome);
+    expect(builderRequest).toContain(dailyMemoryTemplate.decisions[0]);
+    expect(builderRequest).toContain(dailyMemoryTemplate.trustBoundary);
+    expect(builderRequest).toContain('"id":"today-in-brief"');
 
     expect(await screen.findByText(generatedView.title)).toBeTruthy();
     expect(screen.getByText(generatedView.note)).toBeTruthy();
