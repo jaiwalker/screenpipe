@@ -13,10 +13,9 @@ import {
 } from "@/lib/utils/transcript-sufficiency";
 
 /**
- * One page of `fetchMeetingAudio`. A saturated page is already far more
- * transcript than any sparse meeting can produce, so the rest of the rows
- * cannot change the verdict — the probe stays bounded no matter how long the
- * meeting ran.
+ * One bounded page of `fetchMeetingAudio`. Every returned row is still
+ * inspected: a saturated page can contain empty/device-marker rows and row
+ * count alone is not evidence that speech was transcribed.
  */
 export const SUFFICIENCY_PROBE_CAP = 200;
 
@@ -62,16 +61,13 @@ export function useMeetingTranscriptSufficiency(
           meetingId,
         );
         if (cancelled) return;
-        const value: TranscriptSufficiency =
-          rows.length >= SUFFICIENCY_PROBE_CAP
-            ? { kind: "sufficient" }
-            : assessTranscriptSufficiency(
-                summarizeTranscriptCoverage(rows, {
-                  meeting_start: start,
-                  meeting_end: end,
-                }),
-                { ended: true },
-              );
+        const value = assessTranscriptSufficiency(
+          summarizeTranscriptCoverage(rows, {
+            meeting_start: start,
+            meeting_end: end,
+          }),
+          { ended: true },
+        );
         setProbed({ token, value });
       } catch {
         if (!cancelled) setProbed({ token, value: { kind: "sufficient" } });

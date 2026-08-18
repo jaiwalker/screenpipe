@@ -70,7 +70,15 @@ export function expectedWordFloor(durationMs: number): number {
 function countWords(text: string): number {
   const trimmed = text.trim();
   if (!trimmed) return 0;
-  return trimmed.split(/\s+/).length;
+  // Whitespace splitting turns an entire Chinese/Japanese transcript into one
+  // "word". Intl.Segmenter follows Unicode word boundaries and is available in
+  // the app's WebView/Node targets, while preserving ordinary Latin counts.
+  const segmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+  let words = 0;
+  for (const segment of segmenter.segment(trimmed)) {
+    if (segment.isWordLike) words += 1;
+  }
+  return words;
 }
 
 function durationMsBetween(

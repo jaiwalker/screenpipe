@@ -49,7 +49,7 @@ describe("useMeetingTranscriptSufficiency", () => {
     await waitFor(() => expect(result.current.kind).toBe("sparse"));
   });
 
-  it("short-circuits a saturated page without counting words", async () => {
+  it("does not treat a saturated page of empty rows as sufficient", async () => {
     mocks.fetchMeetingAudio.mockResolvedValue(
       Array.from({ length: SUFFICIENCY_PROBE_CAP }, () => chunk("")),
     );
@@ -58,7 +58,7 @@ describe("useMeetingTranscriptSufficiency", () => {
       useMeetingTranscriptSufficiency(meeting, { isLive: false }),
     );
 
-    await waitFor(() => expect(result.current.kind).toBe("sufficient"));
+    await waitFor(() => expect(result.current.kind).toBe("empty"));
   });
 
   it("never probes a live meeting", async () => {

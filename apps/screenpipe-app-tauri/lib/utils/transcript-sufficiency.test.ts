@@ -133,6 +133,18 @@ describe("assessTranscriptSufficiency", () => {
     );
   });
 
+  it("counts CJK words without requiring whitespace separators", () => {
+    const coverage = summarizeTranscriptCoverage(
+      [{ transcription: "讨论".repeat(100), isInput: true }],
+      meeting(11),
+    );
+
+    expect(coverage.wordCount).toBeGreaterThanOrEqual(55);
+    expect(assessTranscriptSufficiency(coverage, { ended: true }).kind).toBe(
+      "sufficient",
+    );
+  });
+
   it("treats an unknown duration as unjudgeable rather than sparse", () => {
     const coverage = summarizeTranscriptCoverage([words(2)], {
       meeting_start: "2026-08-14T22:29:38.000Z",
