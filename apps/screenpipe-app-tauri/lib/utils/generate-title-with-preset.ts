@@ -93,6 +93,7 @@ function buildTitleProviderConfig(preset: AIPreset): PiProviderConfig {
     maxTokens: Math.min(effectivePreset.maxTokens ?? 4_096, 4_096),
     maxContextChars: effectivePreset.maxContextChars,
     systemPrompt: null,
+    aiSurface: "system",
   };
 }
 

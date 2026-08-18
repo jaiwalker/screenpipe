@@ -30,6 +30,7 @@ const allowanceError = new HostedChatAllowanceExceededError({
 	plan: 'business_max',
 	lane: 'auto',
 	workload: 'background',
+	surface: 'pipe',
 });
 
 function streamResponse(events: unknown[], splitAt?: number): Response {

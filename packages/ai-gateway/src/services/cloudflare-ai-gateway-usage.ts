@@ -360,7 +360,12 @@ function metadataFromRow(row: UsageRow): HostedChatGatewayContext | null {
 			typeof value.plan !== 'string' ||
 			typeof value.workload !== 'string'
 		) return null;
-		return value as HostedChatGatewayContext;
+		return {
+			...value,
+			// Rows written before surface attribution remain part of the combined
+			// hard-cap meter. Missing metadata is never treated as zero usage.
+			surface: value.surface ?? 'unknown',
+		} as HostedChatGatewayContext;
 	} catch {
 		return null;
 	}

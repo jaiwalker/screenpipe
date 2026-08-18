@@ -19,6 +19,7 @@ const context: HostedChatGatewayContext = {
 	plan: 'basic',
 	lane: 'auto',
 	workload: 'interactive',
+	surface: 'chat',
 	trial: false,
 };
 
@@ -186,6 +187,13 @@ describe('Cloudflare hosted-chat usage', () => {
 							workload: { mode: 'partition' },
 						},
 					},
+					{
+						...laneRule('surface', 'auto', 10),
+						metadata: {
+							...laneRule('surface', 'auto', 10).metadata,
+							surface: { mode: 'filter', values: ['meeting'] },
+						},
+					},
 				]);
 			}
 			throw new Error(`analytics should not run without representable rules: ${url}`);
@@ -202,8 +210,8 @@ describe('Cloudflare hosted-chat usage', () => {
 		expect(warnings[0][1]).toMatchObject({
 			plan: 'basic',
 			spend_limits_enabled: true,
-			raw_rule_count: 3,
-			normalized_rule_count: 3,
+			raw_rule_count: 4,
+			normalized_rule_count: 4,
 		});
 		expect(JSON.stringify(warnings[0])).not.toContain('"limit"');
 	});

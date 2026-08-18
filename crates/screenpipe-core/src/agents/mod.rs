@@ -36,6 +36,27 @@ pub struct AgentOutput {
     pub pid: Option<u32>,
 }
 
+/// Low-cardinality product surface used for hosted-AI cost attribution.
+/// This is independent from the selected model/frontier lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRequestSurface {
+    Meeting,
+    ScheduledTask,
+    Pipe,
+    Onboarding,
+}
+
+impl AgentRequestSurface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Meeting => "meeting",
+            Self::ScheduledTask => "scheduled_task",
+            Self::Pipe => "pipe",
+            Self::Onboarding => "onboarding",
+        }
+    }
+}
+
 /// Handle to a running agent process (used for cancellation).
 #[derive(Debug, Clone)]
 pub struct ExecutionHandle {
@@ -179,6 +200,7 @@ pub trait AgentExecutor: Send + Sync {
         // doesn't set it; only the pi executor (which spawns the subprocess)
         // acts on it.
         _session_owner: Option<&str>,
+        _request_surface: AgentRequestSurface,
     ) -> Result<AgentOutput> {
         let output = self
             .run(

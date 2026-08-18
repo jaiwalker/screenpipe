@@ -374,6 +374,7 @@ function providerConfig(preset: AIPreset): PiProviderConfig {
       ? { maxContextChars: effectivePreset.maxContextChars }
       : {}),
     systemPrompt: null,
+    aiSurface: "system",
     // This foreground editor only needs to read Live Views, look up scheduled
     // tasks, and submit a reviewable proposal. Restrict the runtime itself so
     // normal Chat, MCP, web, filesystem, and artifact tools are never

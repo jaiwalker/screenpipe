@@ -11,6 +11,7 @@ import {
 	gatewayProviderForModel,
 	getHostedChatGatewayConnection,
 	getHostedChatGatewayMode,
+	hostedChatSurfaceForRequest,
 	isCloudflareSpendLimitError,
 	withHostedChatLane,
 } from '../services/cloudflare-ai-gateway';
@@ -33,7 +34,7 @@ describe('Cloudflare hosted-chat metadata', () => {
 		expect(getHostedChatGatewayMode({ HOSTED_CHAT_GATEWAY_MODE: 'CLOUDFLARE' })).toBe('cloudflare');
 	});
 
-	it('hashes the account identity and sends only the five reviewed fields', async () => {
+	it('hashes the account identity and sends only the six reviewed fields', async () => {
 		const first = await buildHostedChatGatewayContext(auth(), 'auto', 'interactive');
 		const second = await buildHostedChatGatewayContext(
 			auth({ deviceId: 'different-device' }),
@@ -45,8 +46,17 @@ describe('Cloudflare hosted-chat metadata', () => {
 		expect(first.user_id).toMatch(/^[a-f0-9]{64}$/);
 		expect(JSON.stringify(first)).not.toContain('account-123');
 		expect(JSON.stringify(first)).not.toContain('device-secret');
-		expect(Object.keys(first).sort()).toEqual(['lane', 'plan', 'trial', 'user_id', 'workload']);
-		expect(first).toMatchObject({ plan: 'basic', lane: 'auto', workload: 'interactive', trial: false });
+		expect(Object.keys(first).sort()).toEqual(['lane', 'plan', 'surface', 'trial', 'user_id', 'workload']);
+		expect(first).toMatchObject({ plan: 'basic', lane: 'auto', workload: 'interactive', surface: 'unknown', trial: false });
+	});
+
+	it('allowlists product surfaces and keeps legacy chat/pipe attribution', () => {
+		const request = (headers: Record<string, string> = {}) => new Request('https://example.test', { headers });
+		expect(hostedChatSurfaceForRequest(request({ 'x-screenpipe-surface': 'meeting' }), 'background')).toBe('meeting');
+		expect(hostedChatSurfaceForRequest(request({ 'x-screenpipe-surface': 'user-controlled-value' }), 'interactive')).toBe('unknown');
+		expect(hostedChatSurfaceForRequest(request({ 'x-screenpipe-workload': 'pipe' }), 'background')).toBe('pipe');
+		expect(hostedChatSurfaceForRequest(request(), 'interactive')).toBe('chat');
+		expect(hostedChatSurfaceForRequest(request(), 'background')).toBe('unknown');
 	});
 
 	it('preserves Max and Ultra allowance tiers while collapsing catalog-equivalent plans', async () => {

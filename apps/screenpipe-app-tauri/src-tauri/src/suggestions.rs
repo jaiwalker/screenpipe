@@ -1449,6 +1449,7 @@ async fn generate_ai_suggestions(
         .header("Authorization", format!("Bearer {}", config.token))
         // Suggestions run in the background (no user waiting) -> flex tier.
         .header("x-screenpipe-latency", "background")
+        .header("x-screenpipe-surface", "suggestions")
         .json(&serde_json::json!({
             "model": "auto",
             "messages": [

@@ -1804,6 +1804,38 @@ pub enum PiBackend {
     Acp,
 }
 
+/// Privacy-safe, low-cardinality product surface attached to hosted AI calls.
+/// Model lane (including frontier) remains a separate Gateway dimension.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum PiAiSurface {
+    Chat,
+    Meeting,
+    Timeline,
+    ScheduledTask,
+    Pipe,
+    Suggestions,
+    Onboarding,
+    System,
+    Unknown,
+}
+
+impl PiAiSurface {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Meeting => "meeting",
+            Self::Timeline => "timeline",
+            Self::ScheduledTask => "scheduled_task",
+            Self::Pipe => "pipe",
+            Self::Suggestions => "suggestions",
+            Self::Onboarding => "onboarding",
+            Self::System => "system",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Configuration for which AI provider Pi should use.
 /// Not `Hash` (it carries an `env: HashMap` via the ACP agent config); the
 /// launch fingerprint hashes a canonical serialization instead.
@@ -1835,6 +1867,10 @@ pub struct PiProviderConfig {
     /// Optional system prompt from AI preset (appended to Pi's built-in system prompt)
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Product surface used only for Cloudflare Gateway attribution/rules.
+    /// The combined per-user plan rule remains the hard spend ceiling.
+    #[serde(default)]
+    pub ai_surface: Option<PiAiSurface>,
     /// Optional exact Pi tool allowlist for bounded agent surfaces. `None`
     /// preserves the normal Chat tool surface; an empty list disables tools.
     #[serde(default)]
@@ -2000,6 +2036,9 @@ async fn build_models_json_with_api_url(
         "api": "openai-completions",
         "apiKey": api_key_value,
         "authHeader": true,
+        "headers": {
+            "x-screenpipe-surface": "$SCREENPIPE_AI_SURFACE"
+        },
         "models": models
     });
     providers_map.insert("screenpipe".to_string(), screenpipe_provider);
@@ -3111,6 +3150,11 @@ pub async fn pi_start_inner(
     });
 
     if !use_acp {
+        let surface = provider_config
+            .as_ref()
+            .and_then(|config| config.ai_surface)
+            .unwrap_or(PiAiSurface::Unknown);
+        cmd.env("SCREENPIPE_AI_SURFACE", surface.as_str());
         if let Some(ref token) = user_token {
             cmd.env("SCREENPIPE_API_KEY", token);
         }
@@ -5611,6 +5655,7 @@ mod tests {
             max_tokens: 4096,
             max_context_chars: Some(512_000),
             system_prompt: Some("system context".to_string()),
+            ai_surface: None,
             allowed_tools: None,
             resume_session_id: None,
         };
@@ -6910,7 +6955,7 @@ error: InstallFailed extracting tarball"#;
 
     use super::{
         build_models_json, build_models_json_with_api_url, pi_registry_provider, resolve_pi_model,
-        PiProviderConfig, ACP_PRESET_WITHOUT_BACKEND,
+        PiAiSurface, PiProviderConfig, ACP_PRESET_WITHOUT_BACKEND,
     };
 
     fn make_provider_config(provider: &str, model: &str) -> PiProviderConfig {
@@ -6924,6 +6969,7 @@ error: InstallFailed extracting tarball"#;
             max_tokens: 4096,
             max_context_chars: Some(512_000),
             system_prompt: None,
+            ai_surface: None,
             allowed_tools: None,
             resume_session_id: None,
         }
@@ -6986,12 +7032,18 @@ error: InstallFailed extracting tarball"#;
 
     #[test]
     fn known_providers_still_map_as_before() {
-        assert_eq!(pi_registry_provider("openai", "").unwrap(), "openai-byok");
+        assert_eq!(
+            pi_registry_provider("openai", "").unwrap(),
+            "openai-byok"
+        );
         assert_eq!(
             pi_registry_provider("openai-chatgpt", "").unwrap(),
             "openai-chatgpt"
         );
-        assert_eq!(pi_registry_provider("native-ollama", "").unwrap(), "ollama");
+        assert_eq!(
+            pi_registry_provider("native-ollama", "").unwrap(),
+            "ollama"
+        );
         assert_eq!(
             pi_registry_provider("anthropic", "").unwrap(),
             "anthropic-byok"
@@ -7001,10 +7053,26 @@ error: InstallFailed extracting tarball"#;
             "custom"
         );
         // custom without a URL keeps its long-standing cloud fallback
-        assert_eq!(pi_registry_provider("custom", "").unwrap(), "screenpipe");
+        assert_eq!(
+            pi_registry_provider("custom", "").unwrap(),
+            "screenpipe"
+        );
         assert_eq!(
             pi_registry_provider("screenpipe-cloud", "").unwrap(),
             "screenpipe"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_models_json_uses_per_process_surface_header() {
+        let mut pc = make_provider_config("screenpipe-cloud", "auto");
+        pc.ai_surface = Some(PiAiSurface::Timeline);
+
+        let config = build_models_json(None, Some(&pc)).await;
+        let provider = &config["providers"]["screenpipe"];
+        assert_eq!(
+            provider["headers"]["x-screenpipe-surface"],
+            "$SCREENPIPE_AI_SURFACE"
         );
     }
 

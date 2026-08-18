@@ -1213,7 +1213,8 @@ impl PiExecutor {
                 "authHeader": true,
                 "headers": {
                     "x-screenpipe-latency": "background",
-                    "x-screenpipe-workload": "pipe"
+                    "x-screenpipe-workload": "pipe",
+                    "x-screenpipe-surface": "$SCREENPIPE_AI_SURFACE"
                 },
                 "models": models
             });
@@ -1570,12 +1571,14 @@ impl PiExecutor {
         shared_pid: Option<super::SharedPid>,
         continue_session: bool,
         pipe_system_prompt: Option<&str>,
+        request_surface: super::AgentRequestSurface,
     ) -> Result<AgentOutput> {
         let mut cmd = build_async_command(pi_path);
         cmd.current_dir(working_dir);
         apply_pi_isolation_env(&mut |k, v| {
             cmd.env(k, v);
         });
+        cmd.env("SCREENPIPE_AI_SURFACE", request_surface.as_str());
         // Flags MUST come before -p on Windows (see spawn_pi_streaming comment)
         if continue_session {
             cmd.arg("--continue");
@@ -1715,12 +1718,14 @@ impl PiExecutor {
         pipe_system_prompt: Option<&str>,
         mcp_server_allowlist: Option<&[String]>,
         session_owner: Option<&str>,
+        request_surface: super::AgentRequestSurface,
     ) -> Result<AgentOutput> {
         let mut cmd = build_async_command(pi_path);
         cmd.current_dir(working_dir);
         apply_pi_isolation_env(&mut |k, v| {
             cmd.env(k, v);
         });
+        cmd.env("SCREENPIPE_AI_SURFACE", request_surface.as_str());
         // Flags MUST come before -p on Windows: cmd.exe /C passes everything
         // as a single string, and the long prompt text can break arg parsing
         // if flags come after it.
@@ -1966,6 +1971,7 @@ impl AgentExecutor for PiExecutor {
         // 1. Explicit provider from pipe frontmatter → use it
         // 2. No provider specified → screenpipe cloud (default)
         let resolved_provider = provider.unwrap_or("screenpipe").to_string();
+        let request_surface = super::AgentRequestSurface::Pipe;
 
         let (resolved_model, fell_back_from) = self
             .resolve_screenpipe_model(model, &resolved_provider)
@@ -2022,6 +2028,7 @@ impl AgentExecutor for PiExecutor {
                 shared_pid.clone(),
                 continue_session,
                 None, // no pipe system prompt for trait-based calls
+                request_surface,
             )
             .await?;
 
@@ -2058,6 +2065,7 @@ impl AgentExecutor for PiExecutor {
                     None,
                     continue_session,
                     None,
+                    request_surface,
                 )
                 .await;
         }
@@ -2080,6 +2088,7 @@ impl AgentExecutor for PiExecutor {
         pipe_system_prompt: Option<&str>,
         mcp_server_allowlist: Option<&[String]>,
         session_owner: Option<&str>,
+        request_surface: super::AgentRequestSurface,
     ) -> Result<AgentOutput> {
         let resolved_provider = provider.unwrap_or("screenpipe").to_string();
         let (resolved_model, fell_back_from) = self
@@ -2148,6 +2157,7 @@ impl AgentExecutor for PiExecutor {
                 pipe_system_prompt,
                 mcp_server_allowlist,
                 session_owner,
+                request_surface,
             )
             .await?;
 
@@ -2183,6 +2193,7 @@ impl AgentExecutor for PiExecutor {
                     pipe_system_prompt,
                     mcp_server_allowlist,
                     session_owner,
+                    request_surface,
                 )
                 .await?;
         }
@@ -2220,6 +2231,7 @@ impl AgentExecutor for PiExecutor {
                 pipe_system_prompt,
                 mcp_server_allowlist,
                 session_owner,
+                request_surface,
             )
         })
         .await?;
@@ -5220,6 +5232,9 @@ mod tests {
         )
         .await
         .expect("ensure_pi_config should succeed");
+        PiExecutor::ensure_pi_config(None, SCREENPIPE_API_URL, None, Some("auto"), None)
+            .await
+            .expect("hosted screenpipe config should merge alongside ollama");
 
         // Read models.json and verify ollama provider was added
         let config_dir = get_pi_config_dir().unwrap();
@@ -5228,6 +5243,11 @@ mod tests {
         let config: serde_json::Value = serde_json::from_str(&content).unwrap();
 
         let providers = config.get("providers").unwrap().as_object().unwrap();
+
+        assert_eq!(
+            providers["screenpipe"]["headers"]["x-screenpipe-surface"],
+            "$SCREENPIPE_AI_SURFACE"
+        );
 
         // Ollama provider must be present
         assert!(providers.contains_key("ollama"), "missing ollama provider");

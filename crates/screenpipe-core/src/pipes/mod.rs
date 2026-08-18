@@ -22,7 +22,7 @@ pub(crate) mod trajectory;
 
 use crate::agents::{
     pi::{pi_event_protocol_error, pi_package_enabled, PiExecutor},
-    AgentExecutor, ExecutionHandle, SharedPid, STOP_REQUESTED_PID,
+    AgentExecutor, AgentRequestSurface, ExecutionHandle, SharedPid, STOP_REQUESTED_PID,
 };
 use crate::pipes::builtin_migrations::migrate_builtin_pipe_text;
 use crate::pipes::connections::parse_mcp_connection_id;
@@ -3380,6 +3380,11 @@ impl PipeManager {
         run_context: Option<&str>,
         event_context: Option<BackgroundEventContext>,
     ) -> Result<Option<i64>> {
+        let request_surface = match event_context.as_ref().map(|event| event.name.as_str()) {
+            Some("meeting_ended") => AgentRequestSurface::Meeting,
+            _ if trigger == "onboarding" => AgentRequestSurface::Onboarding,
+            _ => AgentRequestSurface::Pipe,
+        };
         let (config, body, _raw) = {
             let pipes = self.pipes.lock().await;
             match pipes.get(name).cloned() {
@@ -3712,6 +3717,7 @@ impl PipeManager {
                     // sidebar shows navigations when the user is watching this
                     // pipe.
                     Some(session_owner.as_str()),
+                    request_surface,
                 ),
             )
             .await;
@@ -3941,6 +3947,11 @@ impl PipeManager {
         retry_depth: usize,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<PipeRunLog>> + Send + 'a>> {
         Box::pin(async move {
+            let request_surface = if trigger == "onboarding" {
+                AgentRequestSurface::Onboarding
+            } else {
+                AgentRequestSurface::Pipe
+            };
             let (config, body, _raw) = {
                 let pipes = self.pipes.lock().await;
                 match pipes.get(name).cloned() {
@@ -4264,6 +4275,7 @@ impl PipeManager {
                     // sidebar shows navigations when the user is watching this
                     // pipe.
                     Some(session_owner.as_str()),
+                    request_surface,
                 ),
             )
             .await;
@@ -5814,6 +5826,15 @@ impl PipeManager {
                         }
                     };
 
+                    let request_surface = if event_triggered
+                        .get(name)
+                        .is_some_and(|event| event.name == "meeting_ended")
+                    {
+                        AgentRequestSurface::Meeting
+                    } else {
+                        AgentRequestSurface::ScheduledTask
+                    };
+
                     // Pre-configure pi with the pipe's provider
                     let mut pipe_token: Option<String> = None;
                     if config.agent == "pi" {
@@ -6083,6 +6104,7 @@ impl PipeManager {
                                 // Owner tag — must match pipeSessionId() on the
                                 // frontend. See run_pipe_with_trigger.
                                 Some(session_owner.as_str()),
+                                request_surface,
                             ),
                         )
                         .await;

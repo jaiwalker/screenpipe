@@ -189,6 +189,7 @@ function buildProviderConfig(preset: AIPreset): PiProviderConfig {
     apiKey: ("apiKey" in preset ? (preset.apiKey as string) : null) || null,
     maxContextChars: preset.maxContextChars,
     systemPrompt: null,
+    aiSurface: "onboarding",
   };
 }
 

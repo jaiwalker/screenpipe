@@ -95,6 +95,7 @@ import {
 import { resolveModelAlias } from './providers';
 import {
 	buildHostedChatGatewayContext,
+	hostedChatSurfaceForRequest,
 	isHostedChatGatewayEnabled,
 	type HostedChatGatewayContext,
 } from './services/cloudflare-ai-gateway';
@@ -701,8 +702,14 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 			// Serialize priced work within its foreground/background lane. A scheduled
 			// pipe must not block a user who is actively waiting in chat.
 			const latency = resolveLatencyClass(request, body, env);
+			const requestSurface = hostedChatSurfaceForRequest(request, latency);
 			const gatewayContext = cloudflareGateway
-				? await buildHostedChatGatewayContext(authResult, body.model, latency)
+				? await buildHostedChatGatewayContext(
+					authResult,
+					body.model,
+					latency,
+					requestSurface,
+				)
 				: undefined;
 			let dailyCostReservation: DailyCostHold | null = null;
 			if (!cloudflareGateway && !legacyRescueFallback) {
@@ -834,6 +841,7 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 					served_tier: response.headers.get('x-screenpipe-served-tier'),
 					router_tier: routerTier,
 					workload: latency,
+					surface: requestSurface,
 					gateway_mode: cloudflareGateway ? 'cloudflare' : 'legacy',
 					latency_ms: latencyMs,
 					status_code: response.status,

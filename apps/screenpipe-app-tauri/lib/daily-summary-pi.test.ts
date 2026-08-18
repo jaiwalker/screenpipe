@@ -117,6 +117,7 @@ describe("runDailySummaryWithPi", () => {
       expect.objectContaining({
         provider: "screenpipe-cloud",
         model: "auto",
+        aiSurface: "timeline",
         systemPrompt: expect.stringContaining(
           "private Timeline daily-summary agent",
         ),

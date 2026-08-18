@@ -276,6 +276,7 @@ function assertPipeHeaders(requests: CapturedGatewayRequest[]): string {
   expect(requests.length).toBeGreaterThan(0);
   const affinities = requests.map((request) => {
     expect(request.headers["x-screenpipe-workload"]).toBe("pipe");
+    expect(request.headers["x-screenpipe-surface"]).toBe("pipe");
     const affinity = request.headers["x-session-affinity"]?.trim();
     expect(affinity).toBeTruthy();
     if (!affinity) throw new Error("Pi sent a blank x-session-affinity header");

@@ -220,6 +220,7 @@ export function usePiSessionLifecycle({
       maxTokens: p.maxTokens ?? 4096,
       maxContextChars: p.maxContextChars ?? null,
       systemPrompt,
+      aiSurface: "chat",
       resumeSessionId,
     };
   }, [

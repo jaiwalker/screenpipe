@@ -55,6 +55,7 @@ export function buildDailySummaryProviderConfig(
     ),
     maxContextChars: effectivePreset.maxContextChars,
     systemPrompt: [presetPrompt, systemPrompt].filter(Boolean).join("\n\n"),
+    aiSurface: "timeline",
   };
 }
 

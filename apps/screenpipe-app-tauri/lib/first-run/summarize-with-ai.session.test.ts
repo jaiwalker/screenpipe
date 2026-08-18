@@ -82,10 +82,12 @@ describe("summarizeFirstRunWithAi — session lifecycle", () => {
     expect(await pending).toBe(GOOD);
 
     // Runs in its own throwaway session so it can never reach the sidebar.
-    const [sessionId, dir, token] = piStart.mock.calls[0] as unknown as string[];
+    const [sessionId, dir, token, providerConfig] = piStart.mock
+      .calls[0] as unknown as [string, string, string, { aiSurface?: string }];
     expect(sessionId.startsWith("__title:first-run-")).toBe(true);
     expect(dir).toContain("pi-first-run");
     expect(token).toBe("token");
+    expect(providerConfig.aiSurface).toBe("onboarding");
     expect(piStop).toHaveBeenCalledWith(sessionId);
   });
 

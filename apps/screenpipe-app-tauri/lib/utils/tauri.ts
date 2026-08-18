@@ -3028,6 +3028,11 @@ downloaded: boolean;
  * True when download failed with 401/403 — user must sign in.
  */
 auth_required: boolean }
+/**
+ * Privacy-safe, low-cardinality product surface attached to hosted AI calls.
+ * Model lane (including frontier) remains a separate Gateway dimension.
+ */
+export type PiAiSurface = "chat" | "meeting" | "timeline" | "scheduled_task" | "pipe" | "suggestions" | "onboarding" | "system" | "unknown"
 export type PiBackend = "acp"
 export type PiCheckResult = { available: boolean; path: string | null }
 export type PiExtensionPackage = { source: string; scope: string; filtered: boolean; installed: boolean;
@@ -3095,6 +3100,11 @@ maxContextChars?: number | null;
  * Optional system prompt from AI preset (appended to Pi's built-in system prompt)
  */
 systemPrompt?: string | null;
+/**
+ * Product surface used only for Cloudflare Gateway attribution/rules.
+ * The combined per-user plan rule remains the hard spend ceiling.
+ */
+aiSurface?: PiAiSurface | null;
 /**
  * Optional exact Pi tool allowlist for bounded agent surfaces. `None`
  * preserves the normal Chat tool surface; an empty list disables tools.

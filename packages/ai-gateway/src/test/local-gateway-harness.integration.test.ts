@@ -30,7 +30,10 @@ describe('local AI gateway harness', () => {
 
 		const completion = await harness.fetch('/chat/completions', {
 			method: 'POST',
-			headers: { 'content-type': 'application/json' },
+			headers: {
+				'content-type': 'application/json',
+				'x-screenpipe-surface': 'timeline',
+			},
 			body: JSON.stringify({
 				model: 'gpt-5.4-mini',
 				stream: false,
@@ -132,7 +135,10 @@ describe('local AI gateway harness', () => {
 
 		const completion = await harness.fetch('/chat/completions', {
 			method: 'POST',
-			headers: { 'content-type': 'application/json' },
+			headers: {
+				'content-type': 'application/json',
+				'x-screenpipe-surface': 'timeline',
+			},
 			body: JSON.stringify({
 				model: 'gpt-5.6-sol',
 				stream: false,
@@ -147,8 +153,8 @@ describe('local AI gateway harness', () => {
 		);
 		expect(gatewayRequest).toBeDefined();
 		const metadata = JSON.parse(gatewayRequest?.headers['cf-aig-metadata'] ?? '{}');
-		expect(Object.keys(metadata).sort()).toEqual(['lane', 'plan', 'trial', 'user_id', 'workload']);
-		expect(metadata).toMatchObject({ plan: 'internal', lane: 'frontier', workload: 'interactive' });
+		expect(Object.keys(metadata).sort()).toEqual(['lane', 'plan', 'surface', 'trial', 'user_id', 'workload']);
+		expect(metadata).toMatchObject({ plan: 'internal', lane: 'frontier', workload: 'interactive', surface: 'timeline' });
 		harness.assertNoUnexpectedOutboundRequests();
 	});
 });

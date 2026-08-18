@@ -11,6 +11,16 @@ export type HostedChatPlan = 'free' | 'basic' | 'business' | 'business_max' | 'b
 export type HostedChatLane = 'auto' | 'explicit' | 'frontier';
 export type HostedChatRequestLane = Exclude<HostedChatLane, 'frontier'>;
 export type HostedChatWorkload = 'interactive' | 'background';
+export type HostedChatSurface =
+	| 'chat'
+	| 'meeting'
+	| 'timeline'
+	| 'scheduled_task'
+	| 'pipe'
+	| 'suggestions'
+	| 'onboarding'
+	| 'system'
+	| 'unknown';
 export type CloudflareGatewayProvider = 'openai' | 'anthropic';
 export type HostedChatLimitScope = 'combined' | 'frontier' | 'unknown';
 
@@ -19,6 +29,7 @@ export interface HostedChatGatewayContext {
 	plan: HostedChatPlan;
 	lane: HostedChatLane;
 	workload: HostedChatWorkload;
+	surface: HostedChatSurface;
 	trial: boolean;
 }
 
@@ -107,11 +118,44 @@ export async function hostedChatActorId(auth: AuthResult): Promise<string> {
 	return sha256Hex(`screenpipe-hosted-chat:v1:${identity}`);
 }
 
-/** Build the five reviewed metadata fields Cloudflare receives. No prompt data is included. */
+const HOSTED_CHAT_SURFACES = new Set<HostedChatSurface>([
+	'chat',
+	'meeting',
+	'timeline',
+	'scheduled_task',
+	'pipe',
+	'suggestions',
+	'onboarding',
+	'system',
+	'unknown',
+]);
+
+/**
+ * Resolve a low-cardinality product surface without ever forwarding an
+ * arbitrary client value to Cloudflare metadata. Older clients retain useful
+ * chat/pipe attribution; an explicit invalid value fails closed to unknown.
+ */
+export function hostedChatSurfaceForRequest(
+	request: Request,
+	workload: HostedChatWorkload,
+): HostedChatSurface {
+	const raw = request.headers.get('x-screenpipe-surface');
+	if (raw !== null) {
+		const normalized = raw.trim().toLowerCase() as HostedChatSurface;
+		return HOSTED_CHAT_SURFACES.has(normalized) ? normalized : 'unknown';
+	}
+	if (request.headers.get('x-screenpipe-workload')?.trim().toLowerCase() === 'pipe') {
+		return 'pipe';
+	}
+	return workload === 'interactive' ? 'chat' : 'unknown';
+}
+
+/** Build the six reviewed metadata fields Cloudflare receives. No prompt data is included. */
 export async function buildHostedChatGatewayContext(
 	auth: AuthResult,
 	model: string,
 	workload: HostedChatWorkload,
+	surface: HostedChatSurface = 'unknown',
 ): Promise<HostedChatGatewayContext> {
 	return {
 		user_id: await hostedChatActorId(auth),
@@ -121,6 +165,7 @@ export async function buildHostedChatGatewayContext(
 			model.toLowerCase() === 'auto' ? 'auto' : 'explicit',
 		),
 		workload,
+		surface,
 		trial: auth.hostedAiTrial === true,
 	};
 }
