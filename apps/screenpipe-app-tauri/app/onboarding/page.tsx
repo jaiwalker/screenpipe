@@ -19,24 +19,24 @@ import { EnterpriseLicensePrompt } from "@/components/enterprise-license-prompt"
 import posthog from "posthog-js";
 import { commands } from "@/lib/utils/tauri";
 import { onboardingFunnel } from "@/lib/analytics/onboarding-funnel";
+import type { AppUser } from "@/lib/app-entitlement";
+import { readOnboardingCheckoutStatus } from "@/lib/onboarding-checkout-navigation";
 
 type SlideKey =
-  | "login"
-  | "acquisition"
-  | "permissions"
-  | "timeline"
-  | "engine"
-  | "plan";
+  "login" | "acquisition" | "permissions" | "timeline" | "engine" | "plan";
 
-const SLIDE_WINDOW_SIZES: Record<SlideKey, { width: number; height: number }> =
-  {
-    login: { width: 500, height: 480 },
-    acquisition: { width: 500, height: 560 },
-    permissions: { width: 500, height: 560 },
-    timeline: { width: 500, height: 680 },
-    engine: { width: 500, height: 620 },
-    plan: { width: 760, height: 720 },
-  };
+// One size for the whole flow. Per-slide sizes made the window jump on every
+// step, worst on "plan", which widened to 760 even though the content column is
+// capped at max-w-lg — 124px of dead margin per side — and was still 42px too
+// short to show the free-plan link. 680 is the tallest any slide previously
+// asked for (timeline), so every other step only gains slack: the permissions
+// wheel and its pause note, which the trust-affordance E2E asserts stay inside
+// the viewport, still fit. Steps that need less stay centered by the wrapper's
+// justify-center, and anything taller still scrolls.
+//
+// Must match the inner_size the Rust side creates the window at, in
+// window/show.rs, so opening onboarding doesn't resize on first paint.
+const ONBOARDING_WINDOW_SIZE = { width: 500, height: 680 };
 
 // When shown, the timeline choice sits before "engine" so disableTimeline is
 // persisted before the engine spawns and reads it — no restart needed.
@@ -103,9 +103,12 @@ const EndowedProgress = ({
   </div>
 );
 
-const setWindowSizeForSlide = async (slide: SlideKey) => {
+// Corrective only: Rust already builds the window at this size. It still runs
+// so a window left at an old per-slide size — an install that upgraded midway
+// through onboarding — snaps back to the shared size instead of staying wide.
+const applyOnboardingWindowSize = async () => {
   try {
-    const { width, height } = SLIDE_WINDOW_SIZES[slide];
+    const { width, height } = ONBOARDING_WINDOW_SIZE;
     await commands.setWindowSize("Onboarding", width, height);
   } catch {
     // non-critical
@@ -114,7 +117,14 @@ const setWindowSizeForSlide = async (slide: SlideKey) => {
 
 export default function OnboardingPage() {
   const { toast } = useToast();
-  const [currentSlide, setCurrentSlide] = useState<SlideKey>("login");
+  const [checkoutReturnStatus] = useState(() =>
+    typeof window === "undefined"
+      ? null
+      : readOnboardingCheckoutStatus(window.location.search),
+  );
+  const [currentSlide, setCurrentSlide] = useState<SlideKey>(() =>
+    checkoutReturnStatus ? "plan" : "login",
+  );
   const [isVisible, setIsVisible] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [permissionsProgress, setPermissionsProgress] = useState<{
@@ -127,6 +137,7 @@ export default function OnboardingPage() {
   );
   const { onboardingData, isLoading, completeOnboarding } = useOnboarding();
   const { settings, isSettingsLoaded } = useSettings();
+  const user = settings.user as AppUser | null | undefined;
   const completedForHiddenUiRef = React.useRef(false);
   const transitioningRef = React.useRef(false);
   const funnelStartedRef = React.useRef(false);
@@ -161,16 +172,46 @@ export default function OnboardingPage() {
     settings.deviceTier === "high"
       ? settings.deviceTier
       : "unknown";
+  const needsOnboardingCheckout =
+    user?.has_payment_method !== true && user?.entitlement_source !== "manual";
   const shouldShowPlanSelection =
-    !isManagedDeployment && settings.user?.cloud_subscribed !== true;
+    !isManagedDeployment &&
+    (checkoutReturnStatus !== null || needsOnboardingCheckout);
+  // New accounts no longer receive the old cardless profile grant, so they
+  // resolve entitlement_source as "none" and enter checkout. Accounts that
+  // already hold a preserved manual grant keep that access without being
+  // forced to add a card. The previous card-ask experiment must not suppress
+  // checkout for an eligible new account.
+  // "plan" is the last slide, so auto-advancing onto it without a token traps
+  // the user in onboarding: PlanSelectionStep cannot open hosted checkout
+  // (it renders "sign in to continue"),
+  // and handleNextSlide stops calling completeOnboarding once a next slide
+  // exists. Someone who skipped sign-in would sit on /onboarding forever.
+  //
+  // This gates only the automatic walk out of the engine slide. The slide stays
+  // in visibleOrder — and so in the progress total and the restore mapping — so
+  // navigating to it directly still renders card capture. That distinction is
+  // load-bearing for the E2E suite: `onboarding-first-run` asserts the slide
+  // EXISTS and renders `onboarding-card-capture` via gotoSlide, while
+  // `onboarding-background-ai-tools` asserts setup FINISHES. Excluding the
+  // slide from visibleOrder instead would satisfy the second and break the
+  // first.
+  const canAdvanceIntoPlanSelection =
+    shouldShowPlanSelection && Boolean(user?.token);
   const visibleOrder = useMemo(
     () =>
       SLIDE_ORDER.filter(
         (s) =>
+          // Nobody on a managed deployment "heard about" screenpipe: their
+          // administrator pushed it. Asking anyway adds a step to an IT
+          // rollout and files those installs under a marketing channel they
+          // never came from, so the attribution this step exists to collect is
+          // worse for having been asked.
+          (s !== "acquisition" || !isManagedDeployment) &&
           (s !== "timeline" || timelineChoiceVisible) &&
           (s !== "plan" || shouldShowPlanSelection),
       ),
-    [shouldShowPlanSelection, timelineChoiceVisible],
+    [isManagedDeployment, shouldShowPlanSelection, timelineChoiceVisible],
   );
   // Read by the hydration-gated restore effect below. Assigned during render,
   // per the ref-mirror rule in CLAUDE.md.
@@ -187,6 +228,19 @@ export default function OnboardingPage() {
       const { loadOnboardingStatus } = useOnboarding.getState();
       await loadOnboardingStatus();
       const { onboardingData } = useOnboarding.getState();
+
+      // Hosted checkout temporarily replaces this webview's local document.
+      // Its explicit complete/cancel return always resumes the plan controller,
+      // even if a stale persisted step predates the outbound navigation.
+      if (checkoutReturnStatus && !isManagedDeployment) {
+        try {
+          await commands.setOnboardingStep("plan");
+        } catch {
+          // non-critical: the in-memory restore below is enough for this run
+        }
+        setCurrentSlide("plan");
+        return;
+      }
 
       if (onboardingData.currentStep && !onboardingData.isCompleted) {
         const step = onboardingData.currentStep as string;
@@ -222,16 +276,23 @@ export default function OnboardingPage() {
           // A saved step must not resume onto a slide that this device or its
           // managed policy is no longer eligible to see.
           const mappedSlide =
-            (mapped === "timeline" && !timelineChoiceVisibleRef.current) ||
-            (mapped === "plan" && !shouldShowPlanSelection)
-              ? "engine"
-              : mapped;
+            mapped === "acquisition" && isManagedDeployment
+              ? // A managed install saved mid-acquisition, from a build that
+                // still asked, resumes at the step that follows it rather than
+                // at the engine: permissions still have to be granted.
+                "permissions"
+              : (mapped === "timeline" && !timelineChoiceVisibleRef.current) ||
+                  (mapped === "plan" && !shouldShowPlanSelection)
+                ? "engine"
+                : mapped;
           setCurrentSlide(mappedSlide);
         }
       }
     };
     init();
   }, [
+    checkoutReturnStatus,
+    isManagedDeployment,
     isManagedDeploymentResolved,
     isSettingsLoaded,
     shouldShowPlanSelection,
@@ -263,9 +324,13 @@ export default function OnboardingPage() {
     onboardingData.isCompleted,
   ]);
 
-  // Set window size + track view when slide changes
+  // The window is sized once, not per slide, so stepping through setup no
+  // longer resizes it under the user.
   useEffect(() => {
-    setWindowSizeForSlide(currentSlide);
+    void applyOnboardingWindowSize();
+  }, []);
+
+  useEffect(() => {
     setIsVisible(true);
     posthog.capture(`onboarding_${currentSlide}_viewed`);
   }, [currentSlide]);
@@ -303,6 +368,9 @@ export default function OnboardingPage() {
     posthog.capture("onboarding_step_reached", {
       step_name: `${currentSlide}_completed`,
       step_index: visibleOrder.indexOf(currentSlide) + 1,
+      // Keep the existing analytics keys stable across the release cutover.
+      card_ask_arm: "required",
+      card_ask_placement_active: true,
     });
 
     // Hidden enterprise deployments only need authentication + permissions.
@@ -351,8 +419,10 @@ export default function OnboardingPage() {
     // for a slide that policy hides, then land on the next visible slide.
     // Consumer onboarding ends on plan selection after the engine is ready.
     // Managed deployments skip that consumer purchase surface.
-    const nextSlide = SLIDE_ORDER.slice(currentIdx + 1).find((s) =>
-      visibleOrder.includes(s),
+    const nextSlide = SLIDE_ORDER.slice(currentIdx + 1).find(
+      (s) =>
+        visibleOrder.includes(s) &&
+        (s !== "plan" || canAdvanceIntoPlanSelection),
     );
     if (!nextSlide) {
       await completeOnboarding({ method: "setup_finished" });
@@ -374,6 +444,7 @@ export default function OnboardingPage() {
       setIsTransitioning(false);
     }, 300);
   }, [
+    canAdvanceIntoPlanSelection,
     completeOnboarding,
     currentSlide,
     deviceTierForAnalytics,
