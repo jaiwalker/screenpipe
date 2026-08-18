@@ -112,4 +112,37 @@ describe("useChatComposerDraftSync", () => {
       expect(setPrefillContext).not.toHaveBeenCalled();
     });
   });
+
+  it("resets Activity attribution when the user starts another conversation", async () => {
+    seedSession("activity-chat");
+    seedSession("new-chat");
+
+    const setPrefillContext = vi.fn();
+    const setPrefillFrameId = vi.fn();
+    const setPrefillSource = vi.fn();
+
+    const { rerender } = renderHook(
+      ({ conversationId }) =>
+        useChatComposerDraftSync({
+          conversationId,
+          input: "Tell me more about this activity.",
+          pastedImages: [],
+          attachedDocs: [],
+          pendingDocs: [],
+          clearConnectionChip: vi.fn(),
+          refreshConnectionState: vi.fn(),
+          prefillSource: "activity-history-chat",
+          setPrefillContext,
+          setPrefillFrameId,
+          setPrefillSource,
+        }),
+      { initialProps: { conversationId: "activity-chat" } },
+    );
+
+    rerender({ conversationId: "new-chat" });
+
+    await waitFor(() => expect(setPrefillSource).toHaveBeenCalledWith("search"));
+    expect(setPrefillContext).toHaveBeenCalledWith(null);
+    expect(setPrefillFrameId).toHaveBeenCalledWith(null);
+  });
 });

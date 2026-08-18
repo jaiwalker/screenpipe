@@ -273,6 +273,7 @@ impl AgentExecutor for SandboxedPiExecutor {
         pipe_system_prompt: Option<&str>,
         _mcp_server_allowlist: Option<&[String]>,
         _session_owner: Option<&str>,
+        _request_surface: screenpipe_core::agents::AgentRequestSurface,
     ) -> Result<AgentOutput> {
         let output = self
             .execute(prompt, working_dir, shared_pid, pipe_system_prompt)

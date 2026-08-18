@@ -85,7 +85,10 @@ import {
   useChatComposerShellActions,
 } from "@/components/chat/standalone/hooks/use-chat-composer-shell";
 import { useChatExternalEvents } from "@/components/chat/standalone/hooks/use-chat-external-events";
-import { usePiSessionLifecycle } from "@/components/chat/standalone/hooks/use-pi-session-lifecycle";
+import {
+  piAiSurfaceForPrefillSource,
+  usePiSessionLifecycle,
+} from "@/components/chat/standalone/hooks/use-pi-session-lifecycle";
 import { useChatTurnIntents } from "@/components/chat/standalone/hooks/use-chat-turn-intents";
 import { usePiSteeringRefs } from "@/components/chat/standalone/hooks/use-pi-steering-transport";
 import { useNextTurnAttachments } from "@/components/chat/standalone/hooks/use-next-turn-attachments";
@@ -972,6 +975,7 @@ export function StandaloneChat({
     syncThinkingLevelAfterStart,
   } = usePiSessionLifecycle({
     activePreset,
+    aiSurface: piAiSurfaceForPrefillSource(prefillSource),
     setActivePreset: handleSetActivePreset,
     aiPresets: settings.aiPresets,
     isSettingsLoaded,

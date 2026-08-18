@@ -52,6 +52,7 @@ describe('Cloudflare hosted-chat metadata', () => {
 
 	it('allowlists product surfaces and keeps legacy chat/pipe attribution', () => {
 		const request = (headers: Record<string, string> = {}) => new Request('https://example.test', { headers });
+		expect(hostedChatSurfaceForRequest(request({ 'x-screenpipe-surface': 'activity' }), 'interactive')).toBe('activity');
 		expect(hostedChatSurfaceForRequest(request({ 'x-screenpipe-surface': 'meeting' }), 'background')).toBe('meeting');
 		expect(hostedChatSurfaceForRequest(request({ 'x-screenpipe-surface': 'user-controlled-value' }), 'interactive')).toBe('unknown');
 		expect(hostedChatSurfaceForRequest(request({ 'x-screenpipe-workload': 'pipe' }), 'background')).toBe('pipe');

@@ -7,6 +7,7 @@ import type { ResolvedPiProviderConfig } from "@/components/chat/standalone/hook
 import type { Settings } from "@/lib/hooks/use-settings";
 import type {
   AIPreset,
+  PiAiSurface,
   PiInfo,
   PiQueuedPrompt,
 } from "@/lib/utils/tauri";
@@ -51,6 +52,7 @@ type PiRunningConfig = {
   maxContextChars: number | null;
   systemPrompt: string | null;
   token: string | null;
+  aiSurface: PiAiSurface | null;
 };
 
 type PiProviderConfigBuilder = (

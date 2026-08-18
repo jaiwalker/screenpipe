@@ -3032,7 +3032,7 @@ auth_required: boolean }
  * Privacy-safe, low-cardinality product surface attached to hosted AI calls.
  * Model lane (including frontier) remains a separate Gateway dimension.
  */
-export type PiAiSurface = "chat" | "meeting" | "timeline" | "scheduled_task" | "pipe" | "suggestions" | "onboarding" | "system" | "unknown"
+export type PiAiSurface = "chat" | "activity" | "meeting" | "timeline" | "scheduled_task" | "pipe" | "suggestions" | "onboarding" | "system" | "unknown"
 export type PiBackend = "acp"
 export type PiCheckResult = { available: boolean; path: string | null }
 export type PiExtensionPackage = { source: string; scope: string; filtered: boolean; installed: boolean;

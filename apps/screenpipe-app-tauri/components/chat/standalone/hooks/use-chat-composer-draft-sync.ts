@@ -47,20 +47,20 @@ export function useChatComposerDraftSync({
     previousConversationIdRef.current = conversationId;
     if (
       previousConversationId === conversationId ||
-      !prefillSource.startsWith("connected-share-")
+      prefillSource === "search"
     ) {
       return;
     }
 
-    if (previousConversationId) {
+    if (previousConversationId && prefillSource.startsWith("connected-share-")) {
       useChatStore.getState().actions.setComposerDraft(previousConversationId, {
         input: "",
         pastedImages: [],
         attachedDocs: [],
         pendingDocs: [],
       });
+      skipDraftMirrorForConversationRef.current = conversationId;
     }
-    skipDraftMirrorForConversationRef.current = conversationId;
     setPrefillContext(null);
     setPrefillFrameId(null);
     setPrefillSource("search");

@@ -1466,6 +1466,7 @@ export function usePiForegroundEvents({
                     maxContextChars: providerConfig.maxContextChars ?? null,
                     systemPrompt: providerConfig.systemPrompt,
                     token: settings.user?.token ?? null,
+                    aiSurface: providerConfig.aiSurface ?? null,
                   };
                 }
               } else {

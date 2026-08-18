@@ -10,7 +10,13 @@ import { piProjectDirForSession } from "@/lib/chat/pi-project-dir";
 import { toast } from "@/components/ui/use-toast";
 import { buildAppAwarenessContext, buildConnectionsContext, buildSystemPrompt } from "@/lib/chat/system-prompt";
 import { isAcpAuthenticationCancelledError, isAcpExternalAuthError } from "@/lib/chat/auth-errors";
-import { commands, type AIPreset, type PiInfo, type PiProviderConfig } from "@/lib/utils/tauri";
+import {
+  commands,
+  type AIPreset,
+  type PiAiSurface,
+  type PiInfo,
+  type PiProviderConfig,
+} from "@/lib/utils/tauri";
 import type { ActivityAppItem, ConnectedIntegration, ConnectionListItem } from "@/lib/chat/connection-suggestions";
 import { useAcpSessionConfig } from "@/lib/stores/acp-session-config";
 import { applyResolvedModelLimits } from "@/lib/model-metadata";
@@ -26,6 +32,7 @@ type PiRunningConfig = {
   maxContextChars: number | null;
   systemPrompt: string | null;
   token: string | null;
+  aiSurface: PiAiSurface | null;
 };
 
 export type ResolvedPiProviderConfig = PiProviderConfig & {
@@ -35,6 +42,7 @@ export type ResolvedPiProviderConfig = PiProviderConfig & {
 
 interface UsePiSessionLifecycleOptions {
   activePreset: AIPreset | undefined;
+  aiSurface: PiAiSurface;
   setActivePreset: React.Dispatch<React.SetStateAction<AIPreset | undefined>>;
   aiPresets: AIPreset[] | undefined;
   isSettingsLoaded: boolean;
@@ -98,8 +106,15 @@ export function enqueuePiPresetSwitch({
   return switchPromise;
 }
 
+export function piAiSurfaceForPrefillSource(source: string): PiAiSurface {
+  if (source.startsWith("activity-history-")) return "activity";
+  if (source === "timeline") return "timeline";
+  return "chat";
+}
+
 export function usePiSessionLifecycle({
   activePreset,
+  aiSurface,
   setActivePreset,
   aiPresets,
   isSettingsLoaded,
@@ -122,6 +137,7 @@ export function usePiSessionLifecycle({
   piPresetSwitchPromiseRef,
 }: UsePiSessionLifecycleOptions) {
   const pendingPresetRef = useRef<AIPreset | null>(null);
+  const requestedSurfaceRestartRef = useRef<PiAiSurface | null>(null);
   const [presetSwitching, setPresetSwitching] = useState(false);
 
   useEffect(() => {
@@ -220,7 +236,7 @@ export function usePiSessionLifecycle({
       maxTokens: p.maxTokens ?? 4096,
       maxContextChars: p.maxContextChars ?? null,
       systemPrompt,
-      aiSurface: "chat",
+      aiSurface,
       resumeSessionId,
     };
   }, [
@@ -232,6 +248,7 @@ export function usePiSessionLifecycle({
     activePreset?.prompt,
     activePreset?.provider,
     activePreset?.url,
+    aiSurface,
     allConnectionItems,
     appItems,
     connections,
@@ -251,6 +268,7 @@ export function usePiSessionLifecycle({
       maxContextChars: providerConfig.maxContextChars ?? null,
       systemPrompt: providerConfig.systemPrompt,
       token: userToken ?? null,
+      aiSurface: providerConfig.aiSurface ?? null,
     };
   }, [piRunningConfigRef, userToken]);
 
@@ -381,7 +399,8 @@ export function usePiSessionLifecycle({
   const handlePiRestart = useCallback((preset: AIPreset) => {
     if (isStreamingRef.current) {
       pendingPresetRef.current = preset;
-      toast({ title: "model will switch after this response finishes" });
+      setPresetSwitching(true);
+      toast({ title: "AI assistant will update after this response finishes" });
       return;
     }
 
@@ -403,7 +422,8 @@ export function usePiSessionLifecycle({
       running.maxTokens !== providerConfig.maxTokens ||
       running.maxContextChars !== (providerConfig.maxContextChars ?? null) ||
       running.systemPrompt !== providerConfig.systemPrompt ||
-      running.token !== (userToken ?? null);
+      running.token !== (userToken ?? null) ||
+      running.aiSurface !== (providerConfig.aiSurface ?? null);
 
     if (!providerChanged && !modelChanged && !spawnTimeFieldsChanged) {
       return;
@@ -459,6 +479,21 @@ export function usePiSessionLifecycle({
     setRunningConfigFromProviderConfig,
     userToken,
   ]);
+
+  useEffect(() => {
+    const running = piRunningConfigRef.current;
+    if (
+      !activePreset ||
+      !running ||
+      running.backend === "acp" ||
+      running.aiSurface === aiSurface ||
+      requestedSurfaceRestartRef.current === aiSurface
+    ) {
+      return;
+    }
+    requestedSurfaceRestartRef.current = aiSurface;
+    handlePiRestart(activePreset);
+  }, [activePreset, aiSurface, handlePiRestart, piRunningConfigRef]);
 
   useEffect(() => {
     if (!isStreaming && pendingPresetRef.current) {

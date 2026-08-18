@@ -13,6 +13,7 @@ export type HostedChatRequestLane = Exclude<HostedChatLane, 'frontier'>;
 export type HostedChatWorkload = 'interactive' | 'background';
 export type HostedChatSurface =
 	| 'chat'
+	| 'activity'
 	| 'meeting'
 	| 'timeline'
 	| 'scheduled_task'
@@ -120,6 +121,7 @@ export async function hostedChatActorId(auth: AuthResult): Promise<string> {
 
 const HOSTED_CHAT_SURFACES = new Set<HostedChatSurface>([
 	'chat',
+	'activity',
 	'meeting',
 	'timeline',
 	'scheduled_task',

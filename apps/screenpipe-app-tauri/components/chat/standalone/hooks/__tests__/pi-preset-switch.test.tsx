@@ -31,6 +31,7 @@ vi.mock("@/lib/utils/tauri", () => ({ commands: commandMocks }));
 
 import {
   enqueuePiPresetSwitch,
+  piAiSurfaceForPrefillSource,
   usePiSessionLifecycle,
 } from "../use-pi-session-lifecycle";
 import {
@@ -125,8 +126,10 @@ describe("preset switch serialization", () => {
         url: "",
         apiKey: null,
         maxTokens: 4096,
+        maxContextChars: null,
         systemPrompt: "old",
         token: null,
+        aiSurface: "chat" as const,
       },
     };
     commandMocks.piStart.mockResolvedValue({
@@ -136,6 +139,7 @@ describe("preset switch serialization", () => {
 
     const { result, unmount } = renderHook(() => usePiSessionLifecycle({
       activePreset: acpPreset,
+      aiSurface: "chat",
       setActivePreset: vi.fn(),
       aiPresets: [acpPreset],
       isSettingsLoaded: false,
@@ -182,6 +186,82 @@ describe("preset switch serialization", () => {
     expect(setPiInfo).toHaveBeenCalledWith(stoppedInfo);
     expect(runningConfigRef.current).toBeNull();
     unmount();
+  });
+
+  it("restarts raw Pi before an Activity-originated turn uses the old surface", async () => {
+    const preset = {
+      id: "screenpipe-cloud",
+      provider: "screenpipe-cloud",
+      model: "auto",
+      url: "",
+      apiKey: "",
+      maxTokens: 4096,
+      defaultPreset: true,
+    } as any;
+    const setPiInfo = vi.fn();
+    const presetSwitchRef: { current: Promise<void> | null } = { current: null };
+    const runningConfigRef = {
+      current: {
+        provider: "screenpipe-cloud",
+        model: "auto",
+        url: "",
+        apiKey: null,
+        maxTokens: 4096,
+        maxContextChars: null,
+        systemPrompt: "system",
+        token: null,
+        aiSurface: "chat" as const,
+      },
+    };
+    commandMocks.piStart.mockResolvedValue({ status: "ok", data: runningInfo });
+
+    const { rerender } = renderHook(
+      ({ aiSurface }: { aiSurface: "chat" | "activity" }) => usePiSessionLifecycle({
+        activePreset: preset,
+        aiSurface,
+        setActivePreset: vi.fn(),
+        aiPresets: [preset],
+        isSettingsLoaded: false,
+        shouldFreezePresetSelection: false,
+        userToken: null,
+        appItems: [],
+        allConnectionItems: [],
+        connections: [],
+        piStarting: false,
+        piInfo: runningInfo,
+        setPiInfo,
+        isStreaming: false,
+        isStreamingRef: { current: false },
+        piSessionIdRef: { current: "session-1" },
+        piSessionSyncedRef: { current: true },
+        piMessageIdRef: { current: null },
+        piRunningConfigRef: runningConfigRef,
+        piIntentionallyStoppedPidsRef: { current: new Set<number>() },
+        piStoppedIntentionallyRef: { current: false },
+        piPresetSwitchPromiseRef: presetSwitchRef,
+      }),
+      { initialProps: { aiSurface: "chat" as const } },
+    );
+
+    rerender({ aiSurface: "activity" });
+
+    await waitFor(() => expect(commandMocks.piStart).toHaveBeenCalledWith(
+      "session-1",
+      expect.any(String),
+      null,
+      expect.objectContaining({ aiSurface: "activity" }),
+    ));
+    expect(commandMocks.piStart).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(runningConfigRef.current.aiSurface).toBe("activity"));
+  });
+});
+
+describe("chat prefill surface mapping", () => {
+  it("keeps Activity and Timeline entry points distinct from ordinary chat", () => {
+    expect(piAiSurfaceForPrefillSource("activity-history-chat")).toBe("activity");
+    expect(piAiSurfaceForPrefillSource("activity-history-skill")).toBe("activity");
+    expect(piAiSurfaceForPrefillSource("timeline")).toBe("timeline");
+    expect(piAiSurfaceForPrefillSource("notification-bell")).toBe("chat");
   });
 });
 

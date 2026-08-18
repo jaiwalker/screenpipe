@@ -1810,6 +1810,7 @@ pub enum PiBackend {
 #[serde(rename_all = "snake_case")]
 pub enum PiAiSurface {
     Chat,
+    Activity,
     Meeting,
     Timeline,
     ScheduledTask,
@@ -1824,6 +1825,7 @@ impl PiAiSurface {
     fn as_str(self) -> &'static str {
         match self {
             Self::Chat => "chat",
+            Self::Activity => "activity",
             Self::Meeting => "meeting",
             Self::Timeline => "timeline",
             Self::ScheduledTask => "scheduled_task",
