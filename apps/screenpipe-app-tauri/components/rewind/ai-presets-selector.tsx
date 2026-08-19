@@ -793,7 +793,12 @@ export function AIProviderConfig({
               });
             }}
           >
-            <Icons.terminal className="h-3.5 w-3.5" />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/images/ollama.png"
+              alt=""
+              className="h-3.5 w-3.5 object-contain dark:invert"
+            />
             <span>ollama</span>
           </Button>
         </div>

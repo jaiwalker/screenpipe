@@ -221,6 +221,9 @@ describe("AIPresetsSelector controlled preset creation", () => {
       "Pi",
       "ollama",
     ]);
+    expect(
+      screen.getByRole("button", { name: "ollama" }).querySelector("img"),
+    ).toHaveAttribute("src", "/images/ollama.png");
 
     fireEvent.click(screen.getByRole("button", { name: /advanced/ }));
 
