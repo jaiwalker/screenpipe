@@ -82,6 +82,35 @@ export const ACP_ADAPTERS: readonly AcpAdapterInfo[] = [
 export const SELECTABLE_ACP_ADAPTERS: readonly AcpAdapterInfo[] =
   ACP_ADAPTERS.filter((adapter) => !adapter.disabled);
 
+/** Shared order for the direct AI choices shown in both preset editors. */
+export const PRIMARY_ACP_ADAPTER_ORDER = [
+  "codex-acp",
+  "claude-acp",
+  "cursor",
+  "github-copilot-cli",
+  "pi-acp",
+] as const;
+
+/** Keep the normal agent choices consistent across Settings and Rewind. */
+export function primaryAcpAdapterChoices(
+  adapters: readonly AcpAdapterInfo[],
+): AcpAdapterInfo[] {
+  return adapters
+    .filter((adapter) => adapter.id !== "custom")
+    .sort((a, b) => {
+      const aIndex = PRIMARY_ACP_ADAPTER_ORDER.indexOf(
+        a.id as (typeof PRIMARY_ACP_ADAPTER_ORDER)[number],
+      );
+      const bIndex = PRIMARY_ACP_ADAPTER_ORDER.indexOf(
+        b.id as (typeof PRIMARY_ACP_ADAPTER_ORDER)[number],
+      );
+      return (
+        (aIndex < 0 ? PRIMARY_ACP_ADAPTER_ORDER.length : aIndex) -
+        (bIndex < 0 ? PRIMARY_ACP_ADAPTER_ORDER.length : bIndex)
+      );
+    });
+}
+
 /** Every per-agent flag in the catalog, for surfaces that need "all on"
  *  (e2e builds) without hardcoding the individual keys. */
 export const ACP_ADAPTER_FLAGS: readonly string[] = Array.from(

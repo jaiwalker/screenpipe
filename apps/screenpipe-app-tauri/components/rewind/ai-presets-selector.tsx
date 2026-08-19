@@ -20,6 +20,7 @@ import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import {
   acpAdapterInfo,
   generatePresetName,
+  primaryAcpAdapterChoices,
   presetImageClass,
   presetImageSrc,
 } from "@/lib/utils/preset-appearance";
@@ -149,14 +150,6 @@ interface AIProviderConfigProps {
   defaultPreset?: AIPreset;
   showLoginCta?: boolean;
 }
-
-const PRIMARY_ACP_ADAPTER_ORDER = [
-  "codex-acp",
-  "claude-acp",
-  "cursor",
-  "github-copilot-cli",
-  "pi-acp",
-] as const;
 
 interface OpenAIModel {
   id: string;
@@ -316,20 +309,7 @@ export function AIProviderConfig({
   // coding-agent provider the settings page deliberately hides.
   const acpEnabled = useAcpRolloutEnabled();
   const acpAdapters = useSelectableAcpAdapters(formData.acpAgent?.id);
-  const primaryAcpAdapters = acpAdapters
-    .filter((adapter) => adapter.id !== "custom")
-    .sort((a, b) => {
-      const aIndex = PRIMARY_ACP_ADAPTER_ORDER.indexOf(
-        a.id as (typeof PRIMARY_ACP_ADAPTER_ORDER)[number],
-      );
-      const bIndex = PRIMARY_ACP_ADAPTER_ORDER.indexOf(
-        b.id as (typeof PRIMARY_ACP_ADAPTER_ORDER)[number],
-      );
-      return (
-        (aIndex < 0 ? PRIMARY_ACP_ADAPTER_ORDER.length : aIndex) -
-        (bIndex < 0 ? PRIMARY_ACP_ADAPTER_ORDER.length : bIndex)
-      );
-    });
+  const primaryAcpAdapters = primaryAcpAdapterChoices(acpAdapters);
   const customAcpAdapter = acpAdapters.find(
     (adapter) => adapter.id === "custom",
   );
