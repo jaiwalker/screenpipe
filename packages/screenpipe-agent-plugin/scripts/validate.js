@@ -34,6 +34,8 @@ assert.equal(codex.name, plugin.name);
 assert.equal(codex.version, plugin.version);
 assert.equal(codex.skills, "./skills/");
 assert.equal(codex.mcpServers, "./.mcp.json");
+assert.ok(!pkg.files.includes("scripts/"));
+assert.ok(!pkg.files.includes("scripts/validate.js"));
 assert.equal(pkg.openclaw.compat.pluginApi, ">=2026.7.1-2");
 assert.equal(pkg.openclaw.compat.minGatewayVersion, "2026.7.1-2");
 assert.equal(pkg.openclaw.build.openclawVersion, "2026.7.1-2");

@@ -1,12 +1,20 @@
 {
   "name": "@screenpipe/agent-plugin",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "displayName": "screenpipe",
   "description": "Local-first workflow memory for AI agents, backed by the screenpipe MCP server",
   "type": "module",
   "homepage": "https://screenpi.pe",
   "repository": "https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-agent-plugin",
   "license": "LicenseRef-Screenpipe-Commercial",
+  "files": [
+    ".codex-plugin/plugin.json",
+    ".mcp.json",
+    "mcp.json",
+    "openclaw.plugin.json",
+    "plugin.json",
+    "skills/"
+  ],
   "openclaw": {
     "compat": {
       "pluginApi": ">=2026.7.1-2",
