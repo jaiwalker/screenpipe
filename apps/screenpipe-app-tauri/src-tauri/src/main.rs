@@ -41,6 +41,7 @@ use window::ShowRewindWindow;
 
 mod acp_extensions;
 mod acp_runtime;
+mod acp_schedule_extension;
 mod analytics;
 mod auth_session;
 #[allow(deprecated)]
@@ -470,6 +471,10 @@ async fn main() {
         };
         std::process::exit(exit_code);
     }
+
+    // The packaged updater E2E latches whether the replacement process began
+    // before macOS finished releasing the previous app's SCK/TCC state.
+    process_exit::latch_e2e_sck_relaunch_race();
 
     // Point debug builds at their own data dir and ports so `bun tauri dev`
     // can't hand off to (or kill) an installed production app. Must run before
@@ -1157,10 +1162,20 @@ async fn main() {
             // reason parameter) is still the current Apple event.
             let from_autostart = launched_from_autostart();
 
-            #[cfg(any(windows, target_os = "linux"))]
+            #[cfg(windows)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 app.deep_link().register_all()?;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                // Minimal Linux installs may not provide
+                // `update-desktop-database`. Deep-link registration is useful
+                // integration, but it must not make the recorder fail startup.
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("deep-link registration skipped: {error}");
+                }
             }
             let app_handle = app.handle();
 
