@@ -5,10 +5,35 @@
 "use client";
 
 import React from "react";
-import { Bot, Clock3, ExternalLink } from "lucide-react";
+import {
+  Bot,
+  Clock3,
+  ExternalLink,
+  MoreHorizontal,
+  Pause,
+  Play,
+  Trash2,
+} from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands, type ProviderAutomation } from "@/lib/utils/tauri";
 import { cn } from "@/lib/utils";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 function rruleParts(schedule: string): Record<string, string> {
   return Object.fromEntries(
@@ -145,6 +170,8 @@ export function ProviderAutomationsPanel({
   const [openError, setOpenError] = React.useState<string | null>(null);
   const [mutationError, setMutationError] = React.useState<string | null>(null);
   const [pendingTask, setPendingTask] = React.useState<string | null>(null);
+  const [taskToDelete, setTaskToDelete] =
+    React.useState<ProviderAutomation | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -211,7 +238,7 @@ export function ProviderAutomationsPanel({
   );
 
   const mutateTask = React.useCallback(
-    async (task: ProviderAutomation, action: "pause" | "resume") => {
+    async (task: ProviderAutomation, action: "pause" | "resume" | "delete") => {
       setPendingTask(task.key);
       setMutationError(null);
       try {
@@ -245,19 +272,19 @@ export function ProviderAutomationsPanel({
 
   return (
     <section
-      className="overflow-hidden rounded-lg border border-border bg-muted/10"
+      className="overflow-hidden border border-border bg-muted/10"
       data-testid="provider-automations-panel"
     >
       <div className="flex items-start justify-between gap-4 px-4 pb-3 pt-3.5">
         <div>
           <div className="flex items-baseline gap-2">
-            <h3 className="text-sm font-medium">agent schedules</h3>
+            <h3 className="text-sm font-medium">external agent tasks</h3>
             <span className="text-xs tabular-nums text-muted-foreground">
               {visible.length} total
             </span>
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            created and owned by your connected agents
+            schedules created in Codex, Claude, and other agent apps
           </p>
         </div>
       </div>
@@ -265,7 +292,7 @@ export function ProviderAutomationsPanel({
       <div
         role="tablist"
         aria-label="schedule owner"
-        className="flex gap-1 overflow-x-auto border-y border-border bg-muted/20 px-3 py-2"
+        className="flex overflow-x-auto border-y border-border bg-muted/20 px-3"
       >
         {providers.map((provider) => {
           const isActive = provider === activeProvider;
@@ -279,9 +306,9 @@ export function ProviderAutomationsPanel({
               aria-selected={isActive}
               aria-controls={`provider-panel-${provider}`}
               className={cn(
-                "inline-flex h-8 shrink-0 items-center gap-2 rounded-md border px-3 text-xs transition-colors",
+                "inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-3 text-xs transition-colors",
                 isActive
-                  ? "border-border bg-background text-foreground shadow-sm"
+                  ? "border-foreground bg-background text-foreground"
                   : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground",
               )}
               onClick={() => setSelectedProvider(provider)}
@@ -290,8 +317,8 @@ export function ProviderAutomationsPanel({
               <span>{providerLabel(provider)}</span>
               <span
                 className={cn(
-                  "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
-                  isActive ? "bg-muted" : "bg-background/60",
+                  "border px-1.5 py-0.5 text-[10px] tabular-nums",
+                  isActive ? "border-border bg-muted" : "border-transparent",
                 )}
               >
                 {count}
@@ -310,14 +337,14 @@ export function ProviderAutomationsPanel({
           <div className="flex min-h-10 items-center gap-2 border-b border-border px-4 py-2 text-xs text-muted-foreground">
             <span>
               {activeHasInlineControls
-                ? `status changes sync back to ${activeProviderLabel}`
-                : `status is mirrored from ${activeProviderLabel}`}
+                ? `${activeTasks.filter((task) => (task.availableActions?.length ?? 0) > 0).length} of ${activeTasks.length} can be managed here · changes sync to ${activeProviderLabel}`
+                : `view only here · manage these tasks in ${activeProviderLabel}`}
             </span>
             <div className="flex-1" />
             {activeManagementUrl && (
               <button
                 type="button"
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-foreground transition-colors hover:bg-muted"
+                className="inline-flex items-center gap-1.5 border border-border px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-foreground transition-colors hover:bg-foreground hover:text-background"
                 onClick={() => void manageProvider(activeProvider)}
               >
                 open {activeProviderLabel}
@@ -341,7 +368,7 @@ export function ProviderAutomationsPanel({
               return (
                 <article
                   key={task.key}
-                  className="grid items-center gap-3 bg-background/40 px-4 py-3 transition-colors hover:bg-background/80 md:grid-cols-[minmax(0,1fr)_12rem_auto]"
+                  className="grid items-center gap-3 bg-background/40 px-4 py-3 transition-colors hover:bg-background/80 md:grid-cols-[minmax(0,1fr)_8rem_10rem_auto]"
                   title={task.lifecycleNote}
                 >
                   <div className="min-w-0">
@@ -359,54 +386,118 @@ export function ProviderAutomationsPanel({
                     </span>
                   </div>
 
-                  <span className="inline-flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                  <span className="inline-flex min-w-0 items-center gap-2 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
                     <span
                       className={cn(
-                        "h-2 w-2 shrink-0 rounded-full border border-current",
-                        isOn && "bg-emerald-500 text-emerald-500",
+                        "h-2 w-2 shrink-0 border border-current",
+                        isOn && "bg-foreground text-foreground",
                       )}
                     />
                     <span className="truncate">
-                      {isOn ? "On" : "Off"} · {scopeLabel(task)}
+                      {isOn ? "active" : "paused"}
                     </span>
                   </span>
 
-                  {primaryAction ? (
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={isOn}
-                      aria-busy={isPending}
-                      aria-label={`${isOn ? "Turn off" : "Turn on"} ${task.name}`}
-                      disabled={isPending}
-                      className="inline-flex items-center justify-end rounded-md p-1.5 transition-colors hover:bg-muted disabled:cursor-wait disabled:opacity-50"
-                      onClick={() => void mutateTask(task, primaryAction)}
-                    >
-                      <span className="sr-only">
-                        {isPending ? "Saving" : isOn ? "On" : "Off"}
-                      </span>
-                      <span
-                        aria-hidden="true"
-                        className={cn(
-                          "flex h-5 w-9 items-center rounded-full border p-0.5 transition-colors",
-                          isOn
-                            ? "border-emerald-500 bg-emerald-500"
-                            : "border-border bg-muted",
-                        )}
+                  <span className="truncate text-xs text-muted-foreground">
+                    {scopeLabel(task)}
+                  </span>
+
+                  <div className="flex items-center justify-end gap-1.5">
+                    {primaryAction ? (
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={isOn}
+                        aria-busy={isPending}
+                        aria-label={`${isOn ? "Turn off" : "Turn on"} ${task.name}`}
+                        disabled={isPending}
+                        className="inline-flex h-8 items-center gap-2 border border-border px-2 font-mono text-[10px] uppercase tracking-wide transition-colors hover:bg-muted disabled:cursor-wait disabled:opacity-50"
+                        onClick={() => void mutateTask(task, primaryAction)}
                       >
+                        <span aria-hidden="true">
+                          {isPending ? "saving" : isOn ? "on" : "off"}
+                        </span>
                         <span
+                          aria-hidden="true"
                           className={cn(
-                            "h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform",
-                            isOn && "translate-x-4",
+                            "flex h-4 w-7 items-center border p-0.5 transition-colors",
+                            isOn
+                              ? "border-foreground bg-foreground"
+                              : "border-border bg-muted",
                           )}
-                        />
+                        >
+                          <span
+                            className={cn(
+                              "h-2.5 w-2.5 bg-background transition-transform",
+                              isOn && "translate-x-3",
+                            )}
+                          />
+                        </span>
+                      </button>
+                    ) : (
+                      <span className="px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+                        managed in {activeProviderLabel}
                       </span>
-                    </button>
-                  ) : (
-                    <span className="justify-self-end rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">
-                      managed in {activeProviderLabel}
-                    </span>
-                  )}
+                    )}
+
+                    {(primaryAction ||
+                      actions.includes("delete") ||
+                      activeManagementUrl) && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={`actions for ${task.name}`}
+                            disabled={isPending}
+                            className="inline-flex h-8 w-8 items-center justify-center border border-border transition-colors hover:bg-foreground hover:text-background disabled:opacity-50"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          align="end"
+                          className="w-48 rounded-none"
+                        >
+                          {primaryAction && (
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void mutateTask(task, primaryAction)
+                              }
+                            >
+                              {primaryAction === "pause" ? (
+                                <Pause className="mr-2 h-4 w-4" />
+                              ) : (
+                                <Play className="mr-2 h-4 w-4" />
+                              )}
+                              {primaryAction} schedule
+                            </DropdownMenuItem>
+                          )}
+                          {activeManagementUrl && (
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void manageProvider(activeProvider)
+                              }
+                            >
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              manage in {activeProviderLabel}
+                            </DropdownMenuItem>
+                          )}
+                          {actions.includes("delete") && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                className="text-destructive focus:text-destructive"
+                                onSelect={() => setTaskToDelete(task)}
+                              >
+                                <Trash2 className="mr-2 h-4 w-4" />
+                                delete schedule
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                  </div>
                 </article>
               );
             })}
@@ -441,6 +532,37 @@ export function ProviderAutomationsPanel({
           {mutationError}
         </p>
       )}
+
+      <AlertDialog
+        open={Boolean(taskToDelete)}
+        onOpenChange={(open) => !open && setTaskToDelete(null)}
+      >
+        <AlertDialogContent className="rounded-none">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              delete {taskToDelete?.name ?? "this schedule"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently removes the schedule from {activeProviderLabel}.
+              It will not run again, and this cannot be undone here.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                if (!taskToDelete) return;
+                const task = taskToDelete;
+                setTaskToDelete(null);
+                void mutateTask(task, "delete");
+              }}
+            >
+              delete schedule
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

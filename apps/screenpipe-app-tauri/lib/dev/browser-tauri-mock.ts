@@ -173,6 +173,8 @@ function createBrowserDevProviderAutomations(): ProviderAutomation[] {
   ];
 }
 
+let browserDevProviderAutomations = createBrowserDevProviderAutomations();
+
 function asRecord(value: InvokeArgs | undefined): Record<string, unknown> {
   if (
     !value ||
@@ -420,9 +422,39 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
       case "list_brain_view_template_kits":
         return [];
       case "list_provider_automations":
-        return createBrowserDevProviderAutomations();
-      case "manage_provider_automation":
+        return browserDevProviderAutomations.map((task) => ({
+          ...task,
+          availableActions: [...(task.availableActions ?? [])],
+        }));
+      case "manage_provider_automation": {
+        const key = String(input.key ?? "");
+        const action = String(input.action ?? "");
+        const task = browserDevProviderAutomations.find(
+          (candidate) => candidate.key === key,
+        );
+        if (!task || !(task.availableActions ?? []).includes(action)) {
+          throw new Error(
+            "the agent no longer advertises that schedule operation",
+          );
+        }
+        if (action === "delete") {
+          browserDevProviderAutomations = browserDevProviderAutomations.filter(
+            (candidate) => candidate.key !== key,
+          );
+          return null;
+        }
+        if (action === "pause" || action === "resume") {
+          task.status = action === "pause" ? "paused" : "active";
+          task.availableActions = [
+            action === "pause" ? "resume" : "pause",
+            ...(task.availableActions ?? []).filter(
+              (available) => available === "delete",
+            ),
+          ];
+          task.updatedAtMs = Date.now();
+        }
         return null;
+      }
       case "save_brain_view": {
         const request = input.request as SaveBrainViewRequest;
         const existing = liveViews.find((view) => view.id === request.id);

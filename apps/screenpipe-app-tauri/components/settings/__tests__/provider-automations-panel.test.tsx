@@ -4,7 +4,7 @@
 
 import React from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ProviderAutomationsPanel,
   providerManagementUrl,
@@ -52,6 +52,10 @@ const TASKS: ProviderAutomation[] = [
   },
 ];
 
+beforeAll(() => {
+  globalThis.PointerEvent ||= MouseEvent as typeof PointerEvent;
+});
+
 describe("ProviderAutomationsPanel", () => {
   beforeEach(() => {
     vi.mocked(commands.listProviderAutomations).mockResolvedValue({
@@ -63,9 +67,11 @@ describe("ProviderAutomationsPanel", () => {
   it("separates agent-owned schedules into branded provider tabs", async () => {
     render(<ProviderAutomationsPanel />);
 
-    expect(await screen.findByText("agent schedules")).toBeInTheDocument();
+    expect(await screen.findByText("external agent tasks")).toBeInTheDocument();
     expect(
-      screen.getByText("created and owned by your connected agents"),
+      screen.getByText(
+        "schedules created in Codex, Claude, and other agent apps",
+      ),
     ).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: /Codex 1/i })).toHaveAttribute(
       "aria-selected",
@@ -78,8 +84,11 @@ describe("ProviderAutomationsPanel", () => {
 
     expect(screen.getByText("Say hi")).toBeInTheDocument();
     expect(screen.getByText("Every hour at :07")).toBeInTheDocument();
-    expect(screen.getByText("On · session only")).toBeInTheDocument();
-    expect(screen.getByText("status is mirrored from Claude")).toBeInTheDocument();
+    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("session only")).toBeInTheDocument();
+    expect(
+      screen.getByText("view only here · manage these tasks in Claude"),
+    ).toBeInTheDocument();
     expect(screen.getByText("managed in Claude")).toBeInTheDocument();
     expect(screen.queryByText("read only")).not.toBeInTheDocument();
   });
@@ -101,7 +110,7 @@ describe("ProviderAutomationsPanel", () => {
     const onOpenProvider = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onOpenProvider={onOpenProvider} />);
 
-    expect(await screen.findByText("agent schedules")).toBeInTheDocument();
+    expect(await screen.findByText("external agent tasks")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "open Codex" }));
 
     expect(onOpenProvider).toHaveBeenCalledWith("codex://automations");
@@ -112,7 +121,7 @@ describe("ProviderAutomationsPanel", () => {
     const onManageTask = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onManageTask={onManageTask} />);
 
-    expect(await screen.findByText("agent schedules")).toBeInTheDocument();
+    expect(await screen.findByText("external agent tasks")).toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("switch", { name: "Turn on Daily review" }),
     );
@@ -122,6 +131,29 @@ describe("ProviderAutomationsPanel", () => {
     );
     fireEvent.click(screen.getByRole("tab", { name: /Claude 1/i }));
     expect(screen.queryByRole("switch", { name: /Say hi/i })).toBeNull();
+  });
+
+  it("exposes destructive ACP actions behind an explicit confirmation", async () => {
+    const onManageTask = vi.fn().mockResolvedValue(undefined);
+    render(<ProviderAutomationsPanel onManageTask={onManageTask} />);
+
+    expect(await screen.findByText("external agent tasks")).toBeInTheDocument();
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: "actions for Daily review" }),
+      { button: 0, ctrlKey: false, pointerType: "mouse" },
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "delete schedule" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "delete Daily review?" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "delete schedule" }));
+
+    await waitFor(() =>
+      expect(onManageTask).toHaveBeenCalledWith("codex:daily-review", "delete"),
+    );
   });
 
   it("limits a large provider inventory until the user asks for more", async () => {
