@@ -35,7 +35,7 @@ import {
   Volume2,
   X,
 } from "lucide-react";
-import { commands } from "@/lib/utils/tauri";
+import { commands, type AIPreset } from "@/lib/utils/tauri";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openExternal } from "@tauri-apps/plugin-shell";
@@ -44,6 +44,7 @@ import { readFile } from "@tauri-apps/plugin-fs";
 import posthog from "posthog-js";
 import { qualifiedValue } from "@/lib/analytics/qualified-value";
 import { Button } from "@/components/ui/button";
+import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -109,7 +110,10 @@ import {
   resizeImageDataUrl,
 } from "./image-utils";
 import { TranscriptPanel } from "./transcript-panel";
-import { useSettings, type Settings } from "@/lib/hooks/use-settings";
+import {
+  useSettings,
+  type Settings,
+} from "@/lib/hooks/use-settings";
 import {
   MeetingNoteSaveQueue,
   sameMeetingNoteDraft,
@@ -168,7 +172,11 @@ import {
   type MeetingWorkspaceTab,
 } from "./meeting-workspace";
 import { meetingRetranscribeSuccessCopy } from "./transcript-recovery-copy";
-import { startMeetingSummaryRun } from "./meeting-summary-run";
+import {
+  loadMeetingSummaryPipeConfig,
+  startMeetingSummaryRun,
+  updateMeetingSummaryPrimaryPreset,
+} from "./meeting-summary-run";
 
 const AUTOSAVE_DEBOUNCE_MS = 800;
 // How long a successful save stays on screen before the footer goes quiet.
@@ -269,6 +277,9 @@ export function NoteView({
     useState<MeetingSummaryLifecycle>({ kind: "idle" });
   const [summaryStatusRefreshKey, setSummaryStatusRefreshKey] = useState(0);
   const [summaryRevealKey, setSummaryRevealKey] = useState(0);
+  const [summaryPresetIds, setSummaryPresetIds] = useState<string[]>([]);
+  const [summaryPresetReady, setSummaryPresetReady] = useState(false);
+  const [summaryPresetSaving, setSummaryPresetSaving] = useState(false);
   const [meetingCtx, setMeetingCtx] = useState<MeetingContext | null>(null);
   const [activeTab, setActiveTab] = useState<MeetingWorkspaceTab>(() =>
     initialWorkspaceTab ??
@@ -351,6 +362,81 @@ export function NoteView({
   }, [oneTapSend, toast]);
 
   const summaryPipeSlug = settings.meetingSummaryPipeSlug || "meeting-summary";
+  const defaultSummaryPresetId = useMemo(
+    () =>
+      settings.aiPresets.find(
+        (preset) => preset.defaultPreset && preset.provider !== "acp",
+      )?.id ??
+      settings.aiPresets.find((preset) => preset.provider !== "acp")?.id ??
+      null,
+    [settings.aiPresets],
+  );
+  const summaryPresetId = summaryPresetReady
+    ? summaryPresetIds[0] ?? defaultSummaryPresetId
+    : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setSummaryPresetReady(false);
+    void loadMeetingSummaryPipeConfig(summaryPipeSlug)
+      .then(({ presetIds }) => {
+        if (cancelled) return;
+        setSummaryPresetIds(presetIds);
+        setSummaryPresetReady(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.warn("failed to read meeting summary model", error);
+        setSummaryPresetIds([]);
+        setSummaryPresetReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [summaryPipeSlug]);
+
+  const handleSummaryPresetSelect = useCallback(
+    async (preset: AIPreset | null) => {
+      if (!preset || summaryPresetSaving) return;
+      const previousPresetIds = summaryPresetIds;
+      const optimisticPresetIds = [
+        preset.id,
+        ...previousPresetIds
+          .slice(1)
+          .filter((presetId) => presetId !== preset.id),
+      ];
+      setSummaryPresetIds(optimisticPresetIds);
+      setSummaryPresetSaving(true);
+      try {
+        const saved = await updateMeetingSummaryPrimaryPreset({
+          pipeSlug: summaryPipeSlug,
+          presetId: preset.id,
+          currentPresetIds: previousPresetIds,
+        });
+        setSummaryPresetIds(saved.presetIds);
+        posthog.capture("meeting_summary_model_changed", {
+          pipe_slug: summaryPipeSlug,
+          provider: preset.provider,
+        });
+      } catch (error) {
+        setSummaryPresetIds(previousPresetIds);
+        console.error("failed to save meeting summary model", error);
+        toast({
+          title: "couldn't change summary model",
+          description: "your previous model is still selected.",
+          variant: "destructive",
+        });
+      } finally {
+        setSummaryPresetSaving(false);
+      }
+    },
+    [
+      summaryPipeSlug,
+      summaryPresetIds,
+      summaryPresetSaving,
+      toast,
+    ],
+  );
   const summaryPresentation = meetingSummaryPresentation({
     isLive,
     resuming,
@@ -1927,7 +2013,24 @@ export function NoteView({
             streamedSummary={streamedSummary}
             onGenerate={handleSummaryAction}
             canGenerate={
-              canSummarizeMeeting && !summaryWorking && !retranscribing
+              canSummarizeMeeting &&
+              !summaryWorking &&
+              !retranscribing &&
+              !summaryPresetSaving
+            }
+            modelControl={
+              <AIPresetsSelector
+                compact
+                showModelOnly
+                includeAgentPresets={false}
+                controlledPresetId={summaryPresetId}
+                onControlledSelect={(preset) => {
+                  void handleSummaryPresetSelect(preset);
+                }}
+                containerClassName="w-[180px] max-w-[32vw] min-w-[120px] shrink-0 gap-0"
+                triggerClassName="h-9 border-border bg-background px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground"
+                triggerAriaLabel="meeting summary model"
+              />
             }
             // Mounted with the tab rather than always: the strip pulls the
             // meeting's transcript rows and frame samples, and opening a
