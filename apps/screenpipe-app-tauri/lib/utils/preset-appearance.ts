@@ -62,10 +62,10 @@ const CATALOG_ACP_ADAPTERS: readonly AcpAdapterInfo[] = (
 
 const CUSTOM_ACP_ADAPTER: AcpAdapterInfo = {
   id: "custom",
-  name: "Another ACP agent",
+  name: "Another AI",
   imageSrc: "/images/custom.png",
   presetName: "acp agent",
-  description: "Connect any ACP-compatible command installed on this computer.",
+  description: "Connect another compatible AI using its command.",
   // Running an arbitrary local command as the agent is the widest surface we
   // offer, so it is rolled out on its own flag rather than to everyone.
   flag: "acp_agent_custom",

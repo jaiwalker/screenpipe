@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   },
   updateSettings: vi.fn(),
   controlledSelect: vi.fn(),
+  acpEnabled: { current: false },
 }));
 
 vi.mock("@/lib/hooks/use-settings", async () => {
@@ -49,7 +50,30 @@ vi.mock("@/lib/hooks/use-model-upsell-gating", () => ({
   useModelUpsellGating: () => false,
 }));
 vi.mock("@/lib/acp-rollout", () => ({
-  useAcpRolloutEnabled: () => false,
+  useAcpRolloutEnabled: () => mocks.acpEnabled.current,
+  useSelectableAcpAdapters: () => [
+    {
+      id: "pi-acp",
+      name: "Pi",
+      imageSrc: "/images/pi.svg",
+      presetName: "pi",
+      description: "Use Pi for this connection.",
+    },
+    {
+      id: "codex-acp",
+      name: "Codex",
+      imageSrc: "/images/codex.svg",
+      presetName: "codex",
+      description: "Use Codex for this connection.",
+    },
+    {
+      id: "claude-acp",
+      name: "Claude Code",
+      imageSrc: "/images/claude-ai.svg",
+      presetName: "claude code",
+      description: "Use Claude Code for this connection.",
+    },
+  ],
 }));
 vi.mock("@/lib/http/tauri-fetch", () => ({
   tauriFetchWithDeadline: vi.fn(async () => ({ ok: false, json: async () => ({}) })),
@@ -97,6 +121,7 @@ async function createChatGptPreset() {
   fireEvent.click(screen.getByRole("combobox"));
   fireEvent.click(await screen.findByText("create new preset"));
   fireEvent.click(screen.getByRole("button", { name: "chatgpt" }));
+  fireEvent.click(screen.getByRole("button", { name: /advanced/ }));
   fireEvent.change(screen.getByLabelText("name"), {
     target: { value: "new chat preset" },
   });
@@ -112,6 +137,28 @@ describe("AIPresetsSelector controlled preset creation", () => {
     mocks.settings.listeners.clear();
     mocks.updateSettings.mockClear();
     mocks.controlledSelect.mockClear();
+    mocks.acpEnabled.current = false;
+  });
+
+  it("shows each AI directly without a separate coding-agent choice", async () => {
+    mocks.acpEnabled.current = true;
+    render(<AIPresetsSelector compact showModelOnly />);
+
+    fireEvent.click(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByText("create new preset"));
+
+    expect(
+      screen.getByRole("heading", { name: "choose your ai" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pi" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Codex" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Claude Code" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "coding agent" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("name")).not.toBeInTheDocument();
   });
 
   it("selects the full newly saved preset and shows its model after closing", async () => {

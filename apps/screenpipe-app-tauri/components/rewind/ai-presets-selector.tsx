@@ -23,8 +23,14 @@ import {
   presetImageClass,
   presetImageSrc,
 } from "@/lib/utils/preset-appearance";
-import { AcpAgentPicker } from "@/components/settings/acp-agent-picker";
-import { useAcpRolloutEnabled } from "@/lib/acp-rollout";
+import {
+  AcpAgentPicker,
+  acpAgentForSelection,
+} from "@/components/settings/acp-agent-picker";
+import {
+  useAcpRolloutEnabled,
+  useSelectableAcpAdapters,
+} from "@/lib/acp-rollout";
 import {
   Command,
   CommandEmpty,
@@ -322,6 +328,7 @@ export function AIProviderConfig({
   // fail-closed rollout gate, otherwise this selector would hand every user a
   // coding-agent provider the settings page deliberately hides.
   const acpEnabled = useAcpRolloutEnabled();
+  const acpAdapters = useSelectableAcpAdapters(formData.acpAgent?.id);
 
   // A preset saved while the flag was on must not leave this editor stuck on a
   // provider whose picker is no longer rendered.
@@ -654,42 +661,11 @@ export function AIProviderConfig({
     <div className="w-full space-y-3 rounded-lg bg-card p-4">
       <div>
         <h2 className="text-base font-semibold">
-          {defaultPreset?.id ? "edit ai provider" : "ai provider"}
+          {defaultPreset?.id ? "edit ai" : "choose your ai"}
         </h2>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-3">
-        <div className="space-y-1">
-          <Label htmlFor="name" className="flex items-center gap-2 text-xs">
-            name
-            {idError && (
-              <span className="text-xs text-destructive font-normal">
-                {idError}
-              </span>
-            )}
-          </Label>
-          <Input
-            id="name"
-            type="text"
-            placeholder="preset name"
-            value={formData.id ?? ""}
-            onChange={(e) => handleIdChange(e.target.value)}
-            onBlur={refillEmptyName}
-            className={cn(
-              "font-mono h-8 text-sm",
-              idError && "border-destructive focus-visible:ring-destructive",
-            )}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            disabled={
-              Boolean(defaultPreset?.id) &&
-              settings.aiPresets.some((p) => p.id === defaultPreset?.id)
-            }
-          />
-        </div>
-
         <div className="grid grid-cols-3 gap-2">
           {piAvailable && (
             <Button
@@ -708,7 +684,7 @@ export function AIProviderConfig({
               }}
             >
               <Icons.terminal className="h-3.5 w-3.5" />
-              <span>screenpipe cloud</span>
+              <span>screenpipe</span>
             </Button>
           )}
 
@@ -763,7 +739,7 @@ export function AIProviderConfig({
             }}
           >
             <Icons.settings className="h-3.5 w-3.5" />
-            <span>custom</span>
+            <span>custom model</span>
           </Button>
 
           <Button
@@ -784,44 +760,53 @@ export function AIProviderConfig({
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/images/claude-ai.svg" alt="Claude API" className="h-3.5 w-3.5 rounded-sm" />
-            <span>claude api</span>
+            <span>claude</span>
           </Button>
 
-          {acpEnabled && (
-          <Button
-            type="button"
-            variant={selectedProvider === "acp" ? "default" : "outline"}
-            className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
-            onClick={() => {
-              if (selectedProvider === "acp") return;
-              setSelectedProvider("acp");
-              const agentId = formData.acpAgent?.id || "pi-acp";
-              setFormData({
-                ...formData,
-                provider: "acp",
-                url: "",
-                model: agentId,
-                acpAgent: formData.acpAgent || { id: "pi-acp" },
-              });
-            }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/images/acp.svg"
-              alt="Coding agent"
-              className={cn(
-                "h-3.5 w-3.5 rounded-sm dark:invert",
-                selectedProvider === "acp" && "invert dark:invert-0",
-              )}
-            />
-            <span>coding agent</span>
-          </Button>
-          )}
+          {acpEnabled && acpAdapters.map((adapter) => {
+            const isSelected =
+              selectedProvider === "acp" &&
+              (formData.acpAgent?.id || "pi-acp") === adapter.id;
+            return (
+              <Button
+                key={adapter.id}
+                type="button"
+                variant={isSelected ? "default" : "outline"}
+                className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
+                onClick={() => {
+                  const nextAgent = acpAgentForSelection(
+                    formData.acpAgent,
+                    adapter.id,
+                  );
+                  setSelectedProvider("acp");
+                  setFormData({
+                    ...formData,
+                    provider: "acp",
+                    url: "",
+                    model: nextAgent.id,
+                    acpAgent: nextAgent,
+                  });
+                }}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={adapter.imageSrc}
+                  alt=""
+                  className={cn(
+                    "h-3.5 w-3.5 rounded-sm",
+                    adapter.invertInDark && "dark:invert",
+                  )}
+                />
+                <span>{adapter.name}</span>
+              </Button>
+            );
+          })}
         </div>
 
         {acpEnabled && selectedProvider === "acp" && (
           <AcpAgentPicker
             compact
+            showAgentChoices={false}
             agent={formData.acpAgent}
             onChange={(next) =>
               setFormData({ ...formData, provider: "acp", model: next.id, acpAgent: next })
@@ -1146,6 +1131,36 @@ export function AIProviderConfig({
 
         {showAdvanced && (
           <div className="space-y-1.5">
+            <div className="space-y-1">
+              <Label htmlFor="name" className="flex items-center gap-2 text-xs">
+                name
+                {idError && (
+                  <span className="text-xs text-destructive font-normal">
+                    {idError}
+                  </span>
+                )}
+              </Label>
+              <Input
+                id="name"
+                type="text"
+                placeholder="generated automatically"
+                value={formData.id ?? ""}
+                onChange={(e) => handleIdChange(e.target.value)}
+                onBlur={refillEmptyName}
+                className={cn(
+                  "font-mono h-8 text-sm",
+                  idError && "border-destructive focus-visible:ring-destructive",
+                )}
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                disabled={
+                  Boolean(defaultPreset?.id) &&
+                  settings.aiPresets.some((p) => p.id === defaultPreset?.id)
+                }
+              />
+            </div>
             {resolvedModelLimits && (
               <p className="text-[10px] text-muted-foreground">
                 known model limits are configured automatically
