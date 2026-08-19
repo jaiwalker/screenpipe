@@ -4,8 +4,9 @@
 
 // Minimal, dependency-free MCP server that gives ACP coding-agent harnesses
 // core screenpipe capabilities: query_recordings, list_connections,
-// save_artifact, sp_web_search, screenpipe_connect_app, live_view, and the
-// sp_mcp_* bridge. It speaks newline-delimited JSON-RPC on stdin/stdout (MCP
+// save_artifact, sp_web_search, screenpipe_connect_app, live_view,
+// user_profile, skill_manage, and the sp_mcp_* bridge. It speaks newline-
+// delimited JSON-RPC on stdin/stdout (MCP
 // stdio) or, when SCREENPIPE_TOOLS_HTTP_PORT is set, a stateless Streamable-HTTP
 // server for harnesses that only accept http MCP (Cursor, GitHub Copilot). In
 // http mode it also registers the core read/query tools (activity_summary,
@@ -269,6 +270,36 @@ async function liveViewJson(res) {
   return body;
 }
 
+async function agentJson(res) {
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || typeof body?.error === "string") {
+    const message = typeof body?.error === "string" ? body.error : `HTTP ${res.status}`;
+    throw new Error(message);
+  }
+  return body;
+}
+
+async function requireProfileMemory(id) {
+  const res = await fetch(`${apiBase()}/memories/${id}`, { headers: authHeaders() });
+  const memory = await agentJson(res);
+  if (!Array.isArray(memory?.tags) || !memory.tags.includes("user-profile")) {
+    throw new Error(`memory ${id} is not a user-profile entry`);
+  }
+  return memory;
+}
+
+function compactProfileItems(items) {
+  if (!Array.isArray(items)) return [];
+  return items.slice(0, 20).flatMap((item) => {
+    if (!Number.isInteger(item?.id) || typeof item?.content !== "string") return [];
+    return [{
+      ...item,
+      content: item.content.slice(0, 2_000),
+      ...(item.content.length > 2_000 ? { content_truncated: true } : {}),
+    }];
+  });
+}
+
 function requireViewId(viewId) {
   if (typeof viewId !== "string" || !viewId.trim()) {
     throw new Error("viewId is required for this action");
@@ -347,6 +378,125 @@ const TOOLS = [
         return JSON.stringify({ error: `raw_sql returned ${res.status}`, detail: text.slice(0, 1000) });
       }
       return text;
+    },
+  },
+  {
+    name: "user_profile",
+    description:
+      "List or save durable user preferences, recurring corrections, role, and workflow habits. List first and update a matching fact instead of duplicating it. Save compact declarative facts proactively when they prevent future re-steering. Never save task progress, temporary state, secrets, raw private data, or facts likely to be stale within a week. Delete only after explicit confirmation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "save", "delete"] },
+        id: { type: "integer", description: "Existing profile memory id for update/delete." },
+        content: {
+          type: "string",
+          maxLength: 2_000,
+          description: "One compact, stable declarative fact about the user.",
+        },
+        tags: { type: "array", items: { type: "string" } },
+        importance: { type: "number", minimum: 0, maximum: 1 },
+        confirmed: { type: "boolean", description: "Must be true for delete." },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const action = String(args?.action || "");
+      if (action === "list") {
+        const res = await fetch(
+          `${apiBase()}/memories?tags=user-profile%2C&limit=20&order_by=importance&order_dir=desc`,
+          { headers: authHeaders() },
+        );
+        return JSON.stringify({ profile: compactProfileItems((await agentJson(res))?.data) });
+      }
+      if (action === "delete") {
+        if (!Number.isInteger(args?.id) || args?.confirmed !== true) {
+          throw new Error("delete requires an id and explicit confirmation");
+        }
+        await requireProfileMemory(args.id);
+        const res = await fetch(`${apiBase()}/memories/${args.id}`, {
+          method: "DELETE",
+          headers: authHeaders(),
+        });
+        return JSON.stringify(await agentJson(res));
+      }
+      if (action !== "save") throw new Error("action must be list, save, or delete");
+
+      const content = String(args?.content || "").trim();
+      if (!content) throw new Error("save requires one stable fact in content");
+      if (content.length > 2_000) {
+        throw new Error("profile facts must be compact (maximum 2000 characters)");
+      }
+      const isUpdate = Number.isInteger(args?.id);
+      const existing = isUpdate ? await requireProfileMemory(args.id) : undefined;
+      const tags = [
+        ...new Set([
+          "user-profile",
+          ...(Array.isArray(existing?.tags) ? existing.tags : []),
+          ...(Array.isArray(args?.tags) ? args.tags : []),
+        ]),
+      ];
+      const res = await fetch(
+        isUpdate ? `${apiBase()}/memories/${args.id}` : `${apiBase()}/memories`,
+        {
+          method: isUpdate ? "PUT" : "POST",
+          headers: authHeaders(),
+          body: JSON.stringify({
+            content,
+            tags,
+            importance: args?.importance ?? existing?.importance ?? 0.8,
+            source_context: { kind: "agent-profile", session_id: chatSessionId() },
+            ...(!isUpdate ? { source: "agent-profile", frame_id: null } : {}),
+          }),
+        },
+      );
+      return JSON.stringify(await agentJson(res), null, 2);
+    },
+  },
+  {
+    name: "skill_manage",
+    description:
+      "List/read reusable skills, create one only after the user explicitly confirms or asks to remember the procedure, or patch an agent-created skill using the current sha256 returned by read. Imported, hand-authored, and bundled skills are read-only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "read", "create", "patch"] },
+        name: { type: "string", description: "Required for read, create, and patch." },
+        description: {
+          type: "string",
+          description: "Required for create; optional replacement description for patch.",
+        },
+        instructions: {
+          type: "string",
+          description: "Complete Markdown instructions; required for create and patch.",
+        },
+        expected_sha256: {
+          type: "string",
+          description: "Required for patch; use the current sha256 returned by read.",
+        },
+        confirmed: {
+          type: "boolean",
+          description: "Must be true for create after explicit user confirmation.",
+        },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+    async run(args) {
+      const action = String(args?.action || "");
+      if (!["list", "read", "create", "patch"].includes(action)) {
+        throw new Error("action must be list, read, create, or patch");
+      }
+      if (action === "create" && args?.confirmed !== true) {
+        throw new Error("create requires explicit user confirmation");
+      }
+      const res = await fetch(`${apiBase()}/agent/skills/manage`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ ...args, action, source: chatSessionId() }),
+      });
+      return JSON.stringify(await agentJson(res), null, 2);
     },
   },
   {
