@@ -5,7 +5,7 @@
 "use client";
 
 import React from "react";
-import { ChevronDown, Clock3, ExternalLink, Pause, Play } from "lucide-react";
+import { Bot, Clock3, ExternalLink } from "lucide-react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands, type ProviderAutomation } from "@/lib/utils/tauri";
 import { cn } from "@/lib/utils";
@@ -100,12 +100,23 @@ export function providerManagementUrl(provider: string): string | null {
   return null;
 }
 
-function providerSummary(tasks: ProviderAutomation[]): string {
-  const providers = Array.from(
-    new Set(tasks.map((task) => task.provider.toLowerCase())),
-  );
-  if (providers.length === 1) return `from ${providers[0]}`;
-  return `from ${providers.length} agents`;
+function providerLabel(provider: string): string {
+  if (provider.toLowerCase() === "codex") return "Codex";
+  if (provider.toLowerCase() === "claude") return "Claude";
+  return provider.charAt(0).toUpperCase() + provider.slice(1);
+}
+
+function ProviderIcon({ provider }: { provider: string }) {
+  const className = "h-4 w-4 shrink-0";
+  if (provider.toLowerCase() === "codex") {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src="/images/codex.svg" alt="" className={className} />;
+  }
+  if (provider.toLowerCase() === "claude") {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src="/images/claude-ai.svg" alt="" className={className} />;
+  }
+  return <Bot className={className} aria-hidden="true" />;
 }
 
 export interface ProviderAutomationsPanelProps {
@@ -125,7 +136,12 @@ export function ProviderAutomationsPanel({
   },
 }: ProviderAutomationsPanelProps) {
   const [tasks, setTasks] = React.useState<ProviderAutomation[]>([]);
-  const [expanded, setExpanded] = React.useState(false);
+  const [selectedProvider, setSelectedProvider] = React.useState<string | null>(
+    null,
+  );
+  const [expandedProvider, setExpandedProvider] = React.useState<string | null>(
+    null,
+  );
   const [openError, setOpenError] = React.useState<string | null>(null);
   const [mutationError, setMutationError] = React.useState<string | null>(null);
   const [pendingTask, setPendingTask] = React.useState<string | null>(null);
@@ -159,10 +175,6 @@ export function ProviderAutomationsPanel({
           .some((value) => String(value).toLowerCase().includes(query)),
       )
     : tasks;
-  const isExpanded = expanded || Boolean(query);
-  const hasInlineControls = visible.some(
-    (task) => (task.availableActions?.length ?? 0) > 0,
-  );
   const grouped = visible.reduce<Map<string, ProviderAutomation[]>>(
     (groups, task) => {
       const provider = task.provider.toLowerCase();
@@ -171,6 +183,18 @@ export function ProviderAutomationsPanel({
     },
     new Map(),
   );
+  const providers = Array.from(grouped.keys());
+  const activeProvider =
+    selectedProvider && grouped.has(selectedProvider)
+      ? selectedProvider
+      : (providers[0] ?? null);
+  const activeTasks = activeProvider ? (grouped.get(activeProvider) ?? []) : [];
+
+  React.useEffect(() => {
+    if (activeProvider !== selectedProvider) {
+      setSelectedProvider(activeProvider);
+    }
+  }, [activeProvider, selectedProvider]);
 
   const manageProvider = React.useCallback(
     async (provider: string) => {
@@ -208,134 +232,196 @@ export function ProviderAutomationsPanel({
 
   if (visible.length === 0) return null;
 
+  const activeProviderLabel = providerLabel(activeProvider ?? "agent");
+  const activeManagementUrl = activeProvider
+    ? providerManagementUrl(activeProvider)
+    : null;
+  const activeHasInlineControls = activeTasks.some(
+    (task) => (task.availableActions?.length ?? 0) > 0,
+  );
+  const displayedActiveTasks =
+    expandedProvider === activeProvider ? activeTasks : activeTasks.slice(0, 5);
+  const hiddenTaskCount = activeTasks.length - displayedActiveTasks.length;
+
   return (
     <section
-      className="border border-border"
+      className="overflow-hidden rounded-lg border border-border bg-muted/10"
       data-testid="provider-automations-panel"
     >
-      <button
-        type="button"
-        className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40"
-        aria-expanded={isExpanded}
-        onClick={() => setExpanded((value) => !value)}
-      >
-        <ChevronDown
-          className={cn(
-            "h-4 w-4 shrink-0 transition-transform",
-            !isExpanded && "-rotate-90",
-          )}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <h3 className="text-sm font-medium lowercase">
-              external schedules
-            </h3>
-            <span className="font-mono text-[11px] text-muted-foreground">
-              {visible.length} {providerSummary(visible)}
+      <div className="flex items-start justify-between gap-4 px-4 pb-3 pt-3.5">
+        <div>
+          <div className="flex items-baseline gap-2">
+            <h3 className="text-sm font-medium">agent schedules</h3>
+            <span className="text-xs tabular-nums text-muted-foreground">
+              {visible.length} total
             </span>
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            {hasInlineControls
-              ? "run by their agent; supported controls work here"
-              : "run by their agent; manage them at the source"}
+            created and owned by your connected agents
           </p>
         </div>
-      </button>
+      </div>
 
-      {isExpanded && (
-        <div className="border-t border-border">
-          {Array.from(grouped.entries()).map(([provider, providerTasks]) => {
-            const managementUrl = providerManagementUrl(provider);
-            return (
-              <div
-                key={provider}
-                className="border-b border-border last:border-b-0"
+      <div
+        role="tablist"
+        aria-label="schedule owner"
+        className="flex gap-1 overflow-x-auto border-y border-border bg-muted/20 px-3 py-2"
+      >
+        {providers.map((provider) => {
+          const isActive = provider === activeProvider;
+          const count = grouped.get(provider)?.length ?? 0;
+          return (
+            <button
+              key={provider}
+              id={`provider-tab-${provider}`}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              aria-controls={`provider-panel-${provider}`}
+              className={cn(
+                "inline-flex h-8 shrink-0 items-center gap-2 rounded-md border px-3 text-xs transition-colors",
+                isActive
+                  ? "border-border bg-background text-foreground shadow-sm"
+                  : "border-transparent text-muted-foreground hover:bg-background/70 hover:text-foreground",
+              )}
+              onClick={() => setSelectedProvider(provider)}
+            >
+              <ProviderIcon provider={provider} />
+              <span>{providerLabel(provider)}</span>
+              <span
+                className={cn(
+                  "rounded-full px-1.5 py-0.5 text-[10px] tabular-nums",
+                  isActive ? "bg-muted" : "bg-background/60",
+                )}
               >
-                <div className="flex items-center gap-3 bg-muted/20 px-4 py-2">
-                  <span className="font-mono text-[10px] uppercase tracking-wide">
-                    {provider}
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {activeProvider && (
+        <div
+          id={`provider-panel-${activeProvider}`}
+          role="tabpanel"
+          aria-labelledby={`provider-tab-${activeProvider}`}
+        >
+          <div className="flex min-h-10 items-center gap-2 border-b border-border px-4 py-2 text-xs text-muted-foreground">
+            <span>
+              {activeHasInlineControls
+                ? `status changes sync back to ${activeProviderLabel}`
+                : `status is mirrored from ${activeProviderLabel}`}
+            </span>
+            <div className="flex-1" />
+            {activeManagementUrl && (
+              <button
+                type="button"
+                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-foreground transition-colors hover:bg-muted"
+                onClick={() => void manageProvider(activeProvider)}
+              >
+                open {activeProviderLabel}
+                <ExternalLink className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+
+          <div className="divide-y divide-border">
+            {displayedActiveTasks.map((task) => {
+              const actions = task.availableActions ?? [];
+              const primaryAction = actions.includes("pause")
+                ? "pause"
+                : actions.includes("resume")
+                  ? "resume"
+                  : null;
+              const isPending = pendingTask === task.key;
+              const isOn = primaryAction
+                ? primaryAction === "pause"
+                : task.status === "active";
+              return (
+                <article
+                  key={task.key}
+                  className="grid items-center gap-3 bg-background/40 px-4 py-3 transition-colors hover:bg-background/80 md:grid-cols-[minmax(0,1fr)_12rem_auto]"
+                  title={task.lifecycleNote}
+                >
+                  <div className="min-w-0">
+                    <div
+                      className="truncate text-sm font-medium"
+                      title={task.name}
+                    >
+                      {task.name}
+                    </div>
+                    <span className="mt-1 inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <Clock3 className="h-3 w-3 shrink-0" />
+                      <span className="truncate">
+                        {providerScheduleLabel(task)}
+                      </span>
+                    </span>
+                  </div>
+
+                  <span className="inline-flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                    <span
+                      className={cn(
+                        "h-2 w-2 shrink-0 rounded-full border border-current",
+                        isOn && "bg-emerald-500 text-emerald-500",
+                      )}
+                    />
+                    <span className="truncate">
+                      {isOn ? "On" : "Off"} · {scopeLabel(task)}
+                    </span>
                   </span>
-                  <span className="font-mono text-[10px] text-muted-foreground">
-                    {providerTasks.length}
-                  </span>
-                  <div className="flex-1" />
-                  {managementUrl && (
+
+                  {primaryAction ? (
                     <button
                       type="button"
-                      className="inline-flex items-center gap-1.5 border border-border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors hover:bg-foreground hover:text-background"
-                      onClick={() => void manageProvider(provider)}
+                      role="switch"
+                      aria-checked={isOn}
+                      aria-busy={isPending}
+                      aria-label={`${isOn ? "Turn off" : "Turn on"} ${task.name}`}
+                      disabled={isPending}
+                      className="inline-flex items-center justify-end rounded-md p-1.5 transition-colors hover:bg-muted disabled:cursor-wait disabled:opacity-50"
+                      onClick={() => void mutateTask(task, primaryAction)}
                     >
-                      manage in {provider}
-                      <ExternalLink className="h-3 w-3" />
-                    </button>
-                  )}
-                </div>
-                <div className="divide-y divide-border">
-                  {providerTasks.map((task) => {
-                    const actions = task.availableActions ?? [];
-                    const primaryAction = actions.includes("pause")
-                      ? "pause"
-                      : actions.includes("resume")
-                        ? "resume"
-                        : null;
-                    const isPending = pendingTask === task.key;
-                    return (
-                      <article
-                        key={task.key}
-                        className="grid items-center gap-2 px-4 py-2.5 md:grid-cols-[minmax(0,1fr)_13rem_12rem]"
-                        title={task.lifecycleNote}
+                      <span className="sr-only">
+                        {isPending ? "Saving" : isOn ? "On" : "Off"}
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "flex h-5 w-9 items-center rounded-full border p-0.5 transition-colors",
+                          isOn
+                            ? "border-emerald-500 bg-emerald-500"
+                            : "border-border bg-muted",
+                        )}
                       >
-                        <div
-                          className="truncate text-sm font-medium"
-                          title={task.name}
-                        >
-                          {task.name}
-                        </div>
-                        <span className="inline-flex items-center gap-1.5 font-mono text-[11px] text-muted-foreground">
-                          <Clock3 className="h-3 w-3 shrink-0" />
-                          <span className="truncate">
-                            {providerScheduleLabel(task)}
-                          </span>
-                        </span>
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="inline-flex min-w-0 flex-1 items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
-                            <span
-                              className={cn(
-                                "h-1.5 w-1.5 shrink-0 border border-current",
-                                task.status === "active" &&
-                                  "bg-foreground text-foreground",
-                              )}
-                            />
-                            <span className="truncate">
-                              {task.status} · {scopeLabel(task)}
-                            </span>
-                          </span>
-                          {primaryAction && (
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-1 border border-border px-2 py-1 font-mono text-[9px] uppercase tracking-wide transition-colors hover:bg-foreground hover:text-background disabled:cursor-wait disabled:opacity-50"
-                              aria-label={`${primaryAction} ${task.name}`}
-                              disabled={isPending}
-                              onClick={() =>
-                                void mutateTask(task, primaryAction)
-                              }
-                            >
-                              {primaryAction === "pause" ? (
-                                <Pause className="h-2.5 w-2.5" />
-                              ) : (
-                                <Play className="h-2.5 w-2.5" />
-                              )}
-                              {isPending ? "working" : primaryAction}
-                            </button>
+                        <span
+                          className={cn(
+                            "h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform",
+                            isOn && "translate-x-4",
                           )}
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
+                        />
+                      </span>
+                    </button>
+                  ) : (
+                    <span className="justify-self-end rounded-full bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">
+                      managed in {activeProviderLabel}
+                    </span>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+
+          {hiddenTaskCount > 0 && (
+            <button
+              type="button"
+              className="w-full border-t border-border px-4 py-2.5 text-left text-xs text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground"
+              onClick={() => setExpandedProvider(activeProvider)}
+            >
+              show {hiddenTaskCount} more {activeProviderLabel} schedule
+              {hiddenTaskCount === 1 ? "" : "s"}
+            </button>
+          )}
         </div>
       )}
 

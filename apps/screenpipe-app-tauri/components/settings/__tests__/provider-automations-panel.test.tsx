@@ -60,24 +60,27 @@ describe("ProviderAutomationsPanel", () => {
     });
   });
 
-  it("keeps external schedules compact until the user expands them", async () => {
+  it("separates agent-owned schedules into branded provider tabs", async () => {
     render(<ProviderAutomationsPanel />);
 
-    expect(await screen.findByText("external schedules")).toBeInTheDocument();
-    expect(screen.getByText("2 from 2 agents")).toBeInTheDocument();
+    expect(await screen.findByText("agent schedules")).toBeInTheDocument();
     expect(
-      screen.getByText("run by their agent; supported controls work here"),
+      screen.getByText("created and owned by your connected agents"),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Daily review")).not.toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: /external schedules/i }),
+    expect(screen.getByRole("tab", { name: /Codex 1/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
     );
-
     expect(screen.getByText("Daily review")).toBeInTheDocument();
+    expect(screen.queryByText("Say hi")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Claude 1/i }));
+
     expect(screen.getByText("Say hi")).toBeInTheDocument();
-    expect(screen.getByText("daily at 17:00")).toBeInTheDocument();
-    expect(screen.getByText("active · session only")).toBeInTheDocument();
+    expect(screen.getByText("Every hour at :07")).toBeInTheDocument();
+    expect(screen.getByText("On · session only")).toBeInTheDocument();
+    expect(screen.getByText("status is mirrored from Claude")).toBeInTheDocument();
+    expect(screen.getByText("managed in Claude")).toBeInTheDocument();
     expect(screen.queryByText("read only")).not.toBeInTheDocument();
   });
 
@@ -98,11 +101,8 @@ describe("ProviderAutomationsPanel", () => {
     const onOpenProvider = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onOpenProvider={onOpenProvider} />);
 
-    expect(await screen.findByText("external schedules")).toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /external schedules/i }),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "manage in codex" }));
+    expect(await screen.findByText("agent schedules")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "open Codex" }));
 
     expect(onOpenProvider).toHaveBeenCalledWith("codex://automations");
     expect(providerManagementUrl("claude")).toBeNull();
@@ -112,21 +112,19 @@ describe("ProviderAutomationsPanel", () => {
     const onManageTask = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onManageTask={onManageTask} />);
 
-    expect(await screen.findByText("external schedules")).toBeInTheDocument();
+    expect(await screen.findByText("agent schedules")).toBeInTheDocument();
     fireEvent.click(
-      screen.getByRole("button", { name: /external schedules/i }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "resume Daily review" }),
+      screen.getByRole("switch", { name: "Turn on Daily review" }),
     );
 
     await waitFor(() =>
       expect(onManageTask).toHaveBeenCalledWith("codex:daily-review", "resume"),
     );
-    expect(screen.queryByRole("button", { name: /pause Say hi/i })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: /Claude 1/i }));
+    expect(screen.queryByRole("switch", { name: /Say hi/i })).toBeNull();
   });
 
-  it("keeps large native inventories behind one collapsed summary", async () => {
+  it("limits a large provider inventory until the user asks for more", async () => {
     const manyTasks = Array.from({ length: 6 }, (_, index) => ({
       ...TASKS[0],
       key: `codex:task-${index}`,
@@ -139,12 +137,15 @@ describe("ProviderAutomationsPanel", () => {
     });
 
     render(<ProviderAutomationsPanel />);
-    expect(await screen.findByText("6 from codex")).toBeInTheDocument();
-    expect(screen.queryByText("Task 0")).not.toBeInTheDocument();
-    fireEvent.click(
-      screen.getByRole("button", { name: /external schedules/i }),
-    );
+    expect(
+      await screen.findByRole("tab", { name: /Codex 6/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText("Task 0")).toBeInTheDocument();
+    expect(screen.queryByText("Task 5")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "show 1 more Codex schedule" }),
+    );
     expect(screen.getByText("Task 5")).toBeInTheDocument();
   });
 
