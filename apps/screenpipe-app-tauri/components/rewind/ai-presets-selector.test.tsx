@@ -73,6 +73,13 @@ vi.mock("@/lib/acp-rollout", () => ({
       presetName: "claude code",
       description: "Use Claude Code for this connection.",
     },
+    {
+      id: "custom",
+      name: "Agent command",
+      imageSrc: "/images/custom.png",
+      presetName: "acp agent",
+      description: "Connect a compatible agent using its command.",
+    },
   ],
 }));
 vi.mock("@/lib/http/tauri-fetch", () => ({
@@ -156,9 +163,27 @@ describe("AIPresetsSelector controlled preset creation", () => {
       screen.getByRole("button", { name: "Claude Code" }),
     ).toBeInTheDocument();
     expect(
+      screen.getByRole("button", { name: "claude API" }),
+    ).toBeInTheDocument();
+    expect(
       screen.queryByRole("button", { name: "coding agent" }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "model API" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "agent command" }),
+    ).not.toBeInTheDocument();
     expect(screen.queryByLabelText("name")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /advanced/ }));
+
+    expect(
+      screen.getByRole("button", { name: "model API" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "agent command" }),
+    ).toBeInTheDocument();
   });
 
   it("selects the full newly saved preset and shows its model after closing", async () => {

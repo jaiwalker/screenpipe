@@ -329,6 +329,12 @@ export function AIProviderConfig({
   // coding-agent provider the settings page deliberately hides.
   const acpEnabled = useAcpRolloutEnabled();
   const acpAdapters = useSelectableAcpAdapters(formData.acpAgent?.id);
+  const primaryAcpAdapters = acpAdapters.filter(
+    (adapter) => adapter.id !== "custom",
+  );
+  const customAcpAdapter = acpAdapters.find(
+    (adapter) => adapter.id === "custom",
+  );
 
   // A preset saved while the flag was on must not leave this editor stuck on a
   // provider whose picker is no longer rendered.
@@ -655,7 +661,10 @@ export function AIProviderConfig({
 
 
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(
+    selectedProvider === "custom" ||
+      (selectedProvider === "acp" && formData.acpAgent?.id === "custom"),
+  );
 
   return (
     <div className="w-full space-y-3 rounded-lg bg-card p-4">
@@ -727,23 +736,6 @@ export function AIProviderConfig({
 
           <Button
             type="button"
-            variant={selectedProvider === "custom" ? "default" : "outline"}
-            className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
-            onClick={() => {
-              setSelectedProvider("custom");
-              setFormData({
-                ...formData,
-                provider: "custom",
-                url: "http://localhost:11434/v1",
-              });
-            }}
-          >
-            <Icons.settings className="h-3.5 w-3.5" />
-            <span>custom model</span>
-          </Button>
-
-          <Button
-            type="button"
             variant={(selectedProvider as string) === "anthropic" ? "default" : "outline"}
             className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
             onClick={() => {
@@ -759,11 +751,11 @@ export function AIProviderConfig({
             }}
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/images/claude-ai.svg" alt="Claude API" className="h-3.5 w-3.5 rounded-sm" />
-            <span>claude</span>
+            <img src="/images/claude-ai.svg" alt="" className="h-3.5 w-3.5 rounded-sm" />
+            <span>claude API</span>
           </Button>
 
-          {acpEnabled && acpAdapters.map((adapter) => {
+          {acpEnabled && primaryAcpAdapters.map((adapter) => {
             const isSelected =
               selectedProvider === "acp" &&
               (formData.acpAgent?.id || "pi-acp") === adapter.id;
@@ -1131,6 +1123,64 @@ export function AIProviderConfig({
 
         {showAdvanced && (
           <div className="space-y-1.5">
+            <div className="space-y-1">
+              <p className="text-xs font-medium">connect something else</p>
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={selectedProvider === "custom" ? "default" : "outline"}
+                  className="flex h-8 items-center justify-center gap-1.5 px-3 text-xs"
+                  onClick={() => {
+                    setSelectedProvider("custom");
+                    setFormData({
+                      ...formData,
+                      provider: "custom",
+                      url: "http://localhost:11434/v1",
+                    });
+                  }}
+                >
+                  <Icons.settings className="h-3.5 w-3.5" />
+                  <span>model API</span>
+                </Button>
+                {acpEnabled && customAcpAdapter && (
+                  <Button
+                    type="button"
+                    variant={
+                      selectedProvider === "acp" &&
+                      formData.acpAgent?.id === customAcpAdapter.id
+                        ? "default"
+                        : "outline"
+                    }
+                    className="flex h-8 items-center justify-center gap-1.5 px-3 text-xs"
+                    onClick={() => {
+                      const nextAgent = acpAgentForSelection(
+                        formData.acpAgent,
+                        customAcpAdapter.id,
+                      );
+                      setSelectedProvider("acp");
+                      setFormData({
+                        ...formData,
+                        provider: "acp",
+                        url: "",
+                        model: nextAgent.id,
+                        acpAgent: nextAgent,
+                      });
+                    }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={customAcpAdapter.imageSrc}
+                      alt=""
+                      className="h-3.5 w-3.5 rounded-sm"
+                    />
+                    <span>agent command</span>
+                  </Button>
+                )}
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                use a model endpoint or connect an agent by command
+              </p>
+            </div>
             <div className="space-y-1">
               <Label htmlFor="name" className="flex items-center gap-2 text-xs">
                 name
