@@ -6,6 +6,7 @@ import type { InvokeArgs } from "@tauri-apps/api/core";
 import type {
   BrainViewCanvasDocument,
   BrainViewDefinition,
+  ProviderAutomation,
   SaveBrainViewCanvasRequest,
   SaveBrainViewRequest,
 } from "@/lib/utils/tauri";
@@ -122,6 +123,56 @@ function createBrowserDevLiveViewCanvas(
   };
 }
 
+function createBrowserDevProviderAutomations(): ProviderAutomation[] {
+  return [
+    {
+      key: "codex:security-monitor",
+      provider: "codex",
+      nativeId: "security-monitor",
+      name: "4-hour user security monitor",
+      schedule: "FREQ=HOURLY;INTERVAL=4",
+      scheduleLabel: null,
+      status: "active",
+      executionScope: "local",
+      manageability: "in_app",
+      availableActions: ["pause", "delete"],
+      lifecycleNote: "managed through a live codex ACP session",
+      revision: "browser-security-monitor-1",
+      updatedAtMs: Date.now(),
+    },
+    {
+      key: "codex:daily-review",
+      provider: "codex",
+      nativeId: "daily-review",
+      name: "Daily retention and support review",
+      schedule: "FREQ=DAILY;BYHOUR=5;BYMINUTE=0",
+      scheduleLabel: null,
+      status: "paused",
+      executionScope: "local",
+      manageability: "in_app",
+      availableActions: ["resume", "delete"],
+      lifecycleNote: "managed through a live codex ACP session",
+      revision: "browser-daily-review-1",
+      updatedAtMs: Date.now(),
+    },
+    {
+      key: "claude:session-1:meeting-follow-up",
+      provider: "claude",
+      nativeId: "meeting-follow-up",
+      name: "Prepare meeting follow-up",
+      schedule: "0 */2 * * *",
+      scheduleLabel: "Every 2 hours",
+      status: "active",
+      executionScope: "session",
+      manageability: "read_only",
+      availableActions: [],
+      lifecycleNote: "runs only while this Claude session is alive",
+      revision: "browser-meeting-follow-up-1",
+      updatedAtMs: Date.now(),
+    },
+  ];
+}
+
 function asRecord(value: InvokeArgs | undefined): Record<string, unknown> {
   if (
     !value ||
@@ -142,7 +193,10 @@ function joinPath(parts: unknown[]): string {
   return joined.startsWith("/") ? joined : `/${joined}`;
 }
 
-function handlePathCommand(command: string, args: InvokeArgs | undefined): unknown {
+function handlePathCommand(
+  command: string,
+  args: InvokeArgs | undefined,
+): unknown {
   const input = asRecord(args);
   const path = typeof input.path === "string" ? input.path : "";
   switch (command) {
@@ -280,9 +334,7 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
         const key = String(input.key);
         const deleted = getStore(resourceId).delete(key);
         if (deleted) {
-          queueMicrotask(() =>
-            notifyStoreChange(resourceId, key, false, null),
-          );
+          queueMicrotask(() => notifyStoreChange(resourceId, key, false, null));
         }
         return deleted;
       }
@@ -292,9 +344,7 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
         const keys = [...getStore(resourceId).keys()];
         getStore(resourceId).clear();
         for (const key of keys) {
-          queueMicrotask(() =>
-            notifyStoreChange(resourceId, key, false, null),
-          );
+          queueMicrotask(() => notifyStoreChange(resourceId, key, false, null));
         }
         return null;
       }
@@ -369,6 +419,10 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
         return liveViews;
       case "list_brain_view_template_kits":
         return [];
+      case "list_provider_automations":
+        return createBrowserDevProviderAutomations();
+      case "manage_provider_automation":
+        return null;
       case "save_brain_view": {
         const request = input.request as SaveBrainViewRequest;
         const existing = liveViews.find((view) => view.id === request.id);
