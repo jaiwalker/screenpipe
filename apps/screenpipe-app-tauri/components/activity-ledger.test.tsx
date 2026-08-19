@@ -685,7 +685,11 @@ describe("ActivityLedger", () => {
 
     await screen.findByRole("button", { name: "Generate activities" });
     expect(screen.queryByRole("heading", { name: "Activity" })).toBeNull();
-    expect(screen.getByLabelText("Time range")).toBeVisible();
+    const timeRange = screen.getByRole("combobox", {
+      name: "Time range: Today",
+    });
+    expect(timeRange).toBeVisible();
+    expect(timeRange).toHaveTextContent("Today");
     expect(screen.getByLabelText("AI preset")).toBeVisible();
   });
 
@@ -693,7 +697,9 @@ describe("ActivityLedger", () => {
     render(<ActivityLedger />);
 
     await screen.findByRole("button", { name: "Generate activities" });
-    fireEvent.click(screen.getByLabelText("Time range"));
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Time range: Today" }),
+    );
     fireEvent.click(
       await screen.findByRole("option", { name: "Custom range" }),
     );
@@ -710,7 +716,9 @@ describe("ActivityLedger", () => {
     render(<ActivityLedger />);
 
     await screen.findByRole("button", { name: "Generate activities" });
-    fireEvent.click(screen.getByLabelText("Time range"));
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Time range: Today" }),
+    );
     fireEvent.click(
       await screen.findByRole("option", { name: "Custom range" }),
     );
@@ -730,10 +738,14 @@ describe("ActivityLedger", () => {
       ).toHaveAttribute("aria-expanded", "false"),
     );
 
-    fireEvent.click(screen.getByLabelText("Time range"));
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Time range: Custom range" }),
+    );
     fireEvent.click(await screen.findByRole("option", { name: "Today" }));
 
-    expect(screen.getByLabelText("Time range")).toHaveTextContent("Today");
+    expect(
+      screen.getByRole("combobox", { name: "Time range: Today" }),
+    ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Choose custom date range" }),
     ).toBeNull();
@@ -1245,7 +1257,9 @@ describe("ActivityLedger", () => {
     expect(
       screen.getByRole("button", { name: "Refresh history" }),
     ).toBeVisible();
-    expect(screen.getByLabelText("Time range")).toBeVisible();
+    expect(
+      screen.getByRole("combobox", { name: "Time range: Today" }),
+    ).toBeVisible();
   });
 
   it("opens app and transcript artifacts at their exact timeline moments", async () => {

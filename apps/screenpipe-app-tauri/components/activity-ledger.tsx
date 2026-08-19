@@ -17,6 +17,7 @@ import {
   AppWindow,
   AudioLines,
   CalendarDays,
+  CalendarRange,
   RefreshCw,
   Users,
 } from "lucide-react";
@@ -38,7 +39,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 import {
   ACTIVITY_REVIEW_AGENT_SYSTEM_PROMPT,
@@ -148,6 +148,13 @@ const RANGE_COPY: Record<RangePreset, string> = {
   "24h": "Last 24 hours",
   "7d": "Last 7 days",
   custom: "Custom range",
+};
+
+const RANGE_SHORT_COPY: Record<RangePreset, string> = {
+  today: "Today",
+  "24h": "24h",
+  "7d": "7d",
+  custom: "Custom",
 };
 
 function readStoredRangePreset(): RangePreset {
@@ -1311,11 +1318,13 @@ Re-query Screenpipe only inside the cited time range and use the cited frames an
                 }}
               >
                 <SelectTrigger
-                  className="h-9 w-[150px] rounded-none text-xs"
+                  className="h-9 w-auto min-w-0 shrink-0 justify-center gap-1.5 rounded-none px-2 text-xs [&>svg:last-child]:hidden"
                   data-testid="activity-range"
-                  aria-label="Time range"
+                  aria-label={`Time range: ${RANGE_COPY[preset]}`}
+                  title={`Time range: ${RANGE_COPY[preset]}`}
                 >
-                  <SelectValue />
+                  <CalendarRange className="h-4 w-4" aria-hidden="true" />
+                  <span aria-hidden="true">{RANGE_SHORT_COPY[preset]}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {(
