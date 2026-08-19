@@ -1271,12 +1271,6 @@ interface AIPresetsSelectorProps {
   onOpenChange?: (open: boolean) => void;
   /** Scheduled pipes still run through raw Pi and cannot execute ACP adapters. */
   includeAgentPresets?: boolean;
-  /** Selection-only surfaces hide preset editing, deletion, and creation. */
-  selectionOnly?: boolean;
-  /** Override the default upward-opening chat placement. */
-  popoverSide?: "top" | "right" | "bottom" | "left";
-  /** Class applied to the preset popover for surface-specific sizing. */
-  popoverContentClassName?: string;
 }
 
 export const AIPresetDialog = ({
@@ -1375,9 +1369,6 @@ export const AIPresetsSelector = ({
   showModelOnly = false,
   onOpenChange,
   includeAgentPresets = true,
-  selectionOnly = false,
-  popoverSide = "top",
-  popoverContentClassName,
 }: AIPresetsSelectorProps) => {
   const { settings, updateSettings } = useSettings();
   const [open, setOpen] = useState(false);
@@ -1908,14 +1899,11 @@ export const AIPresetsSelector = ({
             </Tooltip>
           </TooltipProvider>
           <PopoverContent
-            side={popoverSide}
+            side="top"
             sideOffset={6}
             align={showModelOnly ? "end" : "center"}
             alignOffset={showModelOnly ? -16 : 0}
-            className={cn(
-              "min-w-[500px] w-[--radix-popover-trigger-width] p-0",
-              popoverContentClassName,
-            )}
+            className="min-w-[500px] w-[--radix-popover-trigger-width] p-0"
           >
             <Command>
               <CommandInput placeholder="search presets..." />
@@ -2082,7 +2070,7 @@ export const AIPresetsSelector = ({
                               business plan only
                             </span>
                           )}
-                          {preset.defaultPreset && !selectionOnly && (
+                          {preset.defaultPreset && (
                             <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-medium shrink-0">
                               default
                             </span>
@@ -2090,80 +2078,76 @@ export const AIPresetsSelector = ({
                         </div>
                         <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground shrink-0">
                           <div className="flex items-center gap-2">
-                            {!selectionOnly && (
-                              <span className="rounded bg-muted px-1.5 py-0.5 whitespace-nowrap">
-                                {preset.provider}
-                              </span>
-                            )}
+                            <span className="rounded bg-muted px-1.5 py-0.5 whitespace-nowrap">
+                              {preset.provider}
+                            </span>
                             <span className="truncate max-w-[120px]">
                               {preset.provider === "acp"
                                 ? acpAdapterInfo(preset.acpAgent?.id).name
                                 : preset.model}
                             </span>
                           </div>
-                          {!selectionOnly && (
-                            <div className="flex items-center gap-1">
-                              {canManageEmployeePresets && !isEnterpriseManagedPreset(preset) && (
-                                <>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 shrink-0"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleEditPreset(preset);
-                                    }}
-                                  >
-                                    <Edit2 className="h-3.5 w-3.5" />
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 shrink-0"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDuplicatePreset(preset);
-                                    }}
-                                  >
-                                    <Copy className="h-3.5 w-3.5" />
-                                  </Button>
-                                </>
-                              )}
-                              {!preset.defaultPreset && !aiPresetPolicy.lock_default_preset && (
+                          <div className="flex items-center gap-1">
+                            {canManageEmployeePresets && !isEnterpriseManagedPreset(preset) && (
+                              <>
                                 <Button
                                   variant="ghost"
                                   size="icon"
                                   className="h-6 w-6 shrink-0"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleSetDefaultPreset(preset);
+                                    handleEditPreset(preset);
                                   }}
                                 >
-                                  <Star className="h-3.5 w-3.5" />
+                                  <Edit2 className="h-3.5 w-3.5" />
                                 </Button>
-                              )}
-                              {canManageEmployeePresets && !isEnterpriseManagedPreset(preset) && !isLastCloudPreset(preset) && (
                                 <Button
                                   variant="ghost"
                                   size="icon"
                                   className="h-6 w-6 shrink-0"
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    handleRemovePreset(preset);
+                                    handleDuplicatePreset(preset);
                                   }}
                                 >
-                                  <Trash2 className="h-3.5 w-3.5" />
+                                  <Copy className="h-3.5 w-3.5" />
                                 </Button>
-                              )}
-                            </div>
-                          )}
+                              </>
+                            )}
+                            {!preset.defaultPreset && !aiPresetPolicy.lock_default_preset && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 shrink-0"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSetDefaultPreset(preset);
+                                }}
+                              >
+                                <Star className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                            {canManageEmployeePresets && !isEnterpriseManagedPreset(preset) && !isLastCloudPreset(preset) && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6 shrink-0"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRemovePreset(preset);
+                                }}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </CommandItem>
                     );
                   })}
                 </CommandGroup>
-                {canManageEmployeePresets && !selectionOnly && (
+                {canManageEmployeePresets && (
                   <CommandGroup>
                     <CommandItem
                       onSelect={() => {

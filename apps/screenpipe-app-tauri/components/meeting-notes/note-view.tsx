@@ -44,7 +44,6 @@ import { readFile } from "@tauri-apps/plugin-fs";
 import posthog from "posthog-js";
 import { qualifiedValue } from "@/lib/analytics/qualified-value";
 import { Button } from "@/components/ui/button";
-import { AIPresetsSelector } from "@/components/rewind/ai-presets-selector";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -114,6 +113,11 @@ import {
   useSettings,
   type Settings,
 } from "@/lib/hooks/use-settings";
+import { useManagedPolicy } from "@/lib/hooks/use-managed-policy";
+import {
+  DEFAULT_ENTERPRISE_AI_PRESET_POLICY,
+  filterPresetsForEnterprisePolicy,
+} from "@/lib/enterprise-ai-preset-policy";
 import {
   MeetingNoteSaveQueue,
   sameMeetingNoteDraft,
@@ -319,6 +323,8 @@ export function NoteView({
     "retranscribe" | "delete" | null
   >(null);
   const { settings, updateSettings } = useSettings();
+  const { isManagedDeployment, policy: enterprisePolicy } =
+    useManagedPolicy();
   const noteEditorRef = useRef<NoteEditorHandle>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
@@ -362,18 +368,34 @@ export function NoteView({
   }, [oneTapSend, toast]);
 
   const summaryPipeSlug = settings.meetingSummaryPipeSlug || "meeting-summary";
+  const summaryPresets = useMemo(() => {
+    const nonAgentPresets = settings.aiPresets.filter(
+      (preset) => preset.provider !== "acp",
+    );
+    if (!isManagedDeployment) return nonAgentPresets;
+    return filterPresetsForEnterprisePolicy(
+      nonAgentPresets,
+      enterprisePolicy.aiPresetPolicy ??
+        DEFAULT_ENTERPRISE_AI_PRESET_POLICY,
+    );
+  }, [
+    enterprisePolicy.aiPresetPolicy,
+    isManagedDeployment,
+    settings.aiPresets,
+  ]);
   const defaultSummaryPresetId = useMemo(
     () =>
-      settings.aiPresets.find(
-        (preset) => preset.defaultPreset && preset.provider !== "acp",
-      )?.id ??
-      settings.aiPresets.find((preset) => preset.provider !== "acp")?.id ??
+      summaryPresets.find((preset) => preset.defaultPreset)?.id ??
+      summaryPresets[0]?.id ??
       null,
-    [settings.aiPresets],
+    [summaryPresets],
   );
   const summaryPresetId = summaryPresetReady
     ? summaryPresetIds[0] ?? defaultSummaryPresetId
     : null;
+  const summaryPreset = summaryPresets.find(
+    (preset) => preset.id === summaryPresetId,
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1699,62 +1721,86 @@ export function NoteView({
   // neither trigger says what it holds, so finding anything meant opening both.
   // One menu with labelled groups means "it is in the menu" is a complete
   // instruction. Summarize loses its square here but keeps the prominent
-  // button inside the summary tab, next to the output it produces.
-  const meetingMenuGroups: MeetingMenuGroup[] = isLive || resuming
-    ? []
-    : [
-        {
-          label: "summary",
-          items: [
-            {
-              key: "summarize",
-              label: summaryActionLabel,
-              icon: summaryWorking
-                ? Loader2
-                : visibleSummaryLifecycle.kind === "completed" ||
-                    visibleSummaryLifecycle.kind === "failed"
-                  ? RefreshCw
-                  : Sparkles,
-              onSelect: () => handleSummaryAction(),
-              disabled:
-                summaryWorking || retranscribing || !canSummarizeMeeting,
-            },
-          ],
-        },
-        {
-          label: "meeting",
-          items: [
-            {
-              key: "resume",
-              label: resuming ? "resuming meeting" : "resume meeting",
-              icon: resuming ? Loader2 : Play,
-              onSelect: () => void onResume(),
-              disabled: resuming,
-            },
-            {
-              key: "retranscribe",
-              label: "retranscribe saved audio",
-              icon: retranscribing ? Loader2 : AudioLines,
-              onSelect: () => setConfirmingAction("retranscribe"),
-              disabled: retranscribing || summaryWorking,
-            },
-            {
-              key: "export",
-              label: "export to mp4",
-              icon: exporting ? Loader2 : Download,
-              onSelect: () => void handleExport(),
-              disabled: exporting,
-            },
-            {
-              key: "delete",
-              label: "delete meeting",
-              icon: Trash2,
-              onSelect: () => setConfirmingAction("delete"),
-              destructive: true,
-            },
-          ],
-        },
-      ];
+  // button inside the summary tab, next to the output it produces. Model
+  // choice stays reachable during a live meeting so the post-stop automatic
+  // summary uses the intended model.
+  const summaryMenuItems: MeetingMenuGroup["items"] = [
+    {
+      key: "summary-model",
+      label: "summary model",
+      icon: Sparkles,
+      disabled:
+        !summaryPresetReady ||
+        summaryPresetSaving ||
+        summaryPresets.length === 0,
+      submenu: {
+        selectedKey: summaryPresetId,
+        selectedLabel: summaryPresetReady
+          ? summaryPreset?.model ?? "select"
+          : "loading…",
+        options: summaryPresets.map((preset) => ({
+          key: preset.id,
+          label: preset.id,
+          detail: preset.model,
+          onSelect: () => void handleSummaryPresetSelect(preset),
+        })),
+      },
+    },
+  ];
+  if (!isLive && !resuming) {
+    summaryMenuItems.push({
+      key: "summarize",
+      label: summaryActionLabel,
+      icon: summaryWorking
+        ? Loader2
+        : visibleSummaryLifecycle.kind === "completed" ||
+            visibleSummaryLifecycle.kind === "failed"
+          ? RefreshCw
+          : Sparkles,
+      onSelect: () => handleSummaryAction(),
+      disabled: summaryWorking || retranscribing || !canSummarizeMeeting,
+    });
+  }
+  const meetingMenuGroups: MeetingMenuGroup[] = [
+    { label: "summary", items: summaryMenuItems },
+    ...(isLive || resuming
+      ? []
+      : [
+          {
+            label: "meeting",
+            items: [
+              {
+                key: "resume",
+                label: resuming ? "resuming meeting" : "resume meeting",
+                icon: resuming ? Loader2 : Play,
+                onSelect: () => void onResume(),
+                disabled: resuming,
+              },
+              {
+                key: "retranscribe",
+                label: "retranscribe saved audio",
+                icon: retranscribing ? Loader2 : AudioLines,
+                onSelect: () => setConfirmingAction("retranscribe"),
+                disabled: retranscribing || summaryWorking,
+              },
+              {
+                key: "export",
+                label: "export to mp4",
+                icon: exporting ? Loader2 : Download,
+                onSelect: () => void handleExport(),
+                disabled: exporting,
+              },
+              {
+                key: "delete",
+                label: "delete meeting",
+                icon: Trash2,
+                onSelect: () => setConfirmingAction("delete"),
+                destructive: true,
+              },
+            ],
+          },
+        ]),
+  ];
 
   // The confirmations are controlled by `confirmingAction`, so they no longer
   // need to wrap the trigger that opens them.
@@ -2017,23 +2063,6 @@ export function NoteView({
               !summaryWorking &&
               !retranscribing &&
               !summaryPresetSaving
-            }
-            modelControl={
-              <AIPresetsSelector
-                compact
-                showModelOnly
-                includeAgentPresets={false}
-                selectionOnly
-                popoverSide="bottom"
-                popoverContentClassName="w-96 min-w-96"
-                controlledPresetId={summaryPresetId}
-                onControlledSelect={(preset) => {
-                  void handleSummaryPresetSelect(preset);
-                }}
-                containerClassName="w-[180px] max-w-[28vw] min-w-[120px] shrink-0 gap-0"
-                triggerClassName="h-7 border-0 bg-transparent px-1.5 text-xs text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground"
-                triggerAriaLabel="meeting summary model"
-              />
             }
             // Mounted with the tab rather than always: the strip pulls the
             // meeting's transcript rows and frame samples, and opening a

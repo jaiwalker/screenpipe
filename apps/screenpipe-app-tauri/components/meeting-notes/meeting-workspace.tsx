@@ -163,7 +163,6 @@ export function MeetingSummarySurface({
   streamedSummary,
   onGenerate,
   canGenerate,
-  modelControl,
   activity,
 }: {
   note: string;
@@ -172,7 +171,6 @@ export function MeetingSummarySurface({
   streamedSummary?: string;
   onGenerate: () => void;
   canGenerate: boolean;
-  modelControl?: React.ReactNode;
   // Replay scrubber and the "related during this meeting" list. They are
   // evidence for the summary — what was on screen and open while it was
   // written — so they belong under it. Under the note editor they sat below a
@@ -220,21 +218,18 @@ export function MeetingSummarySurface({
             {(state === "idle" ||
               state === "attention" ||
               state === "ready") && (
-              <>
-                {modelControl}
-                <button
-                  type="button"
-                  onClick={onGenerate}
-                  disabled={!canGenerate}
-                  className="h-9 shrink-0 border border-foreground bg-foreground px-3 font-mono text-[10px] uppercase tracking-[0.12em] text-background transition-colors hover:bg-background hover:text-foreground disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
-                >
-                  {state === "attention"
-                    ? "retry"
-                    : state === "ready"
-                      ? "summarize again"
-                      : "generate"}
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={onGenerate}
+                disabled={!canGenerate}
+                className="h-9 shrink-0 border border-foreground bg-foreground px-3 font-mono text-[10px] uppercase tracking-[0.12em] text-background transition-colors hover:bg-background hover:text-foreground disabled:border-border disabled:bg-muted disabled:text-muted-foreground"
+              >
+                {state === "attention"
+                  ? "retry"
+                  : state === "ready"
+                    ? "summarize again"
+                    : "generate"}
+              </button>
             )}
           </div>
         </div>

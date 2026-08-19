@@ -272,33 +272,6 @@ describe("meeting summary surface", () => {
     expect(screen.getByRole("button", { name: "generate" })).toBeDisabled();
   });
 
-  it("keeps the summary model control beside the generation action", () => {
-    render(
-      <MeetingSummarySurface
-        note="notes only"
-        state="idle"
-        detail="notes and transcript saved locally"
-        onGenerate={vi.fn()}
-        canGenerate
-        modelControl={
-          <button type="button" aria-label="meeting summary model">
-            claude sonnet
-          </button>
-        }
-      />,
-    );
-
-    const model = screen.getByRole("button", {
-      name: "meeting summary model",
-    });
-    const generate = screen.getByRole("button", { name: "generate" });
-    expect(model).toBeVisible();
-    expect(
-      model.compareDocumentPosition(generate) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-  });
-
   it("keeps an existing summary visible while a refresh is running", () => {
     render(
       <MeetingSummarySurface
