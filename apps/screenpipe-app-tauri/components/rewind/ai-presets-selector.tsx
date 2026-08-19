@@ -149,6 +149,15 @@ interface AIProviderConfigProps {
   defaultPreset?: AIPreset;
   showLoginCta?: boolean;
 }
+
+const PRIMARY_ACP_ADAPTER_ORDER = [
+  "codex-acp",
+  "claude-acp",
+  "cursor",
+  "github-copilot-cli",
+  "pi-acp",
+] as const;
+
 interface OpenAIModel {
   id: string;
   created?: number;
@@ -219,8 +228,8 @@ export function AIProviderConfig({
   showLoginCta = true,
 }: AIProviderConfigProps) {
   const [selectedProvider, setSelectedProvider] = useState<
-    AIPreset["provider"]
-  >(defaultPreset?.provider || "openai");
+    AIPreset["provider"] | null
+  >(defaultPreset?.provider ?? null);
   const { settings } = useSettings();
   const [isLoading, setIsLoading] = useState(false);
   const [openaiModels, setOpenAIModels] = useState<OpenAIModel[]>([]);
@@ -329,9 +338,20 @@ export function AIProviderConfig({
   // coding-agent provider the settings page deliberately hides.
   const acpEnabled = useAcpRolloutEnabled();
   const acpAdapters = useSelectableAcpAdapters(formData.acpAgent?.id);
-  const primaryAcpAdapters = acpAdapters.filter(
-    (adapter) => adapter.id !== "custom",
-  );
+  const primaryAcpAdapters = acpAdapters
+    .filter((adapter) => adapter.id !== "custom")
+    .sort((a, b) => {
+      const aIndex = PRIMARY_ACP_ADAPTER_ORDER.indexOf(
+        a.id as (typeof PRIMARY_ACP_ADAPTER_ORDER)[number],
+      );
+      const bIndex = PRIMARY_ACP_ADAPTER_ORDER.indexOf(
+        b.id as (typeof PRIMARY_ACP_ADAPTER_ORDER)[number],
+      );
+      return (
+        (aIndex < 0 ? PRIMARY_ACP_ADAPTER_ORDER.length : aIndex) -
+        (bIndex < 0 ? PRIMARY_ACP_ADAPTER_ORDER.length : bIndex)
+      );
+    });
   const customAcpAdapter = acpAdapters.find(
     (adapter) => adapter.id === "custom",
   );
@@ -622,6 +642,11 @@ export function AIProviderConfig({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (!selectedProvider) {
+      toast.error("Choose an AI before continuing");
+      return;
+    }
+
     if (!validateId(formData.id)) {
       return;
     }
@@ -717,25 +742,6 @@ export function AIProviderConfig({
 
           <Button
             type="button"
-            variant={
-              selectedProvider === "native-ollama" ? "default" : "outline"
-            }
-            className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
-            onClick={() => {
-              setSelectedProvider("native-ollama");
-              setFormData({
-                ...formData,
-                provider: "native-ollama",
-                url: "http://localhost:11434/v1",
-              });
-            }}
-          >
-            <Icons.terminal className="h-3.5 w-3.5" />
-            <span>ollama</span>
-          </Button>
-
-          <Button
-            type="button"
             variant={(selectedProvider as string) === "anthropic" ? "default" : "outline"}
             className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
             onClick={() => {
@@ -793,7 +799,32 @@ export function AIProviderConfig({
               </Button>
             );
           })}
+
+          <Button
+            type="button"
+            variant={
+              selectedProvider === "native-ollama" ? "default" : "outline"
+            }
+            className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
+            onClick={() => {
+              setSelectedProvider("native-ollama");
+              setFormData({
+                ...formData,
+                provider: "native-ollama",
+                url: "http://localhost:11434/v1",
+              });
+            }}
+          >
+            <Icons.terminal className="h-3.5 w-3.5" />
+            <span>ollama</span>
+          </Button>
         </div>
+
+        {!selectedProvider && (
+          <p className="text-xs text-muted-foreground">
+            choose one to continue
+          </p>
+        )}
 
         {acpEnabled && selectedProvider === "acp" && (
           <AcpAgentPicker
@@ -1068,7 +1099,7 @@ export function AIProviderConfig({
           </div>
         )}
 
-        {requiresAiPresetConnectionTest(selectedProvider) && (
+        {selectedProvider && requiresAiPresetConnectionTest(selectedProvider) && (
           <div className="space-y-2 border p-2.5">
             <div className="flex items-center justify-between gap-2">
               <div>
@@ -1135,12 +1166,12 @@ export function AIProviderConfig({
                     setFormData({
                       ...formData,
                       provider: "custom",
-                      url: "http://localhost:11434/v1",
+                      url: "",
                     });
                   }}
                 >
                   <Icons.settings className="h-3.5 w-3.5" />
-                  <span>model API</span>
+                  <span>use an API key</span>
                 </Button>
                 {acpEnabled && customAcpAdapter && (
                   <Button
@@ -1173,14 +1204,16 @@ export function AIProviderConfig({
                       alt=""
                       className="h-3.5 w-3.5 rounded-sm"
                     />
-                    <span>agent command</span>
+                    <span>use a command</span>
                   </Button>
                 )}
               </div>
               <p className="text-[10px] text-muted-foreground">
-                use a model endpoint or connect an agent by command
+                connect another AI service or coding agent
               </p>
             </div>
+            {selectedProvider && (
+              <>
             <div className="space-y-1">
               <Label htmlFor="name" className="flex items-center gap-2 text-xs">
                 name
@@ -1270,6 +1303,8 @@ export function AIProviderConfig({
                 className="min-h-[60px] max-h-[100px] text-xs resize-none"
               />
             </div>
+              </>
+            )}
           </div>
         )}
 
@@ -1278,6 +1313,7 @@ export function AIProviderConfig({
           className="w-full h-7 text-xs"
           disabled={
             isLoading ||
+            !selectedProvider ||
             Boolean(idError) ||
             !formData.id?.length ||
             !formData.model?.length ||
