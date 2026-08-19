@@ -279,27 +279,6 @@ async function agentJson(res) {
   return body;
 }
 
-async function requireProfileMemory(id) {
-  const res = await fetch(`${apiBase()}/memories/${id}`, { headers: authHeaders() });
-  const memory = await agentJson(res);
-  if (!Array.isArray(memory?.tags) || !memory.tags.includes("user-profile")) {
-    throw new Error(`memory ${id} is not a user-profile entry`);
-  }
-  return memory;
-}
-
-function compactProfileItems(items) {
-  if (!Array.isArray(items)) return [];
-  return items.slice(0, 20).flatMap((item) => {
-    if (!Number.isInteger(item?.id) || typeof item?.content !== "string") return [];
-    return [{
-      ...item,
-      content: item.content.slice(0, 2_000),
-      ...(item.content.length > 2_000 ? { content_truncated: true } : {}),
-    }];
-  });
-}
-
 function requireViewId(viewId) {
   if (typeof viewId !== "string" || !viewId.trim()) {
     throw new Error("viewId is required for this action");
@@ -403,54 +382,30 @@ const TOOLS = [
     },
     async run(args) {
       const action = String(args?.action || "");
-      if (action === "list") {
-        const res = await fetch(
-          `${apiBase()}/memories?tags=user-profile%2C&limit=20&order_by=importance&order_dir=desc`,
-          { headers: authHeaders() },
-        );
-        return JSON.stringify({ profile: compactProfileItems((await agentJson(res))?.data) });
+      if (!["list", "save", "delete"].includes(action)) {
+        throw new Error("action must be list, save, or delete");
       }
       if (action === "delete") {
         if (!Number.isInteger(args?.id) || args?.confirmed !== true) {
           throw new Error("delete requires an id and explicit confirmation");
         }
-        await requireProfileMemory(args.id);
-        const res = await fetch(`${apiBase()}/memories/${args.id}`, {
-          method: "DELETE",
-          headers: authHeaders(),
-        });
-        return JSON.stringify(await agentJson(res));
       }
-      if (action !== "save") throw new Error("action must be list, save, or delete");
-
-      const content = String(args?.content || "").trim();
-      if (!content) throw new Error("save requires one stable fact in content");
-      if (content.length > 2_000) {
-        throw new Error("profile facts must be compact (maximum 2000 characters)");
+      if (action === "save") {
+        const content = String(args?.content || "").trim();
+        if (!content) throw new Error("save requires one stable fact in content");
+        if (content.length > 2_000) {
+          throw new Error("profile facts must be compact (maximum 2000 characters)");
+        }
       }
-      const isUpdate = Number.isInteger(args?.id);
-      const existing = isUpdate ? await requireProfileMemory(args.id) : undefined;
-      const tags = [
-        ...new Set([
-          "user-profile",
-          ...(Array.isArray(existing?.tags) ? existing.tags : []),
-          ...(Array.isArray(args?.tags) ? args.tags : []),
-        ]),
-      ];
-      const res = await fetch(
-        isUpdate ? `${apiBase()}/memories/${args.id}` : `${apiBase()}/memories`,
-        {
-          method: isUpdate ? "PUT" : "POST",
-          headers: authHeaders(),
-          body: JSON.stringify({
-            content,
-            tags,
-            importance: args?.importance ?? existing?.importance ?? 0.8,
-            source_context: { kind: "agent-profile", session_id: chatSessionId() },
-            ...(!isUpdate ? { source: "agent-profile", frame_id: null } : {}),
-          }),
-        },
-      );
+      const res = await fetch(`${apiBase()}/agent/profile/manage`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({
+          ...args,
+          action,
+          ...(action === "save" ? { source: chatSessionId() } : {}),
+        }),
+      });
       return JSON.stringify(await agentJson(res), null, 2);
     },
   },

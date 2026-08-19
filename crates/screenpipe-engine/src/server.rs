@@ -1014,12 +1014,20 @@ impl SCServer {
         // Build the main router with all routes
         let router = Router::new()
             .merge(server.into_router())
-            // Agent-created skills are stored behind one validated local API
-            // so native Pi extensions and ACP MCP tools share provenance,
-            // optimistic concurrency, and bundled-skill protection.
+            // Agent self-improvement lives behind one validated local API so
+            // native Pi and ACP share profile safety, prompt rendering, skill
+            // provenance, optimistic concurrency, and bundled protection.
             .route(
                 "/agent/skills/manage",
                 axum::routing::post(crate::agent_skills::manage_agent_skill_handler),
+            )
+            .route(
+                "/agent/profile/manage",
+                axum::routing::post(crate::agent_profile::manage_profile_handler),
+            )
+            .route(
+                "/agent/self-improvement/context",
+                axum::routing::get(crate::agent_profile::self_improvement_context_handler),
             )
             // Renderer-agnostic structured outputs are deliberately outside
             // the public OpenAPI surface for now. Consumers define targets;

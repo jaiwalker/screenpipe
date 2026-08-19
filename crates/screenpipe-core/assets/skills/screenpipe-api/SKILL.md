@@ -9,10 +9,6 @@ description: Query the user's data via the local screenpipe REST API at localhos
 
 # Screenpipe API
 
-Use `user_profile` for stable user preferences, recurring corrections, role, and durable workflow habits. List first and update a matching fact instead of duplicating it. Save compact declarative facts proactively when they would prevent future re-steering. Do not save task progress, temporary TODOs, secrets, raw private data, or facts likely to be stale within a week.
-
-Use `skill_manage` for reusable procedures discovered during complex work. List and read before changing anything. Patch only an agent-created skill and supply its current `sha256`; bundled, imported, and hand-authored skills are read-only. Create a new narrowly scoped skill only after the user explicitly confirms or asks to remember the procedure. Never save one-off facts as skills.
-
 Local REST API at `http://localhost:3030`.
 
 **Prefer this over the CLI for reads.** A `curl` against the local API returns in ~0.02s; a `screenpipe` CLI call costs ~0.15s at best and ~4s when it has to resolve `screenpipe@latest` from npm. Reach for the CLI only for state changes it uniquely owns (`pipe enable`, `connection set`).
