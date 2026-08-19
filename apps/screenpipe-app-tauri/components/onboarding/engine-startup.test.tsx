@@ -54,11 +54,6 @@ vi.mock("framer-motion", () => ({
     { get: (_target, element: string) => element },
   ),
 }));
-vi.mock("./particle-stream", () => ({
-  ParticleStream: () => <div />,
-  ProgressSteps: () => <div />,
-}));
-
 import EngineStartup, {
   HEALTH_UNREACHABLE_REPORT_AFTER_MS,
   MAX_ENGINE_WAIT_MS,
@@ -78,6 +73,27 @@ describe("onboarding engine startup", () => {
     mocks.getBootPhase.mockResolvedValue(pendingBootPhase);
     mocks.spawnScreenpipe.mockResolvedValue({ status: "ok", data: null });
     mocks.handleNextSlide.mockReset();
+  });
+
+  it("shows the real boot phase instead of fake engine, audio, and vision progress", async () => {
+    mocks.spawnScreenpipe.mockImplementation(() => new Promise(() => {}));
+    mocks.localFetch.mockRejectedValue(new Error("engine not listening yet"));
+
+    const { getByRole, queryByText } = render(
+      <EngineStartup handleNextSlide={mocks.handleNextSlide} />,
+    );
+
+    await waitFor(() =>
+      expect(getByRole("status")).toHaveTextContent(
+        "preparing meeting transcription",
+      ),
+    );
+    expect(getByRole("status")).toHaveTextContent(
+      "setting up audio capture on this computer",
+    );
+    expect(queryByText(/^engine$/i)).not.toBeInTheDocument();
+    expect(queryByText(/^audio$/i)).not.toBeInTheDocument();
+    expect(queryByText(/^vision$/i)).not.toBeInTheDocument();
   });
 
   it("advances when meetings-only audio is intentionally waiting for a meeting", async () => {

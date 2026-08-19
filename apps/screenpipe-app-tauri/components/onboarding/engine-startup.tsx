@@ -22,7 +22,10 @@ import {
   version as osVersion,
   platform as osPlatform,
 } from "@tauri-apps/plugin-os";
-import { ParticleStream, ProgressSteps } from "./particle-stream";
+import {
+  EngineStartupStatus,
+  type EngineBootPhase,
+} from "./engine-startup-status";
 import { screenpipeWebBase } from "@/lib/web-url";
 import { onboardingFunnel } from "@/lib/analytics/onboarding-funnel";
 
@@ -71,14 +74,7 @@ export const HEALTH_UNREACHABLE_REPORT_AFTER_MS = 12000;
 // 2026-04-22 had a 31.5GB db, migration took 13.2s, old UI flipped to
 // "stuck" after 15s and told user to send logs instead of waiting).
 type BootPhaseSnapshot = {
-  phase:
-    | "idle"
-    | "starting"
-    | "migrating_database"
-    | "building_audio"
-    | "starting_pipes"
-    | "ready"
-    | "error";
+  phase: EngineBootPhase;
   message: string | null;
   error: string | null;
   sinceEpochSecs: number;
@@ -245,30 +241,9 @@ export default function EngineStartup({ handleNextSlide }: EngineStartupProps) {
     [],
   );
 
-  // Progress 0→1
-  const progressVal =
-    (serverStarted ? 0.33 : 0) +
-    (audioReady ? 0.33 : 0) +
-    (visionReady ? 0.34 : 0);
-
-  const [animatedProgress, setAnimatedProgress] = useState(0.15);
   // Bumped by the stuck timer to re-arm itself while the backend is genuinely
   // progressing. Without it the timer only re-arms on a phase change.
   const [stuckCheckTick, setStuckCheckTick] = useState(0);
-
-  // Smooth animation
-  useEffect(() => {
-    const target = Math.max(0.15, progressVal);
-    const step = () => {
-      setAnimatedProgress((prev) => {
-        const diff = target - prev;
-        if (Math.abs(diff) < 0.005) return target;
-        return prev + diff * 0.08;
-      });
-    };
-    const interval = setInterval(step, 16);
-    return () => clearInterval(interval);
-  }, [progressVal]);
 
   // Spawn screenpipe on mount
   useEffect(() => {
@@ -700,74 +675,21 @@ export default function EngineStartup({ handleNextSlide }: EngineStartupProps) {
     }
   };
 
-  const progressSteps = [
-    { label: "engine", done: serverStarted, active: !serverStarted },
-    {
-      label: "audio",
-      done: audioReady,
-      active: serverStarted && !audioReady,
-    },
-    {
-      label: "vision",
-      done: visionReady,
-      active: serverStarted && !visionReady && audioReady,
-    },
-  ];
-
   // ── Engine startup phase (starting / stuck) ──
   return (
-    <div className="w-full flex flex-col items-center justify-center min-h-[400px]">
-      {/* Branding */}
+    <div className="flex min-h-[400px] w-full flex-col items-center justify-center">
       <motion.div
-        className="flex flex-col items-center mb-4"
-        initial={{ opacity: 0, y: -10 }}
+        className="flex w-full flex-col items-center"
+        initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
+        transition={{ duration: 0.2 }}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img className="w-12 h-12 mb-2" src="/128x128.png" alt="screenpipe" />
-        <h1 className="font-mono text-base font-bold text-foreground">
-          screenpipe
-        </h1>
-      </motion.div>
-
-      {/* Particle animation */}
-      <motion.div
-        className="flex flex-col items-center"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.6 }}
-      >
-        <ParticleStream progress={animatedProgress} width={440} height={220} />
-
-        <ProgressSteps steps={progressSteps} className="mt-3" />
-
-        {/* Phase-aware status line — prefer backend-provided message when
-            present (e.g. "updating database — may take several minutes on
-            large installs"), else the generic "starting engine..." hint. */}
-        <AnimatePresence>
-          {state === "starting" && (bootPhase?.message || isTakingLonger) && (
-            <motion.p
-              key={bootPhase?.phase ?? "taking-longer"}
-              className="font-mono text-[10px] text-muted-foreground/60 mt-3 max-w-[360px] text-center"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-            >
-              {bootPhase?.message ?? "starting engine..."}
-            </motion.p>
-          )}
-        </AnimatePresence>
-
-        {/* CPU compatibility mode — pre-AVX2 CPUs can't run the local
-            whisper/qwen3 kernels; the backend disables them at runtime and
-            reports it via the boot-phase snapshot. */}
-        {bootPhase?.cpuCompatMode && (
-          <p className="font-mono text-[10px] text-muted-foreground/60 mt-2 max-w-[360px] text-center">
-            compatibility mode: this CPU lacks AVX2 — local whisper
-            transcription is unavailable (cloud + parakeet engines still work)
-          </p>
-        )}
+        <EngineStartupStatus
+          phase={bootPhase?.phase ?? null}
+          state={state}
+          isTakingLonger={isTakingLonger}
+          cpuCompatMode={bootPhase?.cpuCompatMode ?? false}
+        />
 
         {/* Stuck UI */}
         <AnimatePresence>
