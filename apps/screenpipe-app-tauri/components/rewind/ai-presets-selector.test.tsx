@@ -195,6 +195,7 @@ describe("AIPresetsSelector controlled preset creation", () => {
 
     const dialog = screen.getByRole("dialog", { name: "Create New Preset" });
     const primaryChoices = new Set([
+      "screenpipe",
       "chatgpt",
       "claude API",
       "Codex",
@@ -210,6 +211,7 @@ describe("AIPresetsSelector controlled preset creation", () => {
         .map((button) => button.textContent?.trim() || "")
         .filter((label) => primaryChoices.has(label)),
     ).toEqual([
+      "screenpipe",
       "chatgpt",
       "claude API",
       "Codex",

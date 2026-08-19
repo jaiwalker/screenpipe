@@ -242,33 +242,11 @@ export function AIProviderConfig({
   const [showApiKey, setShowApiKey] = useState(false);
   const { isManagedDeployment, policy: enterprisePolicy } = useManagedPolicy();
   const aiPresetPolicy = enterprisePolicy.aiPresetPolicy ?? DEFAULT_ENTERPRISE_AI_PRESET_POLICY;
-  const [piAvailable, setPiAvailable] = useState(false);
+  const showScreenpipeCloud =
+    !isManagedDeployment || aiPresetPolicy.allow_screenpipe_cloud;
   const { piModels, isLoading: loadingPiModels, upgradeEligible } = usePiModels();
   const showUpsell = useModelUpsellGating(upgradeEligible);
 
-  // Check Pi availability (installed at app startup by Rust background thread)
-  useEffect(() => {
-    const checkPi = async () => {
-      try {
-        const result = await commands.piCheck();
-        if (result.status === "ok" && result.data.available) {
-          setPiAvailable(true);
-        }
-      } catch (e) {
-        console.error("Failed to check pi:", e);
-      }
-    };
-    if (isManagedDeployment) {
-      setPiAvailable(aiPresetPolicy.allow_screenpipe_cloud);
-      return;
-    }
-    if (!isManagedDeployment) {
-      checkPi();
-    }
-    // Re-check periodically in case background install finishes
-    const interval = isManagedDeployment ? null : setInterval(checkPi, 5000);
-    return () => { if (interval) clearInterval(interval); };
-  }, [isManagedDeployment, aiPresetPolicy.allow_screenpipe_cloud]);
   const [formData, setFormData] = useState<AIPreset>({
     provider: defaultPreset?.provider || "openai",
     apiKey: defaultPreset?.apiKey || "",
@@ -701,7 +679,7 @@ export function AIProviderConfig({
 
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="grid grid-cols-3 gap-2">
-          {piAvailable && (
+          {showScreenpipeCloud && (
             <Button
               type="button"
               disabled={!settings?.user?.token}
