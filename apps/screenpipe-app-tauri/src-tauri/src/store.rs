@@ -943,9 +943,9 @@ pub struct SettingsStore {
 
     #[serde(rename = "devMode")]
     pub dev_mode: bool,
-    #[serde(rename = "ocrEngine")]
+    #[serde(rename = "ocrEngine", deserialize_with = "deserialize_null_as_default")]
     pub ocr_engine: String,
-    #[serde(rename = "dataDir")]
+    #[serde(rename = "dataDir", deserialize_with = "deserialize_null_as_default")]
     pub data_dir: String,
     #[serde(
         rename = "embeddedLLM",
@@ -954,7 +954,7 @@ pub struct SettingsStore {
     pub embedded_llm: EmbeddedLLM,
     #[serde(rename = "autoStartEnabled")]
     pub auto_start_enabled: bool,
-    #[serde(rename = "platform")]
+    #[serde(rename = "platform", deserialize_with = "deserialize_null_as_default")]
     pub platform: String,
     #[serde(
         rename = "disabledShortcuts",
@@ -963,24 +963,24 @@ pub struct SettingsStore {
     pub disabled_shortcuts: Vec<String>,
     #[serde(rename = "user", deserialize_with = "deserialize_null_as_default")]
     pub user: User,
-    #[serde(rename = "showScreenpipeShortcut")]
+    #[serde(rename = "showScreenpipeShortcut", deserialize_with = "deserialize_null_as_default")]
     pub show_screenpipe_shortcut: String,
-    #[serde(rename = "startRecordingShortcut")]
+    #[serde(rename = "startRecordingShortcut", deserialize_with = "deserialize_null_as_default")]
     pub start_recording_shortcut: String,
-    #[serde(rename = "stopRecordingShortcut")]
+    #[serde(rename = "stopRecordingShortcut", deserialize_with = "deserialize_null_as_default")]
     pub stop_recording_shortcut: String,
-    #[serde(rename = "startAudioShortcut")]
+    #[serde(rename = "startAudioShortcut", deserialize_with = "deserialize_null_as_default")]
     pub start_audio_shortcut: String,
-    #[serde(rename = "stopAudioShortcut")]
+    #[serde(rename = "stopAudioShortcut", deserialize_with = "deserialize_null_as_default")]
     pub stop_audio_shortcut: String,
-    #[serde(rename = "showChatShortcut")]
+    #[serde(rename = "showChatShortcut", deserialize_with = "deserialize_null_as_default")]
     pub show_chat_shortcut: String,
-    #[serde(rename = "searchShortcut")]
+    #[serde(rename = "searchShortcut", deserialize_with = "deserialize_null_as_default")]
     pub search_shortcut: String,
-    #[serde(rename = "lockVaultShortcut", default)]
+    #[serde(rename = "lockVaultShortcut", deserialize_with = "deserialize_null_as_default")]
     pub lock_vault_shortcut: String,
     /// Overlay size: "small" (default), "medium" (1.5x), "large" (2x)
-    #[serde(rename = "shortcutOverlaySize", default = "default_overlay_size")]
+    #[serde(rename = "shortcutOverlaySize", deserialize_with = "deserialize_null_as_default")]
     pub shortcut_overlay_size: String,
     /// The user's persistent choice for the shortcut reminder. Recording-health
     /// incidents may still reveal their own temporary recovery surface.
