@@ -3017,18 +3017,34 @@ export type LoginMode = "sign-in" | "sign-up"
 export type LowDiskGuardConfig = { thresholdBytes: number; checkIntervalSeconds: number }
 /**
  * A reviewed organization skill delivered by the Enterprise policy endpoint.
- * It contains instructions only: no credentials, tokens, or filesystem paths.
+ * Package files contain no credentials or device-specific filesystem paths.
  */
-export type ManagedTeamSkill = { artifact_id: string; version: number; name: string; description?: string; when_to_use?: string; instructions?: string; verification?: string; destinations?: string[] }
+export type ManagedTeamSkill = { artifact_id: string;
+/**
+ * Desired-state revision. Assignment changes bump this value.
+ */
+version: number;
+/**
+ * Immutable package release.
+ */
+release_version: number; name: string; description?: string; package: ManagedTeamSkillPackage; destinations?: string[] }
 /**
  * Read-only summary rendered in Settings. Organization-managed skills are
  * deliberately separate from user-imported skills and cannot be removed there.
  */
-export type ManagedTeamSkillLocal = { artifact_id: string; version: number; name: string; description: string; destinations: string[] }
+export type ManagedTeamSkillLocal = { artifact_id: string; version: number; release_version: number; digest: string; name: string; description: string; file_count: number; discovery_chars: number; activation_chars: number; has_scripts: boolean; destinations: string[] }
+/**
+ * A portable Agent Skills directory. The server freezes the exact text files;
+ * each device verifies the per-file and aggregate digests before installation.
+ */
+export type ManagedTeamSkillPackage = { format: string; package_version: number; entrypoint: string; digest: string; name: string; description: string; files: ManagedTeamSkillPackageFile[]; context: ManagedTeamSkillPackageContext; risk: ManagedTeamSkillPackageRisk }
+export type ManagedTeamSkillPackageContext = { discovery_chars: number; activation_chars: number }
+export type ManagedTeamSkillPackageFile = { path: string; content: string; sha256: string; bytes: number }
+export type ManagedTeamSkillPackageRisk = { has_scripts: boolean }
 /**
  * Per-destination receipt from the most recent managed sync attempt.
  */
-export type ManagedTeamSkillReceipt = { artifact_id: string; version: number; destination: string;
+export type ManagedTeamSkillReceipt = { artifact_id: string; version: number; release_version: number; digest: string; destination: string;
 /**
  * `installed` or `error`. Errors never prevent the other destinations.
  */

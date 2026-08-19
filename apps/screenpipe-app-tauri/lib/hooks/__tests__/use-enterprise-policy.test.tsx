@@ -273,11 +273,27 @@ describe("enterprise policy runtime manual activation", () => {
       {
         artifact_id: "meeting-follow-up",
         version: 3,
+        release_version: 1,
         name: "Meeting follow-up",
         description: "Turn a completed meeting into traceable next steps.",
-        when_to_use: "After a customer meeting.",
-        instructions: "Review the meeting evidence and draft next steps.",
-        verification: "Every action has an owner.",
+        package: {
+          format: "agentskills.io/v1",
+          package_version: 1,
+          entrypoint: "SKILL.md",
+          digest: "a".repeat(64),
+          name: "meeting-follow-up",
+          description: "Turn a completed meeting into traceable next steps.",
+          files: [
+            {
+              path: "SKILL.md",
+              content: "---\nname: meeting-follow-up\ndescription: Turn a completed meeting into traceable next steps.\n---\n",
+              sha256: "b".repeat(64),
+              bytes: 106,
+            },
+          ],
+          context: { discovery_chars: 76, activation_chars: 106 },
+          risk: { has_scripts: false },
+        },
         destinations: ["screenpipe", "claude-code", "codex", "gemini"],
       },
     ];

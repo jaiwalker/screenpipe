@@ -161,8 +161,8 @@ export function SkillsCard({ onChanged }: { onChanged?: () => void }) {
         </div>
       )}
 
-      {/* Organization skills are deployed by an admin and intentionally
-          read-only here. Their local destinations are shown as receipts. */}
+      {/* Organization skills are assigned by an admin and intentionally
+          read-only here. This panel reports verified local installations. */}
       {managed.length > 0 && (
         <div className="space-y-1.5" data-testid="organization-skills">
           <div className="flex items-center justify-between">
@@ -171,7 +171,7 @@ export function SkillsCard({ onChanged }: { onChanged?: () => void }) {
                 Organization ({managed.length})
               </h4>
               <p className="text-[10px] text-muted-foreground">
-                Managed by your organization
+                Verified on this device · managed by your organization
               </p>
             </div>
             <ShieldCheck className="h-3.5 w-3.5 text-muted-foreground" />
@@ -194,9 +194,17 @@ export function SkillsCard({ onChanged }: { onChanged?: () => void }) {
                     )}
                   </div>
                   <span className="shrink-0 border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                    v{skill.version}
+                    release v{skill.release_version} · policy r{skill.version}
                   </span>
                 </div>
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  {skill.file_count} files · discovery {skill.discovery_chars} chars · activated {skill.activation_chars} chars · scripts {skill.has_scripts ? "yes" : "no"}
+                </div>
+                {skill.digest && (
+                  <div className="mt-1 truncate font-mono text-[9px] text-muted-foreground/70" title={skill.digest}>
+                    sha256 {skill.digest}
+                  </div>
+                )}
                 <div className="mt-2 flex flex-wrap gap-1">
                   {skill.destinations.map((destination) => (
                     <span

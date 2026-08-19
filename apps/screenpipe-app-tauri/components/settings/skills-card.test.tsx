@@ -41,8 +41,14 @@ describe("SkillsCard organization skills", () => {
         {
           artifact_id: "meeting-follow-up",
           version: 3,
+          release_version: 1,
+          digest: "a".repeat(64),
           name: "Meeting follow-up",
           description: "Turn a completed meeting into traceable next steps.",
+          file_count: 3,
+          discovery_chars: 84,
+          activation_chars: 640,
+          has_scripts: true,
           destinations: ["screenpipe", "claude-code", "codex", "gemini"],
         },
       ],
@@ -57,8 +63,13 @@ describe("SkillsCard organization skills", () => {
     );
 
     expect(screen.getByText("Organization (1)")).toBeInTheDocument();
-    expect(screen.getByText("Managed by your organization")).toBeInTheDocument();
-    expect(screen.getByText("v3")).toBeInTheDocument();
+    expect(
+      screen.getByText("Verified on this device · managed by your organization"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("release v1 · policy r3")).toBeInTheDocument();
+    expect(
+      screen.getByText("3 files · discovery 84 chars · activated 640 chars · scripts yes"),
+    ).toBeInTheDocument();
     expect(screen.getByText("screenpipe")).toBeInTheDocument();
     expect(screen.getByText("Claude Code")).toBeInTheDocument();
     expect(screen.getByText("Codex")).toBeInTheDocument();
