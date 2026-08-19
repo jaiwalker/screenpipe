@@ -646,6 +646,9 @@ export function AIProviderConfig({
 
   const [showAdvanced, setShowAdvanced] = useState(
     selectedProvider === "custom" ||
+      selectedProvider === "openai-chatgpt" ||
+      selectedProvider === "anthropic" ||
+      selectedProvider === "native-ollama" ||
       (selectedProvider === "acp" && formData.acpAgent?.id === "custom"),
   );
 
@@ -679,45 +682,6 @@ export function AIProviderConfig({
               <span>screenpipe</span>
             </Button>
           )}
-
-          <Button
-            type="button"
-            variant={selectedProvider === "openai-chatgpt" ? "default" : "outline"}
-            className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
-            onClick={() => {
-              setSelectedProvider("openai-chatgpt");
-              setFormData({
-                ...formData,
-                provider: "openai-chatgpt",
-                url: "https://api.openai.com/v1",
-                model: "gpt-5.6-terra",
-              });
-            }}
-          >
-            <Icons.openai className="h-3.5 w-3.5" />
-            <span>chatgpt</span>
-          </Button>
-
-          <Button
-            type="button"
-            variant={(selectedProvider as string) === "anthropic" ? "default" : "outline"}
-            className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
-            onClick={() => {
-              if ((selectedProvider as string) !== "anthropic") {
-                setSelectedProvider("anthropic");
-                setFormData({
-                  ...formData,
-                  provider: "anthropic",
-                  url: "",
-                  model: "claude-sonnet-5",
-                });
-              }
-            }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/images/claude-ai.svg" alt="" className="h-3.5 w-3.5 rounded-sm" />
-            <span>claude API</span>
-          </Button>
 
           {acpEnabled && primaryAcpAdapters.map((adapter) => {
             const isSelected =
@@ -758,29 +722,6 @@ export function AIProviderConfig({
             );
           })}
 
-          <Button
-            type="button"
-            variant={
-              selectedProvider === "native-ollama" ? "default" : "outline"
-            }
-            className="flex h-8 items-center justify-center gap-1.5 text-xs px-3"
-            onClick={() => {
-              setSelectedProvider("native-ollama");
-              setFormData({
-                ...formData,
-                provider: "native-ollama",
-                url: "http://localhost:11434/v1",
-              });
-            }}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/images/ollama.png"
-              alt=""
-              className="h-3.5 w-3.5 object-contain dark:invert"
-            />
-            <span>ollama</span>
-          </Button>
         </div>
 
         {!selectedProvider && (
@@ -1118,8 +1059,64 @@ export function AIProviderConfig({
         {showAdvanced && (
           <div className="space-y-1.5">
             <div className="space-y-1">
-              <p className="text-xs font-medium">connect something else</p>
+              <p className="text-xs font-medium">use a model directly</p>
               <div className="grid grid-cols-2 gap-2">
+                <Button
+                  type="button"
+                  variant={selectedProvider === "openai-chatgpt" ? "default" : "outline"}
+                  className="flex h-8 items-center justify-center gap-1.5 px-3 text-xs"
+                  onClick={() => {
+                    setSelectedProvider("openai-chatgpt");
+                    setFormData({
+                      ...formData,
+                      provider: "openai-chatgpt",
+                      url: "https://api.openai.com/v1",
+                      model: "gpt-5.6-terra",
+                    });
+                  }}
+                >
+                  <Icons.openai className="h-3.5 w-3.5" />
+                  <span>chatgpt</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant={selectedProvider === "anthropic" ? "default" : "outline"}
+                  className="flex h-8 items-center justify-center gap-1.5 px-3 text-xs"
+                  onClick={() => {
+                    setSelectedProvider("anthropic");
+                    setFormData({
+                      ...formData,
+                      provider: "anthropic",
+                      url: "",
+                      model: "claude-sonnet-5",
+                    });
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src="/images/claude-ai.svg" alt="" className="h-3.5 w-3.5 rounded-sm" />
+                  <span>claude API</span>
+                </Button>
+                <Button
+                  type="button"
+                  variant={selectedProvider === "native-ollama" ? "default" : "outline"}
+                  className="flex h-8 items-center justify-center gap-1.5 px-3 text-xs"
+                  onClick={() => {
+                    setSelectedProvider("native-ollama");
+                    setFormData({
+                      ...formData,
+                      provider: "native-ollama",
+                      url: "http://localhost:11434/v1",
+                    });
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src="/images/ollama.png"
+                    alt=""
+                    className="h-3.5 w-3.5 object-contain dark:invert"
+                  />
+                  <span>ollama</span>
+                </Button>
                 <Button
                   type="button"
                   variant={selectedProvider === "custom" ? "default" : "outline"}
@@ -1136,7 +1133,12 @@ export function AIProviderConfig({
                   <Icons.settings className="h-3.5 w-3.5" />
                   <span>use an API key</span>
                 </Button>
-                {acpEnabled && customAcpAdapter && (
+              </div>
+            </div>
+            {acpEnabled && customAcpAdapter && (
+              <div className="space-y-1">
+                <p className="text-xs font-medium">connect another agent</p>
+                <div className="grid grid-cols-2 gap-2">
                   <Button
                     type="button"
                     variant={
@@ -1169,12 +1171,9 @@ export function AIProviderConfig({
                     />
                     <span>use a command</span>
                   </Button>
-                )}
+                </div>
               </div>
-              <p className="text-[10px] text-muted-foreground">
-                connect another AI service or coding agent
-              </p>
-            </div>
+            )}
             {selectedProvider && (
               <>
             <div className="space-y-1">

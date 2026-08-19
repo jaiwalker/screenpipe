@@ -141,8 +141,8 @@ function ControlledSelector() {
 async function createChatGptPreset() {
   fireEvent.click(screen.getByRole("combobox"));
   fireEvent.click(await screen.findByText("create new preset"));
-  fireEvent.click(screen.getByRole("button", { name: "chatgpt" }));
   fireEvent.click(screen.getByRole("button", { name: /advanced/ }));
+  fireEvent.click(screen.getByRole("button", { name: "chatgpt" }));
   fireEvent.change(screen.getByLabelText("name"), {
     target: { value: "new chat preset" },
   });
@@ -161,7 +161,7 @@ describe("AIPresetsSelector controlled preset creation", () => {
     mocks.acpEnabled.current = false;
   });
 
-  it("shows each AI directly without a separate coding-agent choice", async () => {
+  it("shows agents directly and keeps model connections advanced", async () => {
     mocks.acpEnabled.current = true;
     render(<AIPresetsSelector compact showModelOnly />);
 
@@ -176,9 +176,9 @@ describe("AIPresetsSelector controlled preset creation", () => {
     expect(
       screen.getByRole("button", { name: "Claude Code" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "claude API" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "chatgpt" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "claude API" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "ollama" })).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "coding agent" }),
     ).not.toBeInTheDocument();
@@ -196,14 +196,11 @@ describe("AIPresetsSelector controlled preset creation", () => {
     const dialog = screen.getByRole("dialog", { name: "Create New Preset" });
     const primaryChoices = new Set([
       "screenpipe",
-      "chatgpt",
-      "claude API",
       "Codex",
       "Claude Code",
       "Cursor",
       "GitHub Copilot",
       "Pi",
-      "ollama",
     ]);
     expect(
       within(dialog)
@@ -212,24 +209,25 @@ describe("AIPresetsSelector controlled preset creation", () => {
         .filter((label) => primaryChoices.has(label)),
     ).toEqual([
       "screenpipe",
-      "chatgpt",
-      "claude API",
       "Codex",
       "Claude Code",
       "Cursor",
       "GitHub Copilot",
       "Pi",
-      "ollama",
     ]);
-    expect(
-      screen.getByRole("button", { name: "ollama" }).querySelector("img"),
-    ).toHaveAttribute("src", "/images/ollama.png");
 
     fireEvent.click(screen.getByRole("button", { name: /advanced/ }));
 
+    expect(screen.getByText("use a model directly")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "chatgpt" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "claude API" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "ollama" }).querySelector("img"),
+    ).toHaveAttribute("src", "/images/ollama.png");
     expect(
       screen.getByRole("button", { name: "use an API key" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("connect another agent")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "use a command" }),
     ).toBeInTheDocument();

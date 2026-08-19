@@ -71,14 +71,11 @@ describe("AIProviderChoices", () => {
 
     const primaryLabels = new Set([
       "screenpipe",
-      "ChatGPT",
-      "Claude API",
       "Codex",
       "Claude Code",
       "Cursor",
       "GitHub Copilot",
       "Pi",
-      "Ollama",
     ]);
     expect(
       screen
@@ -87,27 +84,31 @@ describe("AIProviderChoices", () => {
         .filter((label) => primaryLabels.has(label)),
     ).toEqual([
       "screenpipe",
-      "ChatGPT",
-      "Claude API",
       "Codex",
       "Claude Code",
       "Cursor",
       "GitHub Copilot",
       "Pi",
-      "Ollama",
     ]);
     expect(screen.queryByRole("button", { name: "Coding agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Custom" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /ChatGPT/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Claude API/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Ollama/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Use an API key/ })).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /Ollama/ }).querySelector("img"),
-    ).toHaveAttribute("src", "/images/ollama.png");
 
     fireEvent.click(screen.getByRole("button", { name: "advanced" }));
 
+    expect(screen.getByText("use a model directly")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ChatGPT/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Claude API/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Ollama/ }).querySelector("img"),
+    ).toHaveAttribute("src", "/images/ollama.png");
     expect(
       screen.getByRole("button", { name: /Use an API key/ }),
     ).toBeInTheDocument();
+    expect(screen.getByText("connect another agent")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /Use a command/ }),
     ).toBeInTheDocument();
@@ -135,5 +136,26 @@ describe("AIProviderChoices", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     expect(onSelectAcpAgent).toHaveBeenCalledWith("codex-acp");
+  });
+
+  it("opens the model section when editing a direct-model preset", () => {
+    render(
+      <AIProviderChoices
+        selectedProvider="openai-chatgpt"
+        showScreenpipeCloud
+        screenpipeDisabled={false}
+        acpEnabled
+        primaryAcpAdapters={adapters}
+        customAcpAdapter={customAdapter}
+        onSelectProvider={vi.fn()}
+        onSelectAcpAgent={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("use a model directly")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ChatGPT/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 });

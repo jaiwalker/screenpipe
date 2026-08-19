@@ -110,6 +110,9 @@ export function AIProviderChoices({
 }: AIProviderChoicesProps) {
   const advancedSelected =
     selectedProvider === "custom" ||
+    selectedProvider === "openai-chatgpt" ||
+    selectedProvider === "anthropic" ||
+    selectedProvider === "native-ollama" ||
     (selectedProvider === "acp" && selectedAcpAgentId === "custom");
   const [showAdvanced, setShowAdvanced] = useState(advancedSelected);
 
@@ -133,24 +136,6 @@ export function AIProviderChoices({
           />
         )}
 
-        <AIProviderCard
-          type="openai-chatgpt"
-          title="ChatGPT"
-          description="Sign in with your ChatGPT subscription."
-          imageSrc="/images/openai.png"
-          selected={selectedProvider === "openai-chatgpt"}
-          onClick={() => onSelectProvider("openai-chatgpt")}
-        />
-
-        <AIProviderCard
-          type="anthropic"
-          title="Claude API"
-          description="Use Claude models with an Anthropic API key."
-          imageSrc="/images/claude-ai.svg"
-          selected={selectedProvider === "anthropic"}
-          onClick={() => onSelectProvider("anthropic")}
-        />
-
         {acpEnabled &&
           primaryAcpAdapters.map((adapter) => (
             <AIProviderCard
@@ -167,15 +152,6 @@ export function AIProviderChoices({
               onClick={() => onSelectAcpAgent(adapter.id)}
             />
           ))}
-
-        <AIProviderCard
-          type="native-ollama"
-          title="Ollama"
-          description="Use AI models running on this computer."
-          imageSrc="/images/ollama.png"
-          selected={selectedProvider === "native-ollama"}
-          onClick={() => onSelectProvider("native-ollama")}
-        />
       </div>
 
       <button
@@ -194,19 +170,51 @@ export function AIProviderChoices({
       </button>
 
       {showAdvanced && (
-        <div className="space-y-2">
-          <p className="text-sm font-medium">connect something else</p>
-          <div className="grid grid-cols-2 gap-3">
-            <AIProviderCard
-              type="custom"
-              title="Use an API key"
-              description="Connect another AI service."
-              imageSrc="/images/custom.png"
-              selected={selectedProvider === "custom"}
-              onClick={() => onSelectProvider("custom")}
-            />
+        <div className="space-y-3">
+          <div className="space-y-2">
+            <p className="text-sm font-medium">use a model directly</p>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+              <AIProviderCard
+                type="openai-chatgpt"
+                title="ChatGPT"
+                description="Sign in with your ChatGPT subscription."
+                imageSrc="/images/openai.png"
+                selected={selectedProvider === "openai-chatgpt"}
+                onClick={() => onSelectProvider("openai-chatgpt")}
+              />
 
-            {acpEnabled && customAcpAdapter && (
+              <AIProviderCard
+                type="anthropic"
+                title="Claude API"
+                description="Use Claude models with an Anthropic API key."
+                imageSrc="/images/claude-ai.svg"
+                selected={selectedProvider === "anthropic"}
+                onClick={() => onSelectProvider("anthropic")}
+              />
+
+              <AIProviderCard
+                type="native-ollama"
+                title="Ollama"
+                description="Use AI models running on this computer."
+                imageSrc="/images/ollama.png"
+                selected={selectedProvider === "native-ollama"}
+                onClick={() => onSelectProvider("native-ollama")}
+              />
+
+              <AIProviderCard
+                type="custom"
+                title="Use an API key"
+                description="Connect another AI service."
+                imageSrc="/images/custom.png"
+                selected={selectedProvider === "custom"}
+                onClick={() => onSelectProvider("custom")}
+              />
+            </div>
+          </div>
+
+          {acpEnabled && customAcpAdapter && (
+            <div className="space-y-2">
+              <p className="text-sm font-medium">connect another agent</p>
               <AIProviderCard
                 type="acp"
                 title="Use a command"
@@ -220,8 +228,8 @@ export function AIProviderChoices({
                 }
                 onClick={() => onSelectAcpAgent(customAcpAdapter.id)}
               />
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
     </div>
