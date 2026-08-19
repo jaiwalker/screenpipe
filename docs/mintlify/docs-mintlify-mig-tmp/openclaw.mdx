@@ -46,10 +46,12 @@ Add screenpipe to your OpenClaw MCP config:
 
 ```json
 {
-  "mcpServers": {
-    "screenpipe": {
-      "command": "npx",
-      "args": ["-y", "screenpipe-mcp"]
+  "mcp": {
+    "servers": {
+      "screenpipe": {
+        "command": "npx",
+        "args": ["-y", "screenpipe-mcp"]
+      }
     }
   }
 }
@@ -65,7 +67,7 @@ npx @modelcontextprotocol/inspector npx screenpipe-mcp
 
 ### custom skill (alternative)
 
-Create `~/openclaw/skills/screenpipe/skill.md`:
+Create `~/.openclaw/skills/screenpipe/SKILL.md`:
 
 ````markdown
 ---
@@ -128,7 +130,7 @@ Headless `npx -y screenpipe@latest login` writes the cloud token where the engin
 
 If both machines are on the same network, OpenClaw can query screenpipe's API directly. Use a custom skill:
 
-Create `~/openclaw/skills/screenpipe/skill.md`:
+Create `~/.openclaw/skills/screenpipe/SKILL.md`:
 
 ````markdown
 ---

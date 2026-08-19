@@ -1,0 +1,13 @@
+{
+  "name": "@screenpipe/agent-plugin",
+  "version": "1.0.0",
+  "displayName": "screenpipe",
+  "description": "Local-first workflow memory for AI agents",
+  "type": "module",
+  "homepage": "https://screenpi.pe",
+  "repository": "https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-agent-plugin",
+  "license": "LicenseRef-Screenpipe-Commercial",
+  "scripts": {
+    "test": "node scripts/validate.js"
+  }
+}

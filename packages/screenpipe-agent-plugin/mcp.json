@@ -1,0 +1,16 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "screenpipe": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "screenpipe-mcp@0.19.1"
+      ],
+      "env": {
+        "SCREENPIPE_MCP_CLIENT": "agent-plugin"
+      }
+    }
+  }
+}

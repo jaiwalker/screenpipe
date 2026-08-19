@@ -1,0 +1,39 @@
+{
+  "name": "screenpipe",
+  "version": "1.0.0",
+  "description": "Local-first workflow memory for AI agents. Search private screen and audio history, reconstruct real work, and produce cited workflows and SOPs.",
+  "author": {
+    "name": "screenpipe",
+    "url": "https://screenpi.pe"
+  },
+  "homepage": "https://screenpi.pe",
+  "repository": "https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-agent-plugin",
+  "license": "LicenseRef-Screenpipe-Commercial",
+  "keywords": [
+    "screenpipe",
+    "workflow-memory",
+    "task-mining",
+    "mcp",
+    "local-first"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "screenpipe",
+    "shortDescription": "Private workflow memory for AI agents",
+    "longDescription": "Search your private screen and audio history, reconstruct real work with evidence, and turn repeated workflows into SOP and automation candidates.",
+    "developerName": "screenpipe",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ],
+    "websiteURL": "https://screenpi.pe",
+    "privacyPolicyURL": "https://screenpi.pe/privacy",
+    "defaultPrompt": [
+      "Summarize what I worked on today with evidence.",
+      "Reconstruct how I completed this workflow last time.",
+      "Find a repeated task worth turning into an SOP."
+    ],
+    "brandColor": "#F97316"
+  }
+}

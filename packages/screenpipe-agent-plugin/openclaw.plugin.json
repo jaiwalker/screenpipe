@@ -1,0 +1,11 @@
+{
+  "id": "screenpipe",
+  "name": "screenpipe",
+  "description": "Local-first workflow memory from private screen and audio history",
+  "version": "1.0.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
