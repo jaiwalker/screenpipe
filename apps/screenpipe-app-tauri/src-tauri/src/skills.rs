@@ -15,7 +15,7 @@
 //! `PiExecutor::sync_user_skills`), so an imported skill becomes available to
 //! the agent everywhere without per-pipe wiring.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
@@ -155,6 +155,18 @@ pub fn connect_detected_ai_tools_in_background(api_auth_enabled: bool, api_port:
 /// Baseline skills screenpipe writes itself on every session. Importing a skill
 /// under one of these names would clobber them, so we reject it.
 const RESERVED_SKILL_NAMES: [&str; 3] = ["screenpipe-api", "screenpipe-cli", "screenpipe-team"];
+const MANAGED_TEAM_SKILL_PREFIX: &str = "screenpipe-team-";
+const MANAGED_TEAM_SKILL_MARKER: &str = "<!-- screenpipe-managed-team-skill";
+
+const MANAGED_TEAM_SKILL_DESTINATIONS: [&str; 7] = [
+    "screenpipe",
+    "claude-code",
+    "codex",
+    "cursor",
+    "gemini",
+    "openclaw",
+    "hermes",
+];
 
 /// A skill folder discovered somewhere on the user's device.
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
@@ -178,6 +190,185 @@ pub struct ImportedSkill {
     pub description: String,
     /// Absolute path inside `<data_dir>/skills/`.
     pub path: String,
+}
+
+/// A reviewed organization skill delivered by the Enterprise policy endpoint.
+/// It contains instructions only: no credentials, tokens, or filesystem paths.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ManagedTeamSkill {
+    pub artifact_id: String,
+    pub version: u64,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub when_to_use: String,
+    #[serde(default)]
+    pub instructions: String,
+    #[serde(default)]
+    pub verification: String,
+    #[serde(default)]
+    pub destinations: Vec<String>,
+}
+
+/// Per-destination receipt from the most recent managed sync attempt.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ManagedTeamSkillReceipt {
+    pub artifact_id: String,
+    pub version: u64,
+    pub destination: String,
+    /// `installed` or `error`. Errors never prevent the other destinations.
+    pub status: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+/// Read-only summary rendered in Settings. Organization-managed skills are
+/// deliberately separate from user-imported skills and cannot be removed there.
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+pub struct ManagedTeamSkillLocal {
+    pub artifact_id: String,
+    pub version: u64,
+    pub name: String,
+    pub description: String,
+    pub destinations: Vec<String>,
+}
+
+fn managed_team_skill_dir_name(artifact_id: &str) -> Result<String, String> {
+    let artifact_id = artifact_id.trim();
+    if artifact_id.is_empty()
+        || artifact_id.len() > 128
+        || !artifact_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err("invalid managed skill artifact id".to_string());
+    }
+    Ok(format!(
+        "{MANAGED_TEAM_SKILL_PREFIX}{}",
+        artifact_id.to_ascii_lowercase()
+    ))
+}
+
+fn managed_destination_root(destination: &str, home: &Path, store: &Path) -> Option<PathBuf> {
+    match destination {
+        "screenpipe" => Some(store.to_path_buf()),
+        "claude-code" => Some(home.join(".claude/skills")),
+        "codex" => Some(home.join(".codex/skills")),
+        "cursor" => Some(home.join(".cursor/skills")),
+        "gemini" => Some(home.join(".gemini/skills")),
+        "openclaw" => Some(home.join(".openclaw/skills")),
+        "hermes" => Some(home.join(".hermes/skills")),
+        _ => None,
+    }
+}
+
+fn managed_destination_roots(home: &Path, store: &Path) -> Vec<(String, PathBuf)> {
+    MANAGED_TEAM_SKILL_DESTINATIONS
+        .iter()
+        .filter_map(|destination| {
+            managed_destination_root(destination, home, store)
+                .map(|root| ((*destination).to_string(), root))
+        })
+        .collect()
+}
+
+fn bounded_managed_text(value: &str, max_chars: usize, preserve_lines: bool) -> String {
+    let mut out = String::new();
+    let mut count = 0;
+    for ch in value.chars() {
+        if count >= max_chars {
+            break;
+        }
+        count += 1;
+        if ch == '\n' && preserve_lines {
+            out.push(ch);
+        } else if ch == '\t' && preserve_lines {
+            out.push(' ');
+        } else if !ch.is_control() {
+            out.push(ch);
+        } else {
+            out.push(' ');
+        }
+    }
+    if preserve_lines {
+        out.trim().to_string()
+    } else {
+        out.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+}
+
+fn managed_team_skill_markdown(skill: &ManagedTeamSkill) -> Result<String, String> {
+    let dir_name = managed_team_skill_dir_name(&skill.artifact_id)?;
+    if skill.version == 0 {
+        return Err("managed skill version must be positive".to_string());
+    }
+    let name = bounded_managed_text(&skill.name, 120, false);
+    let description = bounded_managed_text(&skill.description, 600, false);
+    let when_to_use = bounded_managed_text(&skill.when_to_use, 600, true);
+    let instructions = bounded_managed_text(&skill.instructions, 4_000, true);
+    let verification = bounded_managed_text(&skill.verification, 600, true);
+    if name.is_empty() || description.is_empty() || instructions.is_empty() {
+        return Err("managed skill is missing required content".to_string());
+    }
+    let yaml_description = serde_json::to_string(&description)
+        .map_err(|error| format!("failed to encode managed skill description: {error}"))?;
+    Ok(format!(
+        "---\nname: {dir_name}\ndescription: {yaml_description}\n---\n\n{MANAGED_TEAM_SKILL_MARKER} artifact_id={} version={} -->\n\n# {}\n\n## when to use\n\n{}\n\n## instructions\n\n{}\n\n## done when\n\n{}\n",
+        skill.artifact_id,
+        skill.version,
+        name,
+        if when_to_use.is_empty() { "Follow the organization policy for this skill." } else { &when_to_use },
+        instructions,
+        if verification.is_empty() { "Confirm the requested outcome before reporting completion." } else { &verification },
+    ))
+}
+
+fn is_managed_team_skill_file(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|raw| raw.contains(MANAGED_TEAM_SKILL_MARKER))
+        .unwrap_or(false)
+}
+
+fn parse_managed_team_skill_marker(raw: &str) -> Option<(String, u64)> {
+    let line = raw.lines().find(|line| line.contains(MANAGED_TEAM_SKILL_MARKER))?;
+    let artifact_id = line
+        .split("artifact_id=")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .trim();
+    let version = line
+        .split("version=")
+        .nth(1)?
+        .split_whitespace()
+        .next()?
+        .trim_end_matches("-->")
+        .parse::<u64>()
+        .ok()?;
+    managed_team_skill_dir_name(artifact_id).ok()?;
+    Some((artifact_id.to_string(), version))
+}
+
+fn write_managed_team_skill(dest: &Path, markdown: &str) -> Result<(), String> {
+    if let Ok(metadata) = std::fs::symlink_metadata(dest) {
+        if metadata.file_type().is_symlink() {
+            return Err(format!("refusing to replace symlink at {}", dest.display()));
+        }
+    }
+    std::fs::create_dir_all(dest)
+        .map_err(|error| format!("failed to create {}: {error}", dest.display()))?;
+    let final_path = dest.join("SKILL.md");
+    let staging_path = dest.join(format!(".SKILL.md.tmp-{}", std::process::id()));
+    std::fs::write(&staging_path, markdown)
+        .map_err(|error| format!("failed to stage {}: {error}", final_path.display()))?;
+    if final_path.exists() {
+        std::fs::remove_file(&final_path)
+            .map_err(|error| format!("failed to replace {}: {error}", final_path.display()))?;
+    }
+    std::fs::rename(&staging_path, &final_path)
+        .map_err(|error| format!("failed to install {}: {error}", final_path.display()))?;
+    Ok(())
 }
 
 /// Install the two built-in screenpipe skills into a supported external agent.
@@ -396,11 +587,12 @@ pub fn scan_device_skills() -> Result<Vec<DeviceSkill>, String> {
         };
         for entry in entries.flatten() {
             let dir = entry.path();
-            if !dir.is_dir() || !dir.join("SKILL.md").exists() {
+            let skill_md = dir.join("SKILL.md");
+            if !dir.is_dir() || !skill_md.exists() || is_managed_team_skill_file(&skill_md) {
                 continue;
             }
             let folder = entry.file_name().into_string().unwrap_or_default();
-            let (fm_name, fm_desc) = parse_skill_frontmatter(&dir.join("SKILL.md"));
+            let (fm_name, fm_desc) = parse_skill_frontmatter(&skill_md);
             let name = fm_name.unwrap_or_else(|| folder.clone());
             let key = skill_key(&name);
             if key.is_empty() || !seen.insert(key.clone()) {
@@ -432,11 +624,12 @@ pub fn list_imported_skills() -> Result<Vec<ImportedSkill>, String> {
     };
     for entry in entries.flatten() {
         let dir = entry.path();
-        if !dir.is_dir() || !dir.join("SKILL.md").exists() {
+        let skill_md = dir.join("SKILL.md");
+        if !dir.is_dir() || !skill_md.exists() || is_managed_team_skill_file(&skill_md) {
             continue;
         }
         let folder = entry.file_name().into_string().unwrap_or_default();
-        let (fm_name, fm_desc) = parse_skill_frontmatter(&dir.join("SKILL.md"));
+        let (fm_name, fm_desc) = parse_skill_frontmatter(&skill_md);
         out.push(ImportedSkill {
             name: fm_name.unwrap_or_else(|| folder.clone()),
             description: fm_desc.unwrap_or_default(),
@@ -445,6 +638,199 @@ pub fn list_imported_skills() -> Result<Vec<ImportedSkill>, String> {
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(out)
+}
+
+fn sync_managed_team_skills_in(
+    home: &Path,
+    store: &Path,
+    skills: &[ManagedTeamSkill],
+    prune_unlisted: bool,
+) -> Vec<ManagedTeamSkillReceipt> {
+    let mut receipts = Vec::new();
+    let mut desired_paths = HashSet::new();
+    let mut prune_safe = prune_unlisted;
+
+    for skill in skills {
+        let markdown = match managed_team_skill_markdown(skill) {
+            Ok(markdown) => markdown,
+            Err(error) => {
+                prune_safe = false;
+                for destination in &skill.destinations {
+                    receipts.push(ManagedTeamSkillReceipt {
+                        artifact_id: skill.artifact_id.clone(),
+                        version: skill.version,
+                        destination: destination.clone(),
+                        status: "error".to_string(),
+                        detail: Some(error.clone()),
+                    });
+                }
+                continue;
+            }
+        };
+        let dir_name = match managed_team_skill_dir_name(&skill.artifact_id) {
+            Ok(name) => name,
+            Err(error) => {
+                prune_safe = false;
+                receipts.push(ManagedTeamSkillReceipt {
+                    artifact_id: skill.artifact_id.clone(),
+                    version: skill.version,
+                    destination: "policy".to_string(),
+                    status: "error".to_string(),
+                    detail: Some(error),
+                });
+                continue;
+            }
+        };
+        let destinations = skill
+            .destinations
+            .iter()
+            .map(|destination| destination.trim().to_ascii_lowercase())
+            .filter(|destination| !destination.is_empty())
+            .collect::<BTreeSet<_>>();
+
+        for destination in destinations {
+            let Some(root) = managed_destination_root(&destination, home, store) else {
+                prune_safe = false;
+                receipts.push(ManagedTeamSkillReceipt {
+                    artifact_id: skill.artifact_id.clone(),
+                    version: skill.version,
+                    destination,
+                    status: "error".to_string(),
+                    detail: Some("unsupported managed skill destination".to_string()),
+                });
+                continue;
+            };
+            let dest = root.join(&dir_name);
+            // Preserve a previously installed copy if this refresh fails.
+            desired_paths.insert(dest.clone());
+            match write_managed_team_skill(&dest, &markdown) {
+                Ok(()) => receipts.push(ManagedTeamSkillReceipt {
+                    artifact_id: skill.artifact_id.clone(),
+                    version: skill.version,
+                    destination,
+                    status: "installed".to_string(),
+                    detail: None,
+                }),
+                Err(error) => receipts.push(ManagedTeamSkillReceipt {
+                    artifact_id: skill.artifact_id.clone(),
+                    version: skill.version,
+                    destination,
+                    status: "error".to_string(),
+                    detail: Some(error),
+                }),
+            }
+        }
+    }
+
+    if prune_safe {
+        for (_, root) in managed_destination_roots(home, store) {
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                    continue;
+                };
+                if !metadata.is_dir()
+                    || metadata.file_type().is_symlink()
+                    || desired_paths.contains(&path)
+                    || !entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(MANAGED_TEAM_SKILL_PREFIX)
+                    || !is_managed_team_skill_file(&path.join("SKILL.md"))
+                {
+                    continue;
+                }
+                if let Err(error) = std::fs::remove_dir_all(&path) {
+                    warn!(path = %path.display(), %error, "failed to prune managed team skill");
+                }
+            }
+        }
+    }
+
+    receipts
+}
+
+/// Apply the exact organization-managed skill desired state. Only directories
+/// written by this command (namespaced + marker-checked) can be refreshed or
+/// pruned; personal skills and unrelated agent configuration are untouched.
+#[tauri::command]
+#[specta::specta]
+pub fn sync_managed_team_skills(
+    skills: Vec<ManagedTeamSkill>,
+    prune_unlisted: bool,
+) -> Result<Vec<ManagedTeamSkillReceipt>, String> {
+    let home = dirs::home_dir().ok_or_else(|| "could not resolve home directory".to_string())?;
+    let store = skills_store_dir();
+    Ok(sync_managed_team_skills_in(
+        &home,
+        &store,
+        &skills,
+        prune_unlisted,
+    ))
+}
+
+fn managed_team_skill_title(raw: &str, fallback: &str) -> String {
+    raw.lines()
+        .find_map(|line| line.strip_prefix("# ").map(str::trim))
+        .filter(|title| !title.is_empty())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn list_managed_team_skills_in(home: &Path, store: &Path) -> Vec<ManagedTeamSkillLocal> {
+    let mut found: BTreeMap<String, (u64, String, String, BTreeSet<String>)> = BTreeMap::new();
+    for (destination, root) in managed_destination_roots(home, store) {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let skill_md = path.join("SKILL.md");
+            if !path.is_dir() || !is_managed_team_skill_file(&skill_md) {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&skill_md) else {
+                continue;
+            };
+            let Some((artifact_id, version)) = parse_managed_team_skill_marker(&raw) else {
+                continue;
+            };
+            let (_, description) = parse_skill_frontmatter(&skill_md);
+            let fallback = artifact_id.clone();
+            let entry = found.entry(artifact_id).or_insert_with(|| {
+                (
+                    version,
+                    managed_team_skill_title(&raw, &fallback),
+                    description.unwrap_or_default(),
+                    BTreeSet::new(),
+                )
+            });
+            entry.0 = entry.0.max(version);
+            entry.3.insert(destination.clone());
+        }
+    }
+    found
+        .into_iter()
+        .map(
+            |(artifact_id, (version, name, description, destinations))| ManagedTeamSkillLocal {
+                artifact_id,
+                version,
+                name,
+                description,
+                destinations: destinations.into_iter().collect(),
+            },
+        )
+        .collect()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_managed_team_skills() -> Result<Vec<ManagedTeamSkillLocal>, String> {
+    let home = dirs::home_dir().ok_or_else(|| "could not resolve home directory".to_string())?;
+    Ok(list_managed_team_skills_in(&home, &skills_store_dir()))
 }
 
 /// Copy a skill folder into the screenpipe store. `source_path` is the folder
@@ -460,6 +846,9 @@ pub fn import_skill(source_path: String) -> Result<ImportedSkill, String> {
     let skill_md = src.join("SKILL.md");
     if !skill_md.exists() {
         return Err("folder has no SKILL.md".to_string());
+    }
+    if is_managed_team_skill_file(&skill_md) {
+        return Err("organization-managed skills cannot be imported manually".to_string());
     }
 
     let (fm_name, fm_desc) = parse_skill_frontmatter(&skill_md);
@@ -503,7 +892,13 @@ pub fn remove_imported_skill(name: String) -> Result<(), String> {
     if key.is_empty() {
         return Err("invalid skill name".to_string());
     }
+    if key.starts_with(MANAGED_TEAM_SKILL_PREFIX) {
+        return Err("organization-managed skills cannot be removed locally".to_string());
+    }
     let dir = skills_store_dir().join(&key);
+    if is_managed_team_skill_file(&dir.join("SKILL.md")) {
+        return Err("organization-managed skills cannot be removed locally".to_string());
+    }
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("failed to remove skill: {e}"))?;
     }
@@ -990,5 +1385,120 @@ mod tests {
         assert!(safe_join(base, "../evil").is_err());
         assert!(safe_join(base, "/etc/passwd").is_err());
         assert!(safe_join(base, "a/../../b").is_err());
+    }
+
+    fn managed_skill_fixture(id: &str, version: u64, destinations: &[&str]) -> ManagedTeamSkill {
+        ManagedTeamSkill {
+            artifact_id: id.to_string(),
+            version,
+            name: "Resident record review".to_string(),
+            description: "Verify the resident ledger before editing it.".to_string(),
+            when_to_use: "Before changing a resident ledger.".to_string(),
+            instructions: "Compare the source record with the pending change.".to_string(),
+            verification: "The source and saved record match.".to_string(),
+            destinations: destinations.iter().map(|value| (*value).to_string()).collect(),
+        }
+    }
+
+    fn managed_skill_test_root(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "screenpipe-managed-skills-{label}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn managed_team_skills_install_into_selected_agent_directories() {
+        let root = managed_skill_test_root("install");
+        let home = root.join("home");
+        let store = root.join("store");
+        let personal = home.join(".claude/skills/personal-skill");
+        std::fs::create_dir_all(&personal).unwrap();
+        std::fs::write(personal.join("SKILL.md"), "# personal\n").unwrap();
+
+        let skill = managed_skill_fixture(
+            "resident-review-abc123",
+            4,
+            &["screenpipe", "claude-code", "codex", "gemini"],
+        );
+        let receipts = sync_managed_team_skills_in(&home, &store, &[skill], true);
+        assert_eq!(receipts.len(), 4);
+        assert!(receipts.iter().all(|receipt| receipt.status == "installed"));
+
+        let dir = "screenpipe-team-resident-review-abc123";
+        for path in [
+            store.join(dir),
+            home.join(".claude/skills").join(dir),
+            home.join(".codex/skills").join(dir),
+            home.join(".gemini/skills").join(dir),
+        ] {
+            let body = std::fs::read_to_string(path.join("SKILL.md")).unwrap();
+            assert!(body.contains(MANAGED_TEAM_SKILL_MARKER));
+            assert!(body.contains("# Resident record review"));
+        }
+        assert!(personal.join("SKILL.md").is_file());
+
+        let listed = list_managed_team_skills_in(&home, &store);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].artifact_id, "resident-review-abc123");
+        assert_eq!(listed[0].version, 4);
+        assert_eq!(
+            listed[0].destinations,
+            vec!["claude-code", "codex", "gemini", "screenpipe"]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_team_skill_pruning_removes_only_marked_managed_directories() {
+        let root = managed_skill_test_root("prune");
+        let home = root.join("home");
+        let store = root.join("store");
+        let personal = home.join(".codex/skills/personal-skill");
+        std::fs::create_dir_all(&personal).unwrap();
+        std::fs::write(personal.join("SKILL.md"), "# personal\n").unwrap();
+        let skill = managed_skill_fixture(
+            "resident-review-abc123",
+            1,
+            &["screenpipe", "codex"],
+        );
+        sync_managed_team_skills_in(&home, &store, &[skill], true);
+
+        sync_managed_team_skills_in(&home, &store, &[], false);
+        assert!(home
+            .join(".codex/skills/screenpipe-team-resident-review-abc123/SKILL.md")
+            .is_file());
+
+        sync_managed_team_skills_in(&home, &store, &[], true);
+        assert!(!home
+            .join(".codex/skills/screenpipe-team-resident-review-abc123")
+            .exists());
+        assert!(!store
+            .join("screenpipe-team-resident-review-abc123")
+            .exists());
+        assert!(personal.join("SKILL.md").is_file());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_managed_policy_preserves_the_last_valid_install() {
+        let root = managed_skill_test_root("invalid");
+        let home = root.join("home");
+        let store = root.join("store");
+        let skill = managed_skill_fixture("resident-review-abc123", 1, &["screenpipe"]);
+        sync_managed_team_skills_in(&home, &store, &[skill], true);
+
+        let invalid = managed_skill_fixture("../escape", 2, &["screenpipe"]);
+        let receipts = sync_managed_team_skills_in(&home, &store, &[invalid], true);
+        assert!(receipts.iter().any(|receipt| receipt.status == "error"));
+        assert!(store
+            .join("screenpipe-team-resident-review-abc123/SKILL.md")
+            .is_file());
+        assert!(!root.join("escape").exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

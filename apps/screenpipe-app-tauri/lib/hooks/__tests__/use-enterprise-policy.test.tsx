@@ -44,6 +44,7 @@ const mocks = vi.hoisted(() => {
       applyEnterpriseUiVisibility: vi.fn(async () => undefined),
       setSyncStreams: vi.fn(async () => undefined),
       saveEnterpriseTeamConfig: vi.fn(async () => null),
+      syncManagedTeamSkills: vi.fn(async () => ({ status: "ok" as const, data: [] })),
     },
     tauriFetch: vi.fn(),
     localFetch: vi.fn(),
@@ -228,6 +229,7 @@ describe("enterprise policy runtime manual activation", () => {
     mocks.commands.applyEnterpriseUiVisibility.mockResolvedValue(undefined);
     mocks.commands.setSyncStreams.mockResolvedValue(undefined);
     mocks.commands.saveEnterpriseTeamConfig.mockResolvedValue(null);
+    mocks.commands.syncManagedTeamSkills.mockResolvedValue({ status: "ok", data: [] });
     mocks.platform.mockReturnValue("windows");
   });
 
@@ -263,6 +265,43 @@ describe("enterprise policy runtime manual activation", () => {
     expect(mocks.syncManagedPipes).toHaveBeenCalledTimes(1);
 
     view.unmount();
+  });
+
+  it("installs an explicitly returned organization skill in local AI agents", async () => {
+    mocks.commands.getEnterpriseLicenseKey.mockResolvedValue(KEY);
+    const managedSkills = [
+      {
+        artifact_id: "meeting-follow-up",
+        version: 3,
+        name: "Meeting follow-up",
+        description: "Turn a completed meeting into traceable next steps.",
+        when_to_use: "After a customer meeting.",
+        instructions: "Review the meeting evidence and draft next steps.",
+        verification: "Every action has an owner.",
+        destinations: ["screenpipe", "claude-code", "codex", "gemini"],
+      },
+    ];
+    mockEnterpriseApi({ policy: { managedSkills } });
+
+    const { result } = await renderEnterprisePolicy();
+
+    await waitFor(() => expect(result.current.isEnterpriseAuthenticated).toBe(true));
+    await waitFor(() =>
+      expect(mocks.commands.syncManagedTeamSkills).toHaveBeenCalledWith(
+        managedSkills,
+        true,
+      ),
+    );
+  });
+
+  it("preserves installed organization skills when the policy field is omitted", async () => {
+    mocks.commands.getEnterpriseLicenseKey.mockResolvedValue(KEY);
+    mockEnterpriseApi({});
+
+    const { result } = await renderEnterprisePolicy();
+
+    await waitFor(() => expect(result.current.isEnterpriseAuthenticated).toBe(true));
+    expect(mocks.commands.syncManagedTeamSkills).not.toHaveBeenCalled();
   });
 
   it("offers credential choice when neither account nor saved key exists", async () => {
