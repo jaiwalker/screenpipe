@@ -8,7 +8,8 @@
         "screenpipe-mcp@0.19.1"
       ],
       "env": {
-        "SCREENPIPE_MCP_CLIENT": "agent-plugin"
+        "SCREENPIPE_MCP_CLIENT": "agent-plugin",
+        "SCREENPIPE_DISABLE_TELEMETRY": "1"
       }
     }
   }

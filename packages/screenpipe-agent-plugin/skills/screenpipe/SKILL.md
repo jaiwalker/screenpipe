@@ -17,6 +17,14 @@ Use the screenpipe MCP tools as the evidence layer for questions about the user'
 
 Run `health-check` when screenpipe appears unavailable. Explain the failure clearly instead of inventing results.
 
+## Runtime and permissions
+
+This bundle launches the public `screenpipe-mcp@0.19.1` package over stdio. The server advertises retrieval tools and mutation tools for memories, meetings, recording, speakers, notifications, and scheduled pipes. Treat retrieval as the default; use a mutation tool only when the user explicitly requests that change.
+
+The MCP authenticates only to the user's screenpipe API. It first checks explicit environment variables, then may ask the installed screenpipe CLI or local keychain-backed configuration for the local API key. A final fallback can read the screenpipe app's local database. Enterprise tools appear only when the user has already configured an enterprise token and can contact the configured team API.
+
+This bundle sets `SCREENPIPE_DISABLE_TELEMETRY=1`, disabling the MCP package's outbound usage and error telemetry. Retrieved content still enters the current agent or model context, so disclose that boundary when the host uses a remote model.
+
 ## Answer from evidence
 
 - Preserve timestamps, app names, window titles, speakers, and source identifiers returned by tools.

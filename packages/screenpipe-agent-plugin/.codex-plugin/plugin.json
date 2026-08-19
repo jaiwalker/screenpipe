@@ -1,7 +1,7 @@
 {
   "name": "screenpipe",
-  "version": "1.0.0",
-  "description": "Local-first workflow memory for AI agents. Search private screen and audio history, reconstruct real work, and produce cited workflows and SOPs.",
+  "version": "1.0.1",
+  "description": "Local-first workflow memory for AI agents, backed by the screenpipe MCP server. Search private screen and audio history, reconstruct real work, and produce cited workflows and SOPs.",
   "author": {
     "name": "screenpipe",
     "url": "https://screenpi.pe"
@@ -25,7 +25,8 @@
     "developerName": "screenpipe",
     "category": "Productivity",
     "capabilities": [
-      "Read"
+      "Read",
+      "Write"
     ],
     "websiteURL": "https://screenpi.pe",
     "privacyPolicyURL": "https://screenpi.pe/privacy",

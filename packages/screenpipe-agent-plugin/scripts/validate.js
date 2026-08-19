@@ -34,7 +34,10 @@ assert.equal(codex.name, plugin.name);
 assert.equal(codex.version, plugin.version);
 assert.equal(codex.skills, "./skills/");
 assert.equal(codex.mcpServers, "./.mcp.json");
-assert.ok(!Object.hasOwn(pkg, "openclaw"));
+assert.equal(pkg.openclaw.compat.pluginApi, ">=2026.7.1-2");
+assert.equal(pkg.openclaw.compat.minGatewayVersion, "2026.7.1-2");
+assert.equal(pkg.openclaw.build.openclawVersion, "2026.7.1-2");
+assert.equal(pkg.openclaw.build.pluginSdkVersion, "2026.7.1-2");
 assert.ok(!Object.hasOwn(openclaw, "mcpServers"));
 assert.equal(
   mcp.$schema,
@@ -45,11 +48,16 @@ const server = mcp.mcpServers.screenpipe;
 assert.deepEqual(server.args, ["-y", `screenpipe-mcp@${publishedMcpVersion}`]);
 assert.equal(server.type, "stdio");
 assert.equal(server.command, "npx");
+assert.equal(server.env.SCREENPIPE_DISABLE_TELEMETRY, "1");
 assert.ok(!server.args.some((arg) => arg.includes("@latest")));
 assert.deepEqual(codexMcp.mcpServers, mcp.mcpServers);
+assert.ok(codex.interface.capabilities.includes("Read"));
+assert.ok(codex.interface.capabilities.includes("Write"));
 
 const skill = fs.readFileSync(path.join(root, "skills/screenpipe/SKILL.md"), "utf8");
 assert.match(skill, /^---\r?\nname: screenpipe\r?\n/);
+assert.match(skill, /advertises retrieval tools and mutation tools/);
+assert.match(skill, /SCREENPIPE_DISABLE_TELEMETRY=1/);
 
 const mcpSource = fs.readFileSync(
   path.join(repo, "packages/screenpipe-mcp/src/index.ts"),
