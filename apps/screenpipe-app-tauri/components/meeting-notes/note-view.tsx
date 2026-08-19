@@ -2023,12 +2023,15 @@ export function NoteView({
                 compact
                 showModelOnly
                 includeAgentPresets={false}
+                selectionOnly
+                popoverSide="bottom"
+                popoverContentClassName="w-96 min-w-96"
                 controlledPresetId={summaryPresetId}
                 onControlledSelect={(preset) => {
                   void handleSummaryPresetSelect(preset);
                 }}
-                containerClassName="w-[180px] max-w-[32vw] min-w-[120px] shrink-0 gap-0"
-                triggerClassName="h-9 border-border bg-background px-2 text-xs text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground"
+                containerClassName="w-[180px] max-w-[28vw] min-w-[120px] shrink-0 gap-0"
+                triggerClassName="h-7 border-0 bg-transparent px-1.5 text-xs text-muted-foreground shadow-none hover:bg-muted/50 hover:text-foreground"
                 triggerAriaLabel="meeting summary model"
               />
             }

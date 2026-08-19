@@ -178,4 +178,21 @@ describe("AIPresetsSelector controlled preset creation", () => {
       screen.getByRole("combobox", { name: "AI preset" }),
     ).toHaveTextContent("old-model");
   });
+
+  it("keeps selection-only surfaces free of preset management", () => {
+    render(
+      <AIPresetsSelector
+        compact
+        showModelOnly
+        selectionOnly
+        controlledPresetId={originalPreset.id}
+        onControlledSelect={mocks.controlledSelect}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("combobox"));
+
+    expect(screen.getByText("original")).toBeVisible();
+    expect(screen.queryByText("create new preset")).not.toBeInTheDocument();
+  });
 });
