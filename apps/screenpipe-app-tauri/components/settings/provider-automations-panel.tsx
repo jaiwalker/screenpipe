@@ -38,6 +38,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+// Cowork schedules are account-backed, not part of the local Claude Code
+// projection. Keep that boundary visible without pretending we can list them.
+const CLAUDE_CLOUD_URL = "https://claude.ai";
+
 function rruleParts(schedule: string): Record<string, string> {
   return Object.fromEntries(
     schedule
@@ -207,7 +211,7 @@ export function providerManagementUrl(provider: string): string | null {
 
 function providerLabel(provider: string): string {
   if (provider.toLowerCase() === "codex") return "Codex";
-  if (provider.toLowerCase() === "claude") return "Claude";
+  if (provider.toLowerCase() === "claude") return "Claude Code";
   return provider.charAt(0).toUpperCase() + provider.slice(1);
 }
 
@@ -336,6 +340,15 @@ export function ProviderAutomationsPanel({
     [onOpenProvider],
   );
 
+  const openClaudeCloud = React.useCallback(async () => {
+    setOpenError(null);
+    try {
+      await onOpenProvider(CLAUDE_CLOUD_URL);
+    } catch {
+      setOpenError("couldn't open Claude");
+    }
+  }, [onOpenProvider]);
+
   const mutateTask = React.useCallback(
     async (task: ProviderAutomation, action: "pause" | "resume" | "delete") => {
       setPendingTask(task.key);
@@ -356,7 +369,42 @@ export function ProviderAutomationsPanel({
     [load, onManageTask],
   );
 
-  if (visible.length === 0) return null;
+  const claudeCloudBoundary = (
+    <div className="flex min-h-10 items-center gap-2 border-t border-border px-4 py-2 first:border-t-0">
+      <ProviderIcon provider="claude" />
+      <span className="text-xs font-medium">Claude cloud schedules</span>
+      <span className="text-xs text-muted-foreground">stay in Claude</span>
+      <div className="flex-1" />
+      <button
+        type="button"
+        className="inline-flex shrink-0 items-center gap-1.5 border border-border px-2 py-1 font-mono text-[10px] uppercase tracking-wide text-foreground transition-colors hover:bg-foreground hover:text-background"
+        onClick={() => void openClaudeCloud()}
+      >
+        open Claude
+        <ExternalLink className="h-3 w-3" />
+      </button>
+    </div>
+  );
+
+  if (visible.length === 0) {
+    if (query) return null;
+    return (
+      <section
+        className="overflow-hidden border border-border bg-muted/10"
+        data-testid="provider-automations-panel"
+      >
+        {claudeCloudBoundary}
+        {openError && (
+          <p
+            className="border-t border-border px-4 py-2 text-xs text-destructive"
+            role="alert"
+          >
+            {openError}
+          </p>
+        )}
+      </section>
+    );
+  }
 
   const activeProviderLabel = providerLabel(activeProvider ?? "agent");
   const activeManagementUrl = activeProvider
@@ -617,6 +665,8 @@ export function ProviderAutomationsPanel({
           )}
         </div>
       )}
+
+      {!query && claudeCloudBoundary}
 
       {openError && (
         <p

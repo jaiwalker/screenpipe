@@ -80,7 +80,7 @@ describe("ProviderAutomationsPanel", () => {
     expect(screen.getByText("Daily review")).toBeInTheDocument();
     expect(screen.queryByText("Say hi")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: /Claude 1/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /Claude Code 1/i }));
 
     expect(screen.getByText("Say hi")).toBeInTheDocument();
     expect(screen.getByText("Every hour at :07")).toBeInTheDocument();
@@ -117,6 +117,35 @@ describe("ProviderAutomationsPanel", () => {
     expect(providerManagementUrl("claude")).toBeNull();
   });
 
+  it("keeps Claude cloud schedules visible as a provider boundary", async () => {
+    const onOpenProvider = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(commands.listProviderAutomations).mockResolvedValue({
+      status: "ok",
+      data: [TASKS[0]],
+    });
+
+    render(<ProviderAutomationsPanel onOpenProvider={onOpenProvider} />);
+
+    expect(await screen.findByText("Codex schedules")).toBeInTheDocument();
+    expect(screen.getByText("Claude cloud schedules")).toBeInTheDocument();
+    expect(screen.getByText("stay in Claude")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "open Claude" }));
+    expect(onOpenProvider).toHaveBeenCalledWith("https://claude.ai");
+  });
+
+  it("shows the Claude cloud boundary when no local agent tasks exist", async () => {
+    vi.mocked(commands.listProviderAutomations).mockResolvedValue({
+      status: "ok",
+      data: [],
+    });
+
+    render(<ProviderAutomationsPanel />);
+
+    expect(await screen.findByText("Claude cloud schedules")).toBeInTheDocument();
+    expect(screen.queryByText("agent schedules")).not.toBeInTheDocument();
+  });
+
   it("uses inline controls only when the live ACP adapter advertised them", async () => {
     const onManageTask = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onManageTask={onManageTask} />);
@@ -129,7 +158,7 @@ describe("ProviderAutomationsPanel", () => {
     await waitFor(() =>
       expect(onManageTask).toHaveBeenCalledWith("codex:daily-review", "resume"),
     );
-    fireEvent.click(screen.getByRole("tab", { name: /Claude 1/i }));
+    fireEvent.click(screen.getByRole("tab", { name: /Claude Code 1/i }));
     expect(screen.queryByRole("switch", { name: /Say hi/i })).toBeNull();
   });
 
