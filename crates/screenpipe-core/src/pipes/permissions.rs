@@ -130,6 +130,10 @@ pub const DEFAULT_ALLOWED_ENDPOINTS: &[&str] = &[
     "GET /meetings",
     "GET /meetings/*",
     "GET /meetings/status",
+    // Durable user context is a read-only source just like meetings/search.
+    // Native Pi's mandatory memory preflight uses this endpoint; mutations
+    // remain excluded from the reader preset.
+    "GET /memories",
     "POST /notify",
     "GET /speakers",
     "POST /speakers/update",
@@ -768,6 +772,8 @@ mod tests {
         assert!(p.is_endpoint_allowed("GET", "/meetings/42"));
         assert!(p.is_endpoint_allowed("POST", "/notify"));
         assert!(p.is_endpoint_allowed("GET", "/feedback"));
+        assert!(p.is_endpoint_allowed("GET", "/memories"));
+        assert!(!p.is_endpoint_allowed("POST", "/memories"));
         assert!(p.is_endpoint_allowed("GET", "/outputs/targets"));
         assert!(p.is_endpoint_allowed(
             "POST",

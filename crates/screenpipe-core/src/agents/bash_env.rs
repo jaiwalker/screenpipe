@@ -67,7 +67,7 @@ _sp_auth_key() {
 }
 
 curl() {
-  local key sid has_local=0 add_filter=0 arg
+  local key sid has_local=0 has_explicit_auth=0 add_filter=0 arg
   local -a out=() hdrs=()
   key="$(_sp_auth_key)"
   # Chat/session this agent runs under. The owned-browser is a singleton shared
@@ -81,6 +81,11 @@ curl() {
   fi
 
   for arg in "$@"; do
+    case "$arg" in
+      [Aa]uthorization:*|*[Aa]uthorization:*)
+        has_explicit_auth=1
+        ;;
+    esac
     case "$arg" in
       *localhost:3030*|*127.0.0.1:3030*|*'[::1]:3030'*|*localhost:11435*|*127.0.0.1:11435*|*'[::1]:11435'*)
         has_local=1
@@ -104,7 +109,7 @@ curl() {
   done
 
   if [ "$has_local" = "1" ]; then
-    [ -n "$key" ] && hdrs+=(-H "Authorization: Bearer $key")
+    [ "$has_explicit_auth" = "0" ] && [ -n "$key" ] && hdrs+=(-H "Authorization: Bearer $key")
     [ -n "$sid" ] && hdrs+=(-H "x-screenpipe-session: $sid")
     command curl "${hdrs[@]}" "${out[@]}"
   else
@@ -244,6 +249,12 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_script_preserves_explicit_authorization_header() {
+        assert!(WRAPPER_SCRIPT.contains("has_explicit_auth=1"));
+        assert!(WRAPPER_SCRIPT.contains("[ \"$has_explicit_auth\" = \"0\" ]"));
+    }
+
+    #[test]
     fn wrapper_script_references_filter_pii_env() {
         assert!(
             WRAPPER_SCRIPT.contains("SCREENPIPE_FILTER_PII"),
@@ -328,6 +339,25 @@ mod tests {
             notify.contains("x-screenpipe-session: pipe:daily:7"),
             "local notification call must carry the session owner header; got: {notify}"
         );
+
+        // An explicit scoped Pipe token must win over a stale global key. Two
+        // Authorization headers make axum authenticate whichever one its
+        // header map returns first, which caused valid Pipe calls to get 403.
+        let argv_explicit = tmp.path().join("explicit.argv");
+        let status = Command::new("bash")
+            .env("PATH", format!("{}:/usr/bin:/bin", fake_curl_dir.display()))
+            .env("BASH_ENV", &wrapper)
+            .env("CURL_ARGV_FILE", &argv_explicit)
+            .env("SCREENPIPE_LOCAL_API_KEY", "stale-global-key")
+            .arg("-c")
+            .arg("curl -H 'Authorization: Bearer scoped-pipe-key' http://localhost:3030/memories")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let explicit = std::fs::read_to_string(&argv_explicit).unwrap();
+        assert_eq!(explicit.matches("Authorization:").count(), 1, "{explicit}");
+        assert!(explicit.contains("Authorization: Bearer scoped-pipe-key"));
+        assert!(!explicit.contains("stale-global-key"));
 
         // Third-party host → owner header must NOT leak.
         let argv_ext = tmp.path().join("ext.argv");

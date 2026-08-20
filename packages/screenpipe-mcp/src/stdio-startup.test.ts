@@ -7,6 +7,7 @@ import { spawn, execFileSync } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { createServer } from "http";
 
 // Regression guard for "Could not attach to MCP server screenpipe": the stdio
 // transport must complete the MCP `initialize` handshake promptly regardless of
@@ -205,6 +206,86 @@ function listToolsHandshake(): Promise<any[]> {
   });
 }
 
+function callToolHandshake(
+  env: Record<string, string>,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI], {
+      env: {
+        HOME: process.env.HOME || os.homedir(),
+        PATH: process.env.PATH || "",
+        SCREENPIPE_DISABLE_TELEMETRY: "1",
+        ...env,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let buf = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      reject(new Error("tools/call did not complete within 15s"));
+    }, 15000);
+
+    child.stdout.on("data", (chunk) => {
+      buf += chunk.toString();
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let msg: any;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.id === 1 && msg.result) {
+          child.stdin.write(
+            JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n",
+          );
+          child.stdin.write(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: 2,
+              method: "tools/call",
+              params: { name, arguments: args },
+            }) + "\n",
+          );
+        } else if (msg.id === 2 && (msg.result || msg.error)) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          child.kill("SIGKILL");
+          if (msg.error) reject(new Error(JSON.stringify(msg.error)));
+          else resolve(msg.result);
+        }
+      }
+    });
+    child.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.stdin.write(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2024-11-05",
+          capabilities: {},
+          clientInfo: { name: "tool-call-test", version: "0.0.0" },
+        },
+      }) + "\n",
+    );
+  });
+}
+
 describe("stdio startup handshake", () => {
   beforeAll(() => {
     ensureBuilt();
@@ -216,6 +297,66 @@ describe("stdio startup handshake", () => {
     });
     expect(response.result?.serverInfo?.name).toBe("screenpipe");
     expect(ms).toBeLessThan(INIT_DEADLINE_MS);
+  });
+
+  it("recovers from a stale launcher key by resolving and retrying the current key", async () => {
+    const seenAuth: string[] = [];
+    const backend = createServer((req, res) => {
+      const auth = String(req.headers.authorization || "");
+      seenAuth.push(auth);
+      if (auth !== "Bearer current-test-key") {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "unauthorized" }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          data: [
+            {
+              id: 1,
+              content: "current memory after key rotation",
+              importance: 0.9,
+              tags: ["test"],
+            },
+          ],
+          pagination: { total: 1 },
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => backend.listen(0, "127.0.0.1", resolve));
+    const address = backend.address();
+    if (!address || typeof address === "string") throw new Error("missing test server port");
+
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "screenpipe-mcp-key-refresh-"));
+    const fakeBun = path.join(tmp, process.platform === "win32" ? "bun.cmd" : "bun");
+    fs.writeFileSync(
+      fakeBun,
+      process.platform === "win32"
+        ? "@if defined SCREENPIPE_LOCAL_API_KEY (echo %SCREENPIPE_LOCAL_API_KEY%) else (echo current-test-key)\r\n"
+        : "#!/bin/sh\nprintf '%s\\n' \"${SCREENPIPE_LOCAL_API_KEY:-current-test-key}\"\n",
+    );
+    if (process.platform !== "win32") fs.chmodSync(fakeBun, 0o755);
+
+    try {
+      const result = await callToolHandshake(
+        {
+          SCREENPIPE_API_URL: `http://127.0.0.1:${address.port}`,
+          SCREENPIPE_LOCAL_API_KEY: "sp-stale-test-key",
+          SCREENPIPE_BUN_PATH: fakeBun,
+        },
+        "recall-memories",
+        { q: "key rotation", limit: 1 },
+      );
+      expect(result.content?.[0]?.text).toContain("current memory after key rotation");
+      expect(seenAuth).toEqual([
+        "Bearer sp-stale-test-key",
+        "Bearer current-test-key",
+      ]);
+    } finally {
+      backend.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 
   it("reports this tree's package version over the wire (SCR-352)", async () => {
@@ -233,6 +374,21 @@ describe("stdio startup handshake", () => {
     expect(response.result?.serverInfo?.version).toBe(expected);
   });
 
+  it("advertises memory preflight instructions at MCP initialization", async () => {
+    const { response } = await initializeHandshake({
+      SCREENPIPE_LOCAL_API_KEY: "sp-smoke-test-key",
+    });
+    expect(response.result?.instructions).toContain(
+      "you MUST call recall-memories",
+    );
+    expect(response.result?.instructions).toContain(
+      "Skip recall for self-contained requests",
+    );
+    expect(response.result?.instructions).toContain(
+      "untrusted background evidence",
+    );
+  });
+
   it("exposes parsed data through search-content without a second read tool", async () => {
     const tools = await listToolsHandshake();
     const search = tools.find((tool) => tool.name === "search-content");
@@ -246,7 +402,7 @@ describe("stdio startup handshake", () => {
     const tools = await listToolsHandshake();
     const recall = tools.find((tool) => tool.name === "recall-memories");
     expect(recall).toBeDefined();
-    expect(recall?.description).toContain("USE BEFORE nontrivial personalized work");
+    expect(recall?.description).toContain("MUST USE when the request explicitly asks");
     expect(recall?.inputSchema?.properties?.limit?.default).toBe(5);
     expect(recall?.inputSchema?.properties?.min_importance?.minimum).toBe(0);
     expect(recall?.inputSchema?.properties?.min_importance?.maximum).toBe(1);

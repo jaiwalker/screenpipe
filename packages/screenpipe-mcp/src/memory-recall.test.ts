@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildMemoryRecallRequest,
   formatMemoryRecallResponse,
+  memoryRecallFallbackQueries,
+  mergeMemoryRecallLists,
 } from "./memory-recall";
 
 describe("memory recall", () => {
@@ -77,5 +79,49 @@ describe("memory recall", () => {
     const formatted = formatMemoryRecallResponse({ data: [] }, "missing");
     expect(formatted.found).toBe(false);
     expect(formatted.text).toContain("do not retry the same query");
+  });
+
+  it("relaxes an over-specific agent query into bounded distinctive terms", () => {
+    expect(
+      memoryRecallFallbackQueries(
+        "RecallEval-20260819-A launch readiness durable preferences",
+      ),
+    ).toEqual([
+      "RecallEval-20260819-A",
+      "preference",
+      "readiness",
+      "launch",
+    ]);
+  });
+
+  it("merges relaxed matches by term coverage then bounded importance", () => {
+    const merged = mergeMemoryRecallLists(
+      [
+        {
+          data: [
+            { id: 1, content: "project", importance: 8, updated_at: "2026-01-01" },
+            { id: 2, content: "preference", importance: 0.9, updated_at: "2026-01-03" },
+          ],
+        },
+        {
+          data: [
+            { id: 2, content: "preference", importance: 0.9, updated_at: "2026-01-03" },
+            { id: 3, content: "noise", importance: 1, updated_at: "2026-01-04" },
+          ],
+        },
+      ],
+      2,
+    );
+    expect((merged.data as Array<{ id: number }>).map((row) => row.id)).toEqual([2, 3]);
+    expect(merged.pagination?.total).toBe(3);
+  });
+
+  it("never renders legacy out-of-range importance above one", () => {
+    const formatted = formatMemoryRecallResponse(
+      { data: [{ id: 1, content: "legacy", importance: 8 }] },
+      "legacy",
+    );
+    expect(formatted.text).toContain("importance 1.00");
+    expect(formatted.text).not.toContain("importance 8.00");
   });
 });
