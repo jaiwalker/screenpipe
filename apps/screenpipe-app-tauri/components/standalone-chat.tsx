@@ -35,6 +35,7 @@ import { useIsFullscreen } from "@/lib/hooks/use-is-fullscreen";
 import { useChatFilePreview } from "@/lib/hooks/use-chat-file-preview";
 import { useChatInspector } from "@/lib/hooks/use-chat-inspector";
 import { ChatInspectorPopover } from "@/components/chat/chat-inspector";
+import { ChatTabStrip } from "@/components/chat/chat-tab-strip";
 import { useSqlAutocomplete, useTagAutocomplete } from "@/lib/hooks/use-sql-autocomplete";
 import { loadConversationFile } from "@/lib/chat-storage";
 import {
@@ -1962,6 +1963,24 @@ export function StandaloneChat({
     <div ref={dropRootRef} className={cn("flex flex-col bg-background", className ?? "h-screen")} data-testid="section-home">
       <StandaloneChatHeader
         className={className}
+        tabStrip={
+          hideInlineHistory ? (
+            <ChatTabStrip
+              activeId={conversationId}
+              onActivate={async (id) => {
+                useChatStore.getState().actions.setCurrent(id);
+                await emit("chat-load-conversation", {
+                  conversationId: id,
+                  targetWindow: "home",
+                });
+              }}
+              onNewChat={async () => {
+                piStoppedIntentionallyRef.current = true;
+                await startNewConversation();
+              }}
+            />
+          ) : undefined
+        }
         conversationId={conversationId}
         messages={messages}
         pendingUserText={pendingSend?.text ?? null}
