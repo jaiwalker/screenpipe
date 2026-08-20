@@ -145,6 +145,109 @@
       "repo_url": "https://github.com/openai/skills/tree/main/skills/.curated/transcribe",
       "featured": true,
       "apps": ["zoom", "meet", "teams", "quicktime", "music", "voice"]
+    },
+    {
+      "name": "Daily Work Recap",
+      "description": "Turn recorded work into a traceable daily or weekly recap with outcomes and open loops.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/daily-work-recap",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/daily-work-recap",
+      "featured": true,
+      "apps": ["slack", "notion", "linear", "jira", "cursor", "code", "terminal", "chrome", "safari", "arc"]
+    },
+    {
+      "name": "Meeting Follow-up",
+      "description": "Reconstruct a meeting and draft decisions, owners, open questions, and next steps.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/meeting-follow-up",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/meeting-follow-up",
+      "featured": true,
+      "apps": ["zoom", "meet", "teams", "slack", "calendar", "chrome", "safari", "arc"]
+    },
+    {
+      "name": "Relationship Brief",
+      "description": "Prepare for a customer, prospect, partner, or colleague conversation from prior context.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/relationship-brief",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/relationship-brief",
+      "apps": ["slack", "mail", "gmail", "outlook", "zoom", "meet", "salesforce", "hubspot", "chrome", "safari", "arc"]
+    },
+    {
+      "name": "Project Handoff",
+      "description": "Reconstruct project state into a handoff with verified progress, decisions, risks, and next steps.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/project-handoff",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/project-handoff",
+      "apps": ["linear", "jira", "notion", "github", "cursor", "code", "terminal", "chrome", "safari", "arc"]
+    },
+    {
+      "name": "Narrated SOP",
+      "description": "Turn a recorded workflow into an SOP, narration script, captions, and optional screen video.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/narrated-sop",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/narrated-sop",
+      "featured": true,
+      "apps": ["chrome", "safari", "arc", "notion", "loom", "quicktime"]
+    },
+    {
+      "name": "Commitment Tracker",
+      "description": "Find explicit promises, owners, deadlines, and later evidence of completion or change.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/commitment-tracker",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/commitment-tracker",
+      "apps": ["slack", "mail", "gmail", "outlook", "zoom", "meet", "linear", "todoist", "chrome", "safari", "arc"]
+    },
+    {
+      "name": "Decision Log",
+      "description": "Recover decisions, rationale, alternatives, and superseding evidence from work history.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/decision-log",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/decision-log",
+      "apps": ["slack", "notion", "linear", "jira", "zoom", "meet", "chrome", "safari", "arc"]
+    },
+    {
+      "name": "Workflow Finder",
+      "description": "Find repeated work patterns and rank the safest candidates for an SOP or automation.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/workflow-finder",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/workflow-finder",
+      "apps": ["chrome", "safari", "arc", "excel", "sheets", "slack", "notion"]
+    },
+    {
+      "name": "Focus Review",
+      "description": "Review time allocation, context switching, interruptions, and unfinished work without scoring the person.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/focus-review",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/focus-review",
+      "apps": ["calendar", "slack", "notion", "linear", "jira", "cursor", "code", "chrome", "safari", "arc"]
+    },
+    {
+      "name": "Incident Replay",
+      "description": "Reconstruct a failure from recorded actions and visible state into an evidence-backed incident report.",
+      "repo": "screenpipe/screenpipe",
+      "git_ref": "main",
+      "path": "skills/incident-replay",
+      "source": "screenpipe",
+      "repo_url": "https://github.com/screenpipe/screenpipe/tree/main/skills/incident-replay",
+      "apps": ["sentry", "chrome", "safari", "arc", "cursor", "code", "terminal"]
     }
   ]
 }

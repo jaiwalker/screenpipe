@@ -1638,8 +1638,17 @@ mod tests {
     fn bundled_registry_is_valid_and_installable() {
         let skills = parse_registry(BUNDLED_REGISTRY);
         assert!(!skills.is_empty(), "bundled catalog is empty");
+        let mut keys = HashSet::new();
         for s in &skills {
             assert!(validate_repo(&s.repo).is_ok(), "bad repo: {}", s.repo);
+            assert!(
+                matches!(
+                    s.source.as_str(),
+                    "anthropic" | "openai" | "screenpipe" | "community"
+                ),
+                "unknown catalog source: {}",
+                s.source
+            );
             assert!(
                 validate_subpath(s.path.trim_matches('/')).is_ok(),
                 "bad path: {}",
@@ -1656,6 +1665,47 @@ mod tests {
                 "catalog uses a reserved name: {}",
                 s.name
             );
+            let expected_repo_url = format!(
+                "https://github.com/{}/tree/{}/{}",
+                s.repo,
+                s.git_ref,
+                s.path.trim_matches('/')
+            );
+            assert_eq!(
+                s.repo_url.as_deref(),
+                Some(expected_repo_url.as_str()),
+                "catalog browse URL disagrees with repo/ref/path: {}",
+                s.name
+            );
+            assert!(
+                keys.insert(skill_key(&s.name)),
+                "catalog has a duplicate normalized name: {}",
+                s.name
+            );
+
+            if s.repo == "screenpipe/screenpipe" {
+                let skill_md = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../..")
+                    .join(s.path.trim_matches('/'))
+                    .join("SKILL.md");
+                assert!(
+                    skill_md.is_file(),
+                    "screenpipe catalog path has no SKILL.md: {}",
+                    s.path
+                );
+                let (name, description) = parse_skill_frontmatter(&skill_md);
+                assert_eq!(
+                    name.as_deref().map(skill_key),
+                    Some(skill_key(&s.name)),
+                    "registry name and SKILL.md name disagree: {}",
+                    s.path
+                );
+                assert!(
+                    description.is_some_and(|value| !value.trim().is_empty()),
+                    "screenpipe skill has no frontmatter description: {}",
+                    s.path
+                );
+            }
         }
     }
 

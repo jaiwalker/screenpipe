@@ -212,7 +212,7 @@ export function SkillsBrowser({
               Browse skills
             </DialogTitle>
             <p className="text-[11px] text-muted-foreground truncate">
-              curated SKILL.md skills · from Anthropic, OpenAI &amp; the community
+              curated SKILL.md skills · from Screenpipe, Anthropic, OpenAI &amp; the community
             </p>
           </div>
           <DialogClose asChild>
