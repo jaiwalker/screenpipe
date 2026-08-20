@@ -259,6 +259,18 @@ impl DatabaseManager {
                  created_at, updated_at \
                  FROM memories \
                  WHERE importance >= ?1 \
+                   AND (tags IS NULL OR ( \
+                     json_valid(tags) \
+                     AND json_type(CASE WHEN json_valid(tags) THEN tags ELSE 'null' END) = 'array' \
+                     AND NOT EXISTS ( \
+                       SELECT 1 \
+                       FROM json_each(CASE WHEN json_valid(tags) THEN tags ELSE '[]' END) tag \
+                       WHERE tag.type != 'text' \
+                          OR lower(trim(CAST(tag.value AS TEXT))) IN ( \
+                            'privacy:no-ai', 'privacy:local-only', 'state:deleted', 'state:stale' \
+                          ) \
+                     ) \
+                   )) \
                  ORDER BY importance DESC, updated_at DESC, id DESC \
                  LIMIT ?2",
             )
@@ -273,7 +285,20 @@ impl DatabaseManager {
              m.frame_id, m.created_at, m.updated_at \
              FROM memories_fts \
              JOIN memories m ON m.id = memories_fts.rowid \
-             WHERE memories_fts MATCH ?1 AND m.importance >= ?2 \
+             WHERE memories_fts MATCH ?1 \
+               AND m.importance >= ?2 \
+               AND (m.tags IS NULL OR ( \
+                 json_valid(m.tags) \
+                 AND json_type(CASE WHEN json_valid(m.tags) THEN m.tags ELSE 'null' END) = 'array' \
+                 AND NOT EXISTS ( \
+                   SELECT 1 \
+                   FROM json_each(CASE WHEN json_valid(m.tags) THEN m.tags ELSE '[]' END) tag \
+                   WHERE tag.type != 'text' \
+                      OR lower(trim(CAST(tag.value AS TEXT))) IN ( \
+                        'privacy:no-ai', 'privacy:local-only', 'state:deleted', 'state:stale' \
+                      ) \
+                 ) \
+               )) \
              ORDER BY bm25(memories_fts) ASC, m.importance DESC, m.updated_at DESC, m.id DESC \
              LIMIT ?3",
         )
@@ -284,7 +309,6 @@ impl DatabaseManager {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn list_memories(
         &self,

@@ -61,11 +61,9 @@ const FALLBACK_SINGULARS = new Map([
 ]);
 
 /**
- * The local FTS query is deliberately precise (all sanitized terms must
- * match), which is excellent for quotes but brittle for agent-generated
- * memory queries. On an empty exact query, retry a few individual distinctive
- * terms and merge the evidence instead of asking the model to guess a second
- * query.
+ * Older backends expose only exact-AND memory search. When the dedicated
+ * recall route is unavailable, relax a few distinctive terms inside the same
+ * MCP tool call instead of asking the model to guess another call.
  */
 export function memoryRecallFallbackQueries(q: string, max = 4): string[] {
   const seen = new Set<string>();
@@ -186,8 +184,8 @@ export function formatMemoryRecallResponse(
     return {
       found: false,
       text: q
-        ? "No screenpipe memories matched. Continue without memory context; do not retry the same query."
-        : "No high-importance screenpipe memories are available yet. Continue without memory context.",
+        ? "No screenpipe memories matched. Continue without memory context. Do not call recall-memories again in this turn, including without a query."
+        : "No high-importance screenpipe memories are available yet. Continue without memory context. Do not call recall-memories again in this turn.",
     };
   }
 

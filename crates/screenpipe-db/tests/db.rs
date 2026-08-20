@@ -5,6 +5,7 @@
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::time::Instant;
 
     use chrono::Utc;
     use screenpipe_db::{
@@ -685,6 +686,142 @@ mod tests {
         let ambient = db.recall_memories(&[], 0.6, 1).await.unwrap();
         assert_eq!(ambient.len(), 1);
         assert_eq!(ambient[0].importance, 0.95);
+    }
+
+    #[tokio::test]
+    async fn test_agent_memory_recall_filters_private_rows_before_limiting() {
+        let db = setup_test_db().await;
+        let safe = db
+            .insert_memory(
+                "Atlas launch channel is safe-orbit",
+                "user",
+                None,
+                Some(r#"["project:atlas"]"#),
+                0.8,
+                None,
+            )
+            .await
+            .unwrap();
+
+        for index in 0..205 {
+            let tag = match index % 5 {
+                0 => r#"["privacy:no-ai"]"#,
+                1 => r#"["privacy:local-only"]"#,
+                2 => r#"["state:deleted"]"#,
+                3 => r#"["state:stale"]"#,
+                _ => "not-json",
+            };
+            db.insert_memory(
+                "Atlas launch channel is blocked-orbit",
+                "user",
+                None,
+                Some(tag),
+                0.8,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        db.insert_memory(
+            "Atlas launch channel has invalid typed tags",
+            "user",
+            None,
+            Some(r#"["project:atlas", 7]"#),
+            1.0,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let rows = db
+            .recall_memories(&["atlas".into(), "launch".into()], 0.4, 1)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].id, safe,
+            "private rows must not consume the SQL limit"
+        );
+
+        let ambient = db.recall_memories(&[], 0.4, 1).await.unwrap();
+        assert_eq!(ambient.len(), 1);
+        assert_eq!(
+            ambient[0].id, safe,
+            "ambient recall must use the same filter"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "manual synthetic recall latency benchmark"]
+    async fn test_agent_memory_recall_scale_benchmark() {
+        let db = setup_test_db().await;
+        let row_count = std::env::var("SCREENPIPE_RECALL_BENCH_ROWS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(20_000);
+        let iterations = std::env::var("SCREENPIPE_RECALL_BENCH_ITERATIONS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(100);
+        let mut tx = db.pool.begin().await.unwrap();
+        for index in 0..row_count {
+            let (content, tags) = match index % 10 {
+                0 => (
+                    format!("Atlas launch channel synthetic row {index}"),
+                    r#"["project:atlas"]"#,
+                ),
+                1 => (
+                    format!("Atlas private synthetic row {index}"),
+                    r#"["privacy:no-ai"]"#,
+                ),
+                _ => (format!("Unrelated synthetic memory row {index}"), r#"[]"#),
+            };
+            sqlx::query(
+                "INSERT INTO memories (content, source, tags, importance) VALUES (?1, 'eval', ?2, ?3)",
+            )
+            .bind(content)
+            .bind(tags)
+            .bind(0.5 + (index % 50) as f64 / 100.0)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let terms = vec!["atlas".to_string(), "launch".to_string()];
+        db.recall_memories(&terms, 0.4, 5).await.unwrap();
+        db.recall_memories(&[], 0.4, 5).await.unwrap();
+
+        let measure = async |terms: &[String]| {
+            let mut samples = Vec::with_capacity(iterations);
+            for _ in 0..iterations {
+                let started = Instant::now();
+                let rows = db.recall_memories(terms, 0.4, 5).await.unwrap();
+                assert_eq!(rows.len(), 5);
+                assert!(rows.iter().all(|row| !row
+                    .tags
+                    .as_deref()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .contains("privacy:no-ai")));
+                samples.push(started.elapsed().as_micros());
+            }
+            samples.sort_unstable();
+            let percentile = |fraction: f64| {
+                let index = ((samples.len() as f64 * fraction).ceil() as usize)
+                    .saturating_sub(1)
+                    .min(samples.len() - 1);
+                samples[index]
+            };
+            (percentile(0.5), percentile(0.95))
+        };
+        let (targeted_p50, targeted_p95) = measure(&terms).await;
+        let (ambient_p50, ambient_p95) = measure(&[]).await;
+        eprintln!(
+            "memory recall benchmark: rows={row_count} iterations={iterations} \
+             targeted_p50_us={targeted_p50} targeted_p95_us={targeted_p95} \
+             ambient_p50_us={ambient_p50} ambient_p95_us={ambient_p95}"
+        );
     }
 
     /// `related_tags` returns the tags that co-occur with the requested ones,

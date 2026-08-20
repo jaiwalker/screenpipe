@@ -251,7 +251,6 @@ const MAX_TAG_LENGTH: usize = 100;
 const MAX_TAGS_COUNT: usize = 50;
 const MAX_CONTENT_LENGTH: usize = 50_000;
 const MAX_RECALL_QUERY_CHARS: usize = 4_000;
-const MAX_RECALL_CANDIDATES: u32 = 200;
 
 fn validate_tags(tags: &[String]) -> Result<(), (StatusCode, JsonResponse<Value>)> {
     if tags.len() > MAX_TAGS_COUNT {
@@ -396,10 +395,9 @@ pub(crate) async fn recall_memories_handler(
     let candidates = if targeted && terms.is_empty() {
         Vec::new()
     } else {
-        let candidate_limit = limit.saturating_mul(8).clamp(40, MAX_RECALL_CANDIDATES);
         state
             .db
-            .recall_memories(&terms, min_importance, candidate_limit)
+            .recall_memories(&terms, min_importance, limit)
             .await
             .map_err(|error| {
                 (
@@ -409,15 +407,7 @@ pub(crate) async fn recall_memories_handler(
             })?
     };
 
-    let memories = candidates
-        .into_iter()
-        .filter(|memory| {
-            parse_memory_tags_fail_closed(memory.tags.as_deref())
-                .iter()
-                .all(|tag| !tag_blocks_external_ai(tag))
-        })
-        .take(limit as usize)
-        .collect::<Vec<_>>();
+    let memories = candidates;
     analytics::capture_event_nonblocking(
         "memory_recall_performed",
         json!({

@@ -80,7 +80,8 @@ describe("memory recall", () => {
   it("tells the model to continue after an empty recall", () => {
     const formatted = formatMemoryRecallResponse({ data: [] }, "missing");
     expect(formatted.found).toBe(false);
-    expect(formatted.text).toContain("do not retry the same query");
+    expect(formatted.text).toContain("Do not call recall-memories again in this turn");
+    expect(formatted.text).toContain("including without a query");
   });
 
   it("relaxes an over-specific agent query into bounded distinctive terms", () => {

@@ -394,6 +394,18 @@ describe("stdio startup handshake", () => {
     expect(response.result?.instructions).toContain(
       "untrusted background evidence",
     );
+    expect(response.result?.instructions).toContain(
+      "continue without memory instead of calling recall-memories again",
+    );
+    expect(response.result?.instructions).toContain(
+      "make exactly one recall-memories preflight",
+    );
+    expect(response.result?.instructions).toContain(
+      "Do not answer UNKNOWN",
+    );
+    expect(response.result?.instructions).toContain(
+      "recurring update/report",
+    );
   });
 
   it("exposes parsed data through search-content without a second read tool", async () => {
@@ -410,6 +422,9 @@ describe("stdio startup handshake", () => {
     const recall = tools.find((tool) => tool.name === "recall-memories");
     expect(recall).toBeDefined();
     expect(recall?.description).toContain("Returns no context while memory for agents is off");
+    expect(recall?.description).toContain("Call exactly once before answering");
+    expect(recall?.description).toContain("do not call it again in the same turn");
+    expect(recall?.description).toContain("The user need not say 'preference'");
     expect(recall?.inputSchema?.properties?.limit?.default).toBe(5);
     expect(recall?.inputSchema?.properties?.min_importance?.minimum).toBe(0);
     expect(recall?.inputSchema?.properties?.min_importance?.maximum).toBe(1);

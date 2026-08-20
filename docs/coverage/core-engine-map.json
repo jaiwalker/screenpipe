@@ -297,8 +297,6 @@
       "crate": "screenpipe-engine",
       "files": [
         "src/activity_ledger.rs",
-        "src/agent_profile.rs",
-        "src/agent_skills.rs",
         "src/auth_key.rs",
         "src/local_chat.rs",
         "src/pipe_stream.rs",
@@ -449,7 +447,6 @@
         "src/cli/service.rs",
         "src/cli/store_file.rs",
         "src/cli/team.rs",
-        "src/cli/team_skills.rs",
         "src/cli/team_pipes.rs",
         "src/cli/team_skills.rs",
         "src/cli/view.rs",
