@@ -134,6 +134,139 @@ async function waitForTabs(expected: string[]): Promise<void> {
   );
 }
 
+async function pressOpenTabShortcut(direction: 1 | -1): Promise<void> {
+  await browser.execute(
+    (isMac: boolean, move: number) => {
+      const next = move === 1;
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: isMac ? (next ? "}" : "{") : next ? "PageDown" : "PageUp",
+          code: isMac ? (next ? "BracketRight" : "BracketLeft") : undefined,
+          metaKey: isMac,
+          ctrlKey: !isMac,
+          shiftKey: isMac,
+          bubbles: true,
+        }),
+      );
+    },
+    process.platform === "darwin",
+    direction,
+  );
+}
+
+async function pressOpenTabSlot(slot: number): Promise<void> {
+  await browser.execute(
+    (isMac: boolean, oneBasedSlot: number) => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: String(oneBasedSlot),
+          code: `Digit${oneBasedSlot}`,
+          metaKey: isMac,
+          ctrlKey: !isMac,
+          bubbles: true,
+        }),
+      );
+    },
+    process.platform === "darwin",
+    slot,
+  );
+}
+
+async function verifyShortcutGuideCommandMenuEntry(): Promise<void> {
+  const primaryModifiers =
+    process.platform === "darwin" ? ["meta", "ctrl"] : ["ctrl", "meta"];
+  let openedWith: string | null = null;
+  for (const modifier of primaryModifiers) {
+    await browser.execute((primary: string) => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "k",
+          code: "KeyK",
+          metaKey: primary === "meta",
+          ctrlKey: primary === "ctrl",
+          bubbles: true,
+        }),
+      );
+    }, modifier);
+    const opened = await browser
+      .waitUntil(
+        async () =>
+          (await browser.execute(() => {
+            const element = document.querySelector<HTMLElement>(
+              "[data-testid=command-palette-input]",
+            );
+            if (!element) return false;
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.display !== "none" &&
+              style.visibility !== "hidden" &&
+              Number(style.opacity) > 0
+            );
+          })) as boolean,
+        { timeout: t(2_000), interval: 100 },
+      )
+      .then(() => true)
+      .catch(() => false);
+    if (opened) {
+      openedWith = modifier;
+      break;
+    }
+  }
+  expect(openedWith).not.toBeNull();
+  await browser.execute(() => {
+    const paletteInput = document.querySelector<HTMLInputElement>(
+      "[data-testid=command-palette-input]",
+    );
+    if (!paletteInput) return;
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    valueSetter?.call(paletteInput, "keyboard shortcut guide");
+    paletteInput.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const guideRow = await $("[data-testid=command-palette-open_shortcut_guide]");
+  await guideRow.waitForExist({ timeout: t(5_000) });
+  expect((await guideRow.getText()).toLowerCase()).toContain(
+    "keyboard shortcut guide",
+  );
+  await browser.pause(350);
+  await saveScreenshot("chat-tabs-native-command-menu");
+
+  // WKWebView's WebDriver bridge does not reliably deliver Enter to cmdk's
+  // virtual selection. The row assertion above covers command-menu discovery;
+  // close through the visible dialog control before continuing.
+  await browser.execute(() => {
+    const dialog = document
+      .querySelector<HTMLElement>("[data-testid=command-palette-input]")
+      ?.closest<HTMLElement>('[role="dialog"]');
+    dialog?.querySelector<HTMLButtonElement>("button")?.click();
+  });
+  await browser.waitUntil(
+    async () =>
+      !(await browser.execute(() =>
+        Boolean(
+          document.querySelector<HTMLElement>("[data-testid=command-palette-input]"),
+        ),
+      )),
+    { timeout: t(5_000), interval: 100 },
+  );
+}
+
+async function dismissFirstRunGuideIfPresent(): Promise<void> {
+  const decline = await $("[data-testid=firstrun-decline]");
+  const appeared = await decline
+    .waitForDisplayed({ timeout: t(3_000) })
+    .then(() => true)
+    .catch(() => false);
+  if (!appeared) return;
+  await decline.click();
+  await decline.waitForDisplayed({ reverse: true, timeout: t(5_000) });
+}
+
 describe("Home chat tab working set", function () {
   this.timeout(120_000);
 
@@ -146,6 +279,7 @@ describe("Home chat tab working set", function () {
     await seedChat(CHAT_C, TITLES[CHAT_C]);
     await waitForTabs([CHAT_A, CHAT_B, CHAT_C]);
     await waitForForeground(CHAT_C);
+    await dismissFirstRunGuideIfPresent();
   });
 
   after(async () => {
@@ -198,7 +332,110 @@ describe("Home chat tab working set", function () {
     await saveScreenshot("chat-tabs-native-working-set");
   });
 
+  it("uses scoped tab shortcuts and exposes the keyboard map plus tooltip keycaps", async () => {
+    await clickTab(CHAT_C);
+
+    await pressOpenTabShortcut(-1);
+    await waitForForeground(CHAT_B);
+    await pressOpenTabShortcut(1);
+    await waitForForeground(CHAT_C);
+    await pressOpenTabSlot(1);
+    await waitForForeground(CHAT_A);
+
+    expect(
+      (await browser.execute(() =>
+        Boolean(document.querySelector("[data-testid=shortcut-guide-button]")),
+      )) as boolean,
+    ).toBe(true);
+    await $("[data-testid=shortcut-guide-button]").click();
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(() => {
+          const element = document.querySelector<HTMLElement>(
+            "[data-testid=shortcut-guide]",
+          );
+          if (!element) return false;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return (
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            Number(style.opacity) > 0
+          );
+        })) as boolean,
+      { timeout: t(5_000), interval: 100 },
+    );
+    const guideText = (await browser.execute(
+      () =>
+        document.querySelector<HTMLElement>("[data-testid=shortcut-guide]")
+          ?.innerText ?? "",
+    )) as string;
+    expect(guideText).toContain("keyboard shortcuts");
+    expect(guideText).toContain("switch recent chat");
+    expect(guideText).toContain(
+      process.platform === "darwin" ? "⌘⇧]" : "Ctrl+PageDown",
+    );
+    await $("[data-testid=shortcut-guide]").moveTo({ xOffset: 120, yOffset: 80 });
+    await browser.pause(350);
+    await saveScreenshot("chat-tabs-native-shortcut-guide");
+
+    await browser.execute(() => {
+      document
+        .querySelector<HTMLButtonElement>("[data-testid=shortcut-guide] button")
+        ?.click();
+    });
+    await browser.waitUntil(
+      async () =>
+        !(await browser.execute(() =>
+          Boolean(
+            document.querySelector<HTMLElement>(
+              '[data-testid="shortcut-guide"][data-state="open"]',
+            ),
+          ),
+        )),
+      { timeout: t(5_000), interval: 100 },
+    );
+
+    await verifyShortcutGuideCommandMenuEntry();
+
+    await browser.execute(() => {
+      document
+        .querySelector<HTMLButtonElement>("[data-testid=chat-new-tab]")
+        ?.focus();
+    });
+    expect(
+      await browser.execute(
+        () => document.activeElement?.getAttribute("data-testid") ?? null,
+      ),
+    ).toBe("chat-new-tab");
+    await browser.waitUntil(
+      async () =>
+        (await browser.execute(() => {
+          const element = document.querySelector<HTMLElement>(
+            '[data-testid="chat-new-tab-tooltip"][data-state="delayed-open"], [data-testid="chat-new-tab-tooltip"][data-state="instant-open"]',
+          );
+          if (!element) return false;
+          const rect = element.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        })) as boolean,
+      { timeout: t(5_000), interval: 100 },
+    );
+    const tooltipText = (await browser.execute(
+      () =>
+        document.querySelector<HTMLElement>(
+          "[data-testid=chat-new-tab-tooltip]",
+        )?.textContent ?? "",
+    )) as string;
+    expect(tooltipText).toContain("new chat");
+    expect(tooltipText).toContain(
+      process.platform === "darwin" ? "⌘N" : "Ctrl+N",
+    );
+  });
+
   it("closes an inactive tab without deleting it and reopens it from the sidebar", async () => {
+    await clickTab(CHAT_B);
     await closeTab(CHAT_A);
     await waitForTabs([CHAT_B, CHAT_C]);
     expect(await foregroundId()).toBe(CHAT_B);

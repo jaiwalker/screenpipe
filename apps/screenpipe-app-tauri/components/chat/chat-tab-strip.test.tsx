@@ -333,6 +333,123 @@ describe("ChatTabStrip", () => {
     );
   });
 
+  it("switches adjacent macOS tabs globally without stealing composer focus", () => {
+    const actions = useChatStore.getState().actions;
+    for (const [id, title] of [
+      ["chat-a", "first chat"],
+      ["chat-b", "second chat"],
+      ["chat-c", "third chat"],
+    ]) {
+      actions.upsert(record({ id, title }));
+      actions.openChat(id);
+    }
+    const onActivate = vi.fn();
+
+    render(
+      <>
+        <textarea aria-label="composer" />
+        <ChatTabStrip
+          activeId="chat-b"
+          isMac
+          onActivate={onActivate}
+          onNewChat={vi.fn()}
+        />
+      </>,
+    );
+    const composer = screen.getByRole("textbox", { name: "composer" });
+    composer.focus();
+
+    fireEvent.keyDown(window, {
+      key: "}",
+      code: "BracketRight",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(onActivate).toHaveBeenLastCalledWith("chat-c");
+    expect(composer).toHaveFocus();
+
+    fireEvent.keyDown(window, {
+      key: "1",
+      code: "Digit1",
+      metaKey: true,
+    });
+    expect(onActivate).toHaveBeenLastCalledWith("chat-a");
+    expect(composer).toHaveFocus();
+  });
+
+  it("wraps Ctrl+PageUp/PageDown navigation outside macOS", () => {
+    const actions = useChatStore.getState().actions;
+    actions.upsert(record({ id: "chat-a", title: "first chat" }));
+    actions.upsert(record({ id: "chat-b", title: "second chat" }));
+    actions.openChat("chat-a");
+    actions.openChat("chat-b");
+    const onActivate = vi.fn();
+
+    render(
+      <ChatTabStrip
+        activeId="chat-b"
+        isMac={false}
+        onActivate={onActivate}
+        onNewChat={vi.fn()}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "PageDown", ctrlKey: true });
+    expect(onActivate).toHaveBeenLastCalledWith("chat-a");
+    fireEvent.keyDown(window, { key: "PageUp", ctrlKey: true });
+    expect(onActivate).toHaveBeenLastCalledWith("chat-a");
+  });
+
+  it("does not switch hidden tabs, act under a modal, or claim Cmd+W", () => {
+    const actions = useChatStore.getState().actions;
+    actions.upsert(record({ id: "chat-a", title: "first chat" }));
+    actions.upsert(record({ id: "chat-b", title: "second chat" }));
+    actions.openChat("chat-a");
+    actions.openChat("chat-b");
+    const onActivate = vi.fn();
+    const onNewChat = vi.fn();
+    const view = render(
+      <ChatTabStrip
+        activeId="chat-b"
+        isMac
+        shortcutsEnabled={false}
+        onActivate={onActivate}
+        onNewChat={onNewChat}
+      />,
+    );
+
+    fireEvent.keyDown(window, {
+      key: "}",
+      code: "BracketRight",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(onActivate).not.toHaveBeenCalled();
+
+    view.rerender(
+      <>
+        <div role="dialog" data-state="open">another dialog</div>
+        <ChatTabStrip
+          activeId="chat-b"
+          isMac
+          onActivate={onActivate}
+          onNewChat={onNewChat}
+        />
+      </>,
+    );
+    fireEvent.keyDown(window, {
+      key: "}",
+      code: "BracketRight",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(onActivate).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: "w", code: "KeyW", metaKey: true });
+    expect(useChatStore.getState().openChatIds).toEqual(["chat-a", "chat-b"]);
+    expect(onNewChat).not.toHaveBeenCalled();
+  });
+
   it("exposes working and unread status without expanding the tab", () => {
     const actions = useChatStore.getState().actions;
     actions.upsert(
