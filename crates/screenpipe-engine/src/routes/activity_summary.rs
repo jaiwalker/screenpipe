@@ -127,6 +127,19 @@ pub struct AppUsage {
 }
 
 #[derive(Serialize, OaSchema)]
+pub struct AppAttributionStatus {
+    /// Frames whose app name was written by the screen capture path.
+    pub native_frames: i64,
+    /// Frames whose missing app name was recovered from a directly linked or
+    /// immediately preceding UI event inside the active-time window.
+    pub recovered_frames: i64,
+    /// Frames that still have no trustworthy app context after recovery.
+    pub unresolved_frames: i64,
+    /// Fraction of in-scope frames with native or recovered app context.
+    pub coverage: f64,
+}
+
+#[derive(Serialize, OaSchema)]
 pub struct WindowActivity {
     pub app_name: String,
     pub window_name: String,
@@ -239,7 +252,11 @@ pub struct ActivitySummaryResponse {
     #[serde(default)]
     pub edited_files: Vec<EditedFile>,
     pub audio_summary: AudioSummary,
+    /// All frames in scope, including frames whose app attribution could not
+    /// be resolved. Compare with `app_attribution` before relying on app-level
+    /// totals.
     pub total_frames: i64,
+    pub app_attribution: AppAttributionStatus,
     /// Authoritative total active screen time (minutes) over the WHOLE range —
     /// every app, not just the top 20, with idle gaps (frames > IDLE_CAP_SECS
     /// apart) excluded. Use this as the grand total / denominator; summing
@@ -374,6 +391,7 @@ pub async fn get_activity_summary(
         edited_files: summary_core.edited_files,
         audio_summary: summary_core.audio_summary,
         total_frames: summary_core.total_frames,
+        app_attribution: summary_core.app_attribution,
         total_active_minutes: summary_core.total_active_minutes,
         time_range: TimeRange { start, end },
         data_status,
@@ -394,7 +412,55 @@ struct SummaryCore {
     edited_files: Vec<EditedFile>,
     audio_summary: AudioSummary,
     total_frames: i64,
+    app_attribution: AppAttributionStatus,
     total_active_minutes: f64,
+}
+
+/// Build a per-frame context relation that keeps capture metadata authoritative
+/// and only falls back when the frame has no app name. UI events are preferable
+/// to inventing context: they are captured independently and carry app/window
+/// metadata even when macOS screen capture loses its AX attribution.
+///
+/// A direct `frame_id` link wins. Older databases and dropped linker messages
+/// may not have that link, so the second fallback uses the latest named UI event
+/// strictly inside the same idle window used by the activity-duration math.
+fn resolved_frames_cte(start: &str, end: &str) -> String {
+    format!(
+        "WITH frame_fallback AS MATERIALIZED ( \
+           SELECT f.id, f.timestamp, f.app_name, f.window_name, f.browser_url, \
+             f.focused, f.document_path, \
+             CASE WHEN f.app_name IS NULL OR f.app_name = '' THEN COALESCE( \
+               (SELECT u.id FROM ui_events u \
+                WHERE u.frame_id = f.id \
+                  AND u.app_name IS NOT NULL AND u.app_name != '' \
+                ORDER BY u.timestamp DESC, u.id DESC LIMIT 1), \
+               (SELECT u.id FROM ui_events u \
+                WHERE u.timestamp <= f.timestamp \
+                  AND u.timestamp > datetime(f.timestamp, '-{IDLE_CAP_SECS} seconds') \
+                  AND u.app_name IS NOT NULL AND u.app_name != '' \
+                ORDER BY u.timestamp DESC, u.id DESC LIMIT 1) \
+             ) ELSE NULL END AS fallback_event_id \
+           FROM frames f \
+           WHERE f.timestamp BETWEEN '{}' AND '{}' \
+         ), resolved_frames AS MATERIALIZED ( \
+           SELECT f.id, f.timestamp, \
+             COALESCE(NULLIF(f.app_name, ''), NULLIF(u.app_name, '')) AS app_name, \
+             CASE WHEN f.app_name IS NULL OR f.app_name = '' \
+               THEN NULLIF(u.window_title, '') ELSE NULLIF(f.window_name, '') END AS window_name, \
+             CASE WHEN f.app_name IS NULL OR f.app_name = '' \
+               THEN NULLIF(u.browser_url, '') ELSE NULLIF(f.browser_url, '') END AS browser_url, \
+             f.focused, f.document_path, \
+             CASE \
+               WHEN f.app_name IS NOT NULL AND f.app_name != '' THEN 'frame' \
+               WHEN u.app_name IS NOT NULL AND u.app_name != '' THEN 'ui_event' \
+               ELSE NULL \
+             END AS attribution_source \
+           FROM frame_fallback f \
+           LEFT JOIN ui_events u ON u.id = f.fallback_event_id \
+         )",
+        sql_escape(start),
+        sql_escape(end)
+    )
 }
 
 async fn collect_summary_core(
@@ -415,14 +481,16 @@ async fn collect_summary_core(
         .map(|a| format!(" AND f.app_name = '{}'", sql_escape(a)))
         .unwrap_or_default();
 
+    let resolved_frames_cte = resolved_frames_cte(start, end);
+
     let apps_query = format!(
-        "WITH raw AS ( \
+        "{resolved_frames_cte}, raw AS ( \
            SELECT app_name, \
              COUNT(*) AS frame_count, \
              MIN(timestamp) AS first_seen, \
              MAX(timestamp) AS last_seen \
-           FROM frames \
-           WHERE timestamp BETWEEN '{start}' AND '{end}'{app_filter} \
+           FROM resolved_frames \
+           WHERE 1 = 1{app_filter} \
            AND app_name IS NOT NULL AND app_name != '' \
            GROUP BY app_name \
          ), selected AS ( \
@@ -433,8 +501,8 @@ async fn collect_summary_core(
                  PARTITION BY timestamp \
                  ORDER BY focused DESC, id DESC \
                ) AS rn \
-             FROM frames \
-             WHERE timestamp BETWEEN '{start}' AND '{end}'{app_filter} \
+             FROM resolved_frames \
+             WHERE 1 = 1{app_filter} \
              AND app_name IS NOT NULL AND app_name != '' \
            ) ranked \
            WHERE rn = 1 \
@@ -463,13 +531,13 @@ async fn collect_summary_core(
     );
 
     let windows_query = format!(
-        "WITH raw AS ( \
+        "{resolved_frames_cte}, raw AS ( \
            SELECT app_name, \
              COALESCE(window_name, '') AS window_name, \
              COALESCE(MAX(browser_url), '') AS browser_url, \
              COUNT(*) AS frame_count \
-           FROM frames \
-           WHERE timestamp BETWEEN '{start}' AND '{end}'{app_filter} \
+           FROM resolved_frames \
+           WHERE 1 = 1{app_filter} \
            AND app_name IS NOT NULL AND app_name != '' \
            AND window_name IS NOT NULL AND window_name != '' \
            GROUP BY app_name, window_name \
@@ -481,8 +549,8 @@ async fn collect_summary_core(
                  PARTITION BY timestamp \
                  ORDER BY focused DESC, id DESC \
                ) AS rn \
-             FROM frames \
-             WHERE timestamp BETWEEN '{start}' AND '{end}'{app_filter} \
+             FROM resolved_frames \
+             WHERE 1 = 1{app_filter} \
              AND app_name IS NOT NULL AND app_name != '' \
              AND window_name IS NOT NULL AND window_name != '' \
            ) ranked \
@@ -517,7 +585,7 @@ async fn collect_summary_core(
     // (AXTextArea/AXTextField) over static text, cap at 300 chars to skip
     // marketing copy walls.
     let texts_query = format!(
-        "WITH ranked_contexts AS ( \
+        "{resolved_frames_cte}, ranked_contexts AS ( \
            SELECT e.text, f.app_name, \
              COALESCE(f.window_name, '') as window_name, \
              f.timestamp, \
@@ -530,8 +598,8 @@ async fn collect_summary_core(
                  f.timestamp DESC \
              ) as rn \
            FROM elements e \
-           JOIN frames f ON f.id = e.frame_id \
-           WHERE f.timestamp BETWEEN '{start}' AND '{end}'{app_filter_f} \
+           JOIN resolved_frames f ON f.id = e.frame_id \
+           WHERE 1 = 1{app_filter_f} \
            AND e.text IS NOT NULL \
            AND e.source = 'accessibility' \
            AND LENGTH(e.text) BETWEEN 30 AND 300 \
@@ -579,11 +647,21 @@ async fn collect_summary_core(
     // Rust via `active_minutes` so the grand total is deterministic, unit
     // tested, and never truncated the way top-N `windows` is.
     let active_ts_query = format!(
-        "SELECT (JULIANDAY(timestamp) - 2440587.5) * 86400.0 AS epoch \
-         FROM frames \
-         WHERE timestamp BETWEEN '{start}' AND '{end}'{app_filter} \
-         AND app_name IS NOT NULL AND app_name != '' \
+        "{resolved_frames_cte} \
+         SELECT (JULIANDAY(timestamp) - 2440587.5) * 86400.0 AS epoch \
+         FROM resolved_frames \
+         WHERE 1 = 1{app_filter} \
          ORDER BY timestamp"
+    );
+
+    let attribution_query = format!(
+        "{resolved_frames_cte} \
+         SELECT COUNT(*) AS total_frames, \
+           COALESCE(SUM(attribution_source = 'frame'), 0) AS native_frames, \
+           COALESCE(SUM(attribution_source = 'ui_event'), 0) AS recovered_frames, \
+           COALESCE(SUM(attribution_source IS NULL), 0) AS unresolved_frames \
+         FROM resolved_frames \
+         WHERE 1 = 1{app_filter}"
     );
 
     let (
@@ -594,6 +672,7 @@ async fn collect_summary_core(
         audio_transcripts_result,
         edited_files_result,
         active_ts_result,
+        attribution_result,
     ) = tokio::join!(
         db.query_raw_sql(&apps_query),
         db.query_raw_sql(&windows_query),
@@ -602,15 +681,14 @@ async fn collect_summary_core(
         db.query_raw_sql(&audio_transcripts_query),
         db.query_raw_sql(&edited_files_query),
         db.query_raw_sql(&active_ts_query),
+        db.query_raw_sql(&attribution_query),
     );
 
     let mut apps = Vec::new();
-    let mut total_frames: i64 = 0;
     if let Ok(rows) = apps_result {
         if let Some(arr) = rows.as_array() {
             for row in arr {
                 let frame_count = row.get("frame_count").and_then(|v| v.as_i64()).unwrap_or(0);
-                total_frames += frame_count;
                 apps.push(AppUsage {
                     name: str_field(row, "app_name"),
                     frame_count,
@@ -736,6 +814,36 @@ async fn collect_summary_core(
     // Round to 0.1 min, matching the SQL `minutes` columns.
     let total_active_minutes = (active_minutes(&active_epochs) * 10.0).round() / 10.0;
 
+    let attribution_row = attribution_result
+        .as_ref()
+        .ok()
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.first());
+    if let Err(e) = &attribution_result {
+        error!("activity summary: app attribution query failed: {}", e);
+    }
+    let total_frames = attribution_row
+        .and_then(|row| row.get("total_frames"))
+        .and_then(value_i64)
+        .unwrap_or(0);
+    let native_frames = attribution_row
+        .and_then(|row| row.get("native_frames"))
+        .and_then(value_i64)
+        .unwrap_or(0);
+    let recovered_frames = attribution_row
+        .and_then(|row| row.get("recovered_frames"))
+        .and_then(value_i64)
+        .unwrap_or(0);
+    let unresolved_frames = attribution_row
+        .and_then(|row| row.get("unresolved_frames"))
+        .and_then(value_i64)
+        .unwrap_or(0);
+    let coverage = if total_frames > 0 {
+        ((native_frames + recovered_frames) as f64 / total_frames as f64 * 1000.0).round() / 1000.0
+    } else {
+        0.0
+    };
+
     SummaryCore {
         apps,
         windows,
@@ -747,6 +855,12 @@ async fn collect_summary_core(
             top_transcriptions,
         },
         total_frames,
+        app_attribution: AppAttributionStatus {
+            native_frames,
+            recovered_frames,
+            unresolved_frames,
+            coverage,
+        },
         total_active_minutes,
     }
 }
@@ -763,12 +877,14 @@ async fn load_recording_status(
     let app_filter = app_name
         .map(|a| format!(" AND app_name = '{}'", sql_escape(a)))
         .unwrap_or_default();
+    let resolved_frames_cte = resolved_frames_cte(start, end);
 
     let query = format!(
-        "SELECT \
+        "{resolved_frames_cte} \
+         SELECT \
          (SELECT MAX(timestamp) FROM frames) AS last_frame_at, \
          (SELECT MAX(timestamp) FROM audio_transcriptions) AS last_audio_at, \
-         (SELECT COUNT(*) FROM frames WHERE timestamp BETWEEN '{start}' AND '{end}'{app_filter}) AS frames_in_range, \
+         (SELECT COUNT(*) FROM resolved_frames WHERE 1 = 1{app_filter}) AS frames_in_range, \
          (SELECT COUNT(*) FROM audio_transcriptions WHERE timestamp BETWEEN '{start}' AND '{end}') AS audio_segments_in_range, \
          (SELECT ROUND((JULIANDAY('{now}') - JULIANDAY(MAX(timestamp))) * 86400) FROM frames) AS seconds_since_last_frame, \
          (SELECT ROUND((JULIANDAY('{now}') - JULIANDAY(MAX(timestamp))) * 86400) FROM audio_transcriptions) AS seconds_since_last_audio"
@@ -1201,6 +1317,15 @@ mod tests {
         }
     }
 
+    fn empty_attribution() -> AppAttributionStatus {
+        AppAttributionStatus {
+            native_frames: 0,
+            recovered_frames: 0,
+            unresolved_frames: 0,
+            coverage: 0.0,
+        }
+    }
+
     fn empty_summary() -> SummaryCore {
         SummaryCore {
             apps: vec![],
@@ -1213,6 +1338,7 @@ mod tests {
                 top_transcriptions: vec![],
             },
             total_frames: 0,
+            app_attribution: empty_attribution(),
             total_active_minutes: 0.0,
         }
     }
@@ -1229,6 +1355,12 @@ mod tests {
                 top_transcriptions: vec![],
             },
             total_frames: 42,
+            app_attribution: AppAttributionStatus {
+                native_frames: 42,
+                recovered_frames: 0,
+                unresolved_frames: 0,
+                coverage: 1.0,
+            },
             total_active_minutes: 0.0,
         }
     }
@@ -1616,6 +1748,25 @@ mod db_tests {
         db.execute_raw_sql_write(&q).await.expect("insert frame");
     }
 
+    async fn add_ui_event(
+        db: &DatabaseManager,
+        ts: &str,
+        app: &str,
+        window: &str,
+        frame_id: Option<i64>,
+    ) {
+        let q = format!(
+            "INSERT INTO ui_events \
+             (timestamp, relative_ms, event_type, app_name, window_title, frame_id) \
+             VALUES ('{}', 0, 'click', '{}', '{}', {})",
+            ts.replace('\'', "''"),
+            app.replace('\'', "''"),
+            window.replace('\'', "''"),
+            frame_id.map_or_else(|| "NULL".to_string(), |id| id.to_string())
+        );
+        db.execute_raw_sql_write(&q).await.expect("insert ui event");
+    }
+
     async fn last_frame_id(db: &DatabaseManager) -> i64 {
         let rows = db
             .query_raw_sql("SELECT MAX(id) AS id FROM frames")
@@ -1801,7 +1952,7 @@ mod db_tests {
     }
 
     #[tokio::test]
-    async fn null_and_empty_app_excluded() {
+    async fn unresolved_frames_count_toward_total_without_becoming_apps() {
         let (db, _d) = fresh_db().await;
         add_frame(&db, &format!("{DAY} 10:00:00"), Some("Arc"), Some("Win")).await;
         add_frame(&db, &format!("{DAY} 10:00:30"), None, Some("Win")).await; // NULL app
@@ -1809,14 +1960,114 @@ mod db_tests {
         add_frame(&db, &format!("{DAY} 10:01:00"), Some("Arc"), Some("Win")).await;
         let (s, e) = full_range();
         let core = collect_summary_core(&db, &query(None), &s, &e).await;
-        // Only Arc frames feed durations: 10:00:00 -> 10:01:00 = 60s = 1.0 min.
         assert_eq!(core.apps.len(), 1, "null/empty app must not become apps");
+        // Every frame contributes to the whole-range active total, but the two
+        // frames with no independent UI-event context remain explicitly
+        // unresolved rather than being silently assigned to Arc.
+        assert_eq!(core.total_frames, 4);
+        assert_eq!(core.app_attribution.native_frames, 2);
+        assert_eq!(core.app_attribution.recovered_frames, 0);
+        assert_eq!(core.app_attribution.unresolved_frames, 2);
+        assert!(near(core.app_attribution.coverage, 0.5));
+        // App duration keeps its established labeled-frame continuity: the
+        // unresolved rows do not invent a second app or interrupt two known
+        // Arc observations.
         assert!(near(app_min(&core, "Arc").unwrap(), 1.0));
         assert!(
             near(core.total_active_minutes, 1.0),
             "got {}",
             core.total_active_minutes
         );
+    }
+
+    #[tokio::test]
+    async fn missing_frame_apps_recover_from_recent_ui_event_context() {
+        let (db, _d) = fresh_db().await;
+        add_ui_event(&db, &format!("{DAY} 10:00:00"), "Arc", "Inbox", None).await;
+        for ts in ["10:00:01", "10:00:21"] {
+            add_frame(&db, &format!("{DAY} {ts}"), None, None).await;
+        }
+        add_ui_event(&db, &format!("{DAY} 10:00:30"), "Code", "main.rs", None).await;
+        for ts in ["10:00:31", "10:00:51"] {
+            add_frame(&db, &format!("{DAY} {ts}"), None, None).await;
+        }
+
+        let (s, e) = full_range();
+        let core = collect_summary_core(&db, &query(None), &s, &e).await;
+
+        assert_eq!(core.total_frames, 4);
+        assert_eq!(core.app_attribution.native_frames, 0);
+        assert_eq!(core.app_attribution.recovered_frames, 4);
+        assert_eq!(core.app_attribution.unresolved_frames, 0);
+        assert!(near(core.app_attribution.coverage, 1.0));
+        assert!(app_min(&core, "Arc").is_some());
+        assert!(app_min(&core, "Code").is_some());
+        assert!(win_min(&core, "Arc", "Inbox").is_some());
+        assert!(win_min(&core, "Code", "main.rs").is_some());
+        assert!(
+            near(core.total_active_minutes, 0.8),
+            "all recovered frames should feed total time, got {}",
+            core.total_active_minutes
+        );
+    }
+
+    #[tokio::test]
+    async fn native_frame_app_wins_over_recent_ui_event() {
+        let (db, _d) = fresh_db().await;
+        add_ui_event(&db, &format!("{DAY} 10:00:00"), "Arc", "Inbox", None).await;
+        add_frame(
+            &db,
+            &format!("{DAY} 10:00:01"),
+            Some("Code"),
+            Some("main.rs"),
+        )
+        .await;
+
+        let (s, e) = full_range();
+        let core = collect_summary_core(&db, &query(None), &s, &e).await;
+
+        assert_eq!(core.app_attribution.native_frames, 1);
+        assert_eq!(core.app_attribution.recovered_frames, 0);
+        assert!(app_min(&core, "Code").is_some());
+        assert!(app_min(&core, "Arc").is_none());
+    }
+
+    #[tokio::test]
+    async fn stale_ui_event_does_not_invent_frame_context() {
+        let (db, _d) = fresh_db().await;
+        add_ui_event(&db, &format!("{DAY} 10:00:00"), "Arc", "Inbox", None).await;
+        // Exactly five minutes old is outside the strict active-time window.
+        add_frame(&db, &format!("{DAY} 10:05:00"), None, None).await;
+
+        let (s, e) = full_range();
+        let core = collect_summary_core(&db, &query(None), &s, &e).await;
+
+        assert_eq!(core.total_frames, 1);
+        assert_eq!(core.app_attribution.recovered_frames, 0);
+        assert_eq!(core.app_attribution.unresolved_frames, 1);
+        assert!(core.apps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn app_filter_matches_recovered_context() {
+        let (db, _d) = fresh_db().await;
+        add_ui_event(&db, &format!("{DAY} 10:00:00"), "Arc", "Inbox", None).await;
+        for ts in ["10:00:01", "10:00:21"] {
+            add_frame(&db, &format!("{DAY} {ts}"), None, None).await;
+        }
+
+        let (s, e) = full_range();
+        let core = collect_summary_core(&db, &query(Some("Arc")), &s, &e).await;
+
+        assert_eq!(core.total_frames, 2);
+        assert_eq!(core.app_attribution.recovered_frames, 2);
+        assert!(core.apps.iter().all(|app| app.name == "Arc"));
+        assert!(near(core.total_active_minutes, 0.3));
+
+        let recording = load_recording_status(&db, &s, &e, Some("Arc"))
+            .await
+            .expect("recording status with recovered app filter");
+        assert_eq!(recording.frames_in_range, 2);
     }
 
     #[tokio::test]
@@ -2506,6 +2757,12 @@ mod include_flag_tests {
                 top_transcriptions: vec![],
             },
             total_frames: 3,
+            app_attribution: AppAttributionStatus {
+                native_frames: 3,
+                recovered_frames: 0,
+                unresolved_frames: 0,
+                coverage: 1.0,
+            },
             total_active_minutes: 1.0,
             time_range: TimeRange {
                 start: "2026-06-02T10:00:00Z".to_string(),
@@ -2540,6 +2797,7 @@ mod include_flag_tests {
         );
         // Stable always-present fields are unaffected.
         assert_eq!(j["total_frames"], 3);
+        assert_eq!(j["app_attribution"]["coverage"], 1.0);
         assert_eq!(j["total_active_minutes"], 1.0);
         assert_eq!(j["data_status"], "ok");
     }
