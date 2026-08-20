@@ -378,13 +378,11 @@ impl<R: tauri::Runtime, M: tauri::Manager<R>> GatedWindowPlacement
 /// Finalize a newly created webview window with cross-cutting resilience hooks.
 /// Keep this as the single post-build entrypoint for window creation callsites.
 pub fn finalize_webview_window(window: tauri::WebviewWindow) -> tauri::WebviewWindow {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         setup_content_process_handler(&window);
-        gesture::enable_history_swipe_navigation(&window);
+        gesture::configure_history_swipe_navigation(&window);
     }
-    #[cfg(target_os = "windows")]
-    setup_content_process_handler(&window);
     if let Err(error) = capture_protection::apply_to_new_window(&window) {
         tracing::warn!("{error}");
     }
@@ -482,6 +480,8 @@ pub(crate) use capture_protection::{native_overlay_is_capturable, overlay_is_cap
 pub use capture_protection::{
     get_app_screen_capture_protection, set_app_screen_capture_protection,
 };
+#[cfg(feature = "e2e")]
+pub(crate) use gesture::history_swipe_navigation_enabled;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub use content_process::setup_content_process_handler;
