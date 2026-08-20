@@ -56,7 +56,10 @@ describe("SidebarChatRow current conversation", () => {
     });
 
     expect(row).toHaveAttribute("data-current", "true");
-    expect(row).toHaveClass("border-foreground", "bg-foreground/[0.08]");
+    expect(row).toHaveClass(
+      "border-[hsl(var(--chat-signal))]",
+      "bg-foreground/[0.05]",
+    );
     expect(button).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("current")).toBeVisible();
   });

@@ -2471,10 +2471,10 @@ export function SidebarChatRow({
       <ContextMenuTrigger asChild disabled={!canShowActions}>
     <div
       className={cn(
-        "group relative flex items-center gap-2 border-l-2 px-2.5 py-1 rounded-md select-none",
+        "group relative flex items-center gap-2 border-l-2 px-2.5 py-1 select-none",
         "transition-colors",
         isCurrent
-          ? "border-foreground bg-foreground/[0.08] text-foreground"
+          ? "border-[hsl(var(--chat-signal))] bg-foreground/[0.05] text-foreground"
           : disableHover
             ? tone === "subtle"
               ? "border-transparent sidebar-text-tertiary"
@@ -2557,7 +2557,7 @@ export function SidebarChatRow({
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
                 className={cn(
-                  "p-0.5 rounded hover:bg-muted transition-opacity duration-150 inline-flex items-center justify-center",
+                  "p-0.5 hover:bg-muted transition-opacity duration-150 inline-flex items-center justify-center",
                   menuOpen
                     ? "opacity-100 visible"
                     : "opacity-0 invisible group-hover:opacity-100 group-hover:visible"

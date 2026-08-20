@@ -1973,7 +1973,14 @@ export function StandaloneChat({
   }, [currentQueueSessionId]);
 
   return (
-    <div ref={dropRootRef} className={cn("flex flex-col bg-background", className ?? "h-screen")} data-testid="section-home">
+    <div
+      ref={dropRootRef}
+      className={cn(
+        "flex flex-col bg-[hsl(var(--chat-canvas))]",
+        className ?? "h-screen",
+      )}
+      data-testid="section-home"
+    >
       <StandaloneChatHeader
         className={className}
         tabStrip={

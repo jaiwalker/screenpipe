@@ -94,11 +94,11 @@ const ITEM_CLS =
 
 function rowClassName(isActive: boolean, isTranslucent: boolean) {
   return cn(
-    "relative w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg border border-transparent transition-all duration-150 text-left group/navrow",
+    "relative w-full flex items-center gap-2.5 border border-transparent px-2.5 py-1.5 text-left transition-all duration-150 group/navrow",
     isActive
       ? isTranslucent
-        ? "vibrant-nav-active"
-        : "bg-card shadow-sm border-border text-foreground"
+        ? "vibrant-nav-active border-l-[hsl(var(--chat-signal))] bg-foreground/[0.06]"
+        : "border-border border-l-[hsl(var(--chat-signal))] bg-card/70 text-foreground shadow-none"
       : isTranslucent
         ? "vibrant-nav-item vibrant-nav-hover"
         : "hover:bg-card/50 text-muted-foreground hover:text-foreground",
@@ -283,7 +283,7 @@ function SortableRow({
                 data-testid={`nav-${item.id}-options`}
                 onClick={(event) => event.stopPropagation()}
                 className={cn(
-                  "absolute right-1.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity duration-150",
+                  "absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 text-muted-foreground opacity-0 transition-opacity duration-150",
                   "hover:text-foreground focus-visible:opacity-100 group-hover/navrow:opacity-100 data-[state=open]:opacity-100",
                 )}
               >
@@ -331,7 +331,7 @@ function HiddenStrip({
           onClick={() => onShow(hidden.id)}
           title={`Show ${hidden.label} in the sidebar`}
           className={cn(
-            "w-full flex items-center gap-2.5 px-2.5 py-1 rounded-lg transition-colors duration-150 text-left",
+            "w-full flex items-center gap-2.5 px-2.5 py-1 transition-colors duration-150 text-left",
             isTranslucent
               ? "vibrant-nav-item vibrant-nav-hover"
               : "text-muted-foreground/70 hover:bg-card/50 hover:text-foreground",

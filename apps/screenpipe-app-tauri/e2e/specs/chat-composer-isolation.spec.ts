@@ -71,7 +71,7 @@ const CHAT_B = "44444444-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const DRAFT_MARKER = "(e2e) yayhooray-COMPOSER-LEAK-PROBE";
 
 const COMPOSER_SELECTOR =
-  'textarea[placeholder*="Ask about your screen"], textarea[placeholder*="Message will be queued"]';
+  'textarea[placeholder*="Ask about your screen"], textarea[placeholder*="Write the next message"]';
 
 async function emitChatLoad(conversationId: string): Promise<void> {
   await browser.executeAsync(

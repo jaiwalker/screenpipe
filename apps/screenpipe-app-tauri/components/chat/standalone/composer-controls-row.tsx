@@ -54,7 +54,7 @@ export function ComposerControlsRow({
     // were already that size. The row is chrome under the thing people came to
     // type in, so it stays one compact line rather than a second toolbar.
     <div
-      className="flex items-center gap-1.5 px-1 pt-1.5"
+      className="flex items-center gap-1.5 border-t border-border/60 px-2 py-1.5"
       data-firstrun-target="composer-controls"
     >
       <Popover
@@ -195,8 +195,10 @@ export function ComposerControlsRow({
         onClick={sendButton.isStopMode ? sendButton.onStop : undefined}
         data-firstrun-target="send"
         className={cn(
-          "h-7 w-7 transition-all duration-200 relative",
-          "bg-foreground text-background hover:bg-foreground/80",
+          "h-7 w-7 rounded-none transition-colors duration-150 relative",
+          sendButton.sendDisabled
+            ? "bg-foreground/10 text-muted-foreground"
+            : "bg-[hsl(var(--chat-signal))] text-[hsl(var(--chat-signal-ink))] hover:brightness-90",
         )}
         title={
           sendButton.isStopMode
@@ -233,14 +235,14 @@ function ActiveFilterLabels({ filters }: { filters: ComposerFiltersProps }) {
           {filters.activeFilterLabels.slice(0, 2).map((label, index) => (
             <span
               key={`${label}-${index}`}
-              className="inline-flex h-6 max-w-[140px] items-center rounded-md border border-border/50 px-2 text-[10px] font-medium text-muted-foreground truncate"
+              className="inline-flex h-6 max-w-[140px] items-center border border-border/50 px-2 text-[10px] font-medium text-muted-foreground truncate"
               title={label}
             >
               {label}
             </span>
           ))}
           {filters.activeFilterLabels.length > 2 && (
-            <span className="inline-flex h-6 items-center rounded-md border border-border/50 px-2 text-[10px] font-medium text-muted-foreground shrink-0">
+            <span className="inline-flex h-6 items-center border border-border/50 px-2 text-[10px] font-medium text-muted-foreground shrink-0">
               +{filters.activeFilterLabels.length - 2}
             </span>
           )}

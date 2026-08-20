@@ -55,7 +55,7 @@ export function ChatComposer({
   return (
     <div
       ref={input.sectionRef}
-      className="relative bg-gradient-to-t from-background via-background/80 to-transparent"
+      className="relative bg-[hsl(var(--chat-canvas))]"
     >
       <div className={CHAT_RAIL_CLASS}>
         <PrefillContextBanner prefill={prefill} />
@@ -96,22 +96,27 @@ export function ChatComposer({
             onCancelQueuedPrompt={queue.onCancelQueuedPrompt}
           />
 
-          <ComposerInputBox input={input} mentions={mentions} />
+          <div
+            data-testid="chat-composer-shell"
+            className="border border-border/80 bg-[hsl(var(--chat-surface))] shadow-[0_-8px_24px_rgba(5,5,5,0.045)] transition-colors duration-150 focus-within:border-foreground/30 dark:shadow-[0_-8px_24px_rgba(0,0,0,0.18)]"
+          >
+            <ComposerInputBox input={input} mentions={mentions} />
 
-          <FreePlanCounterChip />
+            <FreePlanCounterChip />
 
-          <ComposerControlsRow
-            canChat={input.canChat}
-            filters={filters}
-            modelControls={modelControls}
-            isStreaming={input.isLoading || input.isStreaming}
-            sendButton={{
-              isStopMode,
-              hasPendingDocs,
-              sendDisabled,
-              onStop,
-            }}
-          />
+            <ComposerControlsRow
+              canChat={input.canChat}
+              filters={filters}
+              modelControls={modelControls}
+              isStreaming={input.isLoading || input.isStreaming}
+              sendButton={{
+                isStopMode,
+                hasPendingDocs,
+                sendDisabled,
+                onStop,
+              }}
+            />
+          </div>
 
           <ConnectAppsNudge banner={connectBanner} />
         </form>

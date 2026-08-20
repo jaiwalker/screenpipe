@@ -1433,7 +1433,12 @@ function HomeContent() {
               strip above (toggle + status dot) is the entire collapsed
               chrome, Claude-style. */}
           {!sidebarCollapsed && (
-          <AppSidebar className="pl-1">
+          <AppSidebar
+            className={cn(
+              "pl-1",
+              !isTranslucent && "bg-[hsl(var(--chat-sidebar))]",
+            )}
+          >
             {/* Navigation.
                 Outer flex column has no overflow — the chat-list section
                 inside owns its own scroll, otherwise the team promo +
@@ -1517,7 +1522,7 @@ function HomeContent() {
                   data-announcement-anchor="sidebar-settings"
                   onClick={() => openSettings()}
                   className={cn(
-                    "flex min-w-0 flex-1 items-center space-x-2.5 rounded-lg px-2.5 py-1.5 text-left transition-all duration-150 group",
+                    "flex min-w-0 flex-1 items-center space-x-2.5 px-2.5 py-1.5 text-left transition-all duration-150 group",
                     isTranslucent
                       ? "vibrant-nav-item vibrant-nav-hover"
                       : "text-muted-foreground hover:bg-card/50 hover:text-foreground",
@@ -1547,7 +1552,7 @@ function HomeContent() {
                             setActiveSection("help");
                           }}
                           className={cn(
-                            "flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all duration-150",
+                            "flex h-8 w-8 shrink-0 items-center justify-center transition-all duration-150",
                             isActive
                               ? isTranslucent
                                 ? "vibrant-nav-active"
@@ -1578,7 +1583,10 @@ function HomeContent() {
               nowrap, so that's the FULL untruncated text width), and in a
               narrow window with the sidebar open the whole pane gets
               clipped at the right window edge instead of truncating. */}
-          <div className={cn("flex-1 min-w-0 flex flex-col h-full bg-background min-h-0 relative", isTranslucent ? "rounded-none" : "rounded-tr-lg")} data-testid="home-page">
+          <div
+            className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col bg-[hsl(var(--chat-canvas))]"
+            data-testid="home-page"
+          >
             {/* ALWAYS-MOUNTED chat layer.
                 Hidden via CSS (display:none) when the user is on a non-chat
                 section, so the StandaloneChat component never unmounts. This

@@ -22,11 +22,20 @@ export function ComposerInputBox({
   return (
     <div
       className={cn(
-        "flex flex-col rounded-lg border bg-input ring-offset-background transition-colors duration-150 focus-within:border-phosphor-strong focus-within:ring-phosphor-strong/20 focus-within:ring-1",
-        "bg-background/80 border-border/50 shadow-lg shadow-black/5",
-        input.disabledReason && "border-muted-foreground/30",
+        "flex flex-col bg-transparent",
+        input.disabledReason && "opacity-70",
       )}
     >
+      {(input.isLoading || input.isStreaming) && !input.disabledReason && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 border-b border-border/60 px-4 py-1.5 font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground"
+        >
+          <span className="h-1.5 w-1.5 bg-[hsl(var(--chat-signal))]" aria-hidden />
+          next message will be queued
+        </div>
+      )}
       <div className="relative flex-1 min-w-0">
         {input.connectionChip && (
           <>
@@ -68,7 +77,7 @@ export function ComposerInputBox({
             input.disabledReason
               ? input.disabledReason
               : input.isLoading || input.isStreaming
-                ? "Message will be queued..."
+                ? "Write the next message..."
                 : // Kept to the same rendered width as the previous legend so it
                   // still fits the 600px minimum chat window on one line. `~`
                   // and `#` stay live and are taught by the palette itself.
@@ -79,8 +88,8 @@ export function ComposerInputBox({
           autoCorrect="off"
           rows={1}
           className={cn(
-            "w-full min-h-[38px] border-0 bg-transparent px-3 text-sm font-mono placeholder:text-muted-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 caret-phosphor-strong resize-none overflow-y-auto scrollbar-minimal py-2",
-            input.connectionChip ? "pr-7" : "pr-3",
+            "w-full min-h-[48px] border-0 bg-transparent px-4 text-sm font-mono placeholder:text-muted-foreground/80 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 caret-[hsl(var(--chat-signal))] resize-none overflow-y-auto scrollbar-minimal py-3",
+            input.connectionChip ? "pr-8" : "pr-4",
           )}
           style={{
             maxHeight: "150px",

@@ -167,7 +167,7 @@ describe("Hosted AI retry feedback and follow-up queue", function () {
     expect(retryText).toContain("new messages will be queued");
     expect(retryText).not.toContain("switch to a different model");
     expect(await $("form textarea").getAttribute("placeholder")).toBe(
-      "Message will be queued...",
+      "Write the next message...",
     );
 
     await submitComposer(QUEUED_PROMPT);

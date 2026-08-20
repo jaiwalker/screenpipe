@@ -97,7 +97,7 @@ export function StandaloneChatHeader({
       data-testid="chat-header"
       data-chat-title={visibleTitle || ""}
       className={cn(
-        "relative flex items-center gap-3 px-4 py-3.5 border-b border-border/50 bg-gradient-to-r from-background to-muted/30",
+        "relative flex items-center gap-3 border-b border-border/60 bg-[hsl(var(--chat-surface))] px-4 py-3.5",
         !className && "cursor-grab active:cursor-grabbing",
         useCompactHeaderPadding && "py-0.5",
         sidebarCollapsed && conversationId && messages.length > 0 && "!pl-[58px]",
