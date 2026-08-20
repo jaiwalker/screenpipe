@@ -243,6 +243,50 @@ describe("ACP config trigger", () => {
     );
   });
 
+  it("keeps the effort trigger usable while Ultra is being applied", async () => {
+    seedSession([
+      {
+        id: "reasoning_effort",
+        name: "Reasoning effort",
+        type: "select",
+        currentValue: "high",
+        values: [
+          { value: "low", name: "Low" },
+          { value: "medium", name: "Medium" },
+          { value: "high", name: "High" },
+          { value: "ultra", name: "Ultra" },
+        ],
+      },
+    ]);
+    let resolveChange!: (value: { status: "ok"; data: null }) => void;
+    mocks.setConfigOption.mockReturnValue(
+      new Promise((resolve) => {
+        resolveChange = resolve;
+      }),
+    );
+
+    render(<AcpEffortSelector sessionId={SESSION} agentId="codex-acp" />);
+
+    const trigger = screen.getByTestId("acp-effort-trigger");
+    fireEvent.click(trigger);
+    fireEvent.click(
+      document.querySelector('[data-effort-step="ultra"]') as HTMLElement,
+    );
+
+    expect(trigger).not.toBeDisabled();
+    expect(screen.getByTestId("acp-effort-slider")).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+
+    resolveChange({ status: "ok", data: null });
+    await waitFor(() =>
+      expect(screen.getByTestId("acp-effort-slider")).not.toHaveAttribute(
+        "aria-disabled",
+      ),
+    );
+  });
+
   it("keeps a two-value effort axis visible as a select", () => {
     seedSession([
       {

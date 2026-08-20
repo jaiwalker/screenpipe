@@ -399,7 +399,6 @@ export function AcpEffortSelector({
       contentTestId="acp-effort-popover"
       open={open}
       onOpenChange={setOpen}
-      disabled={pending}
     >
       {isEffortOption(option) ? (
         <ComposerEffortSlider
