@@ -1262,7 +1262,9 @@ impl UnixProcessGroupGuard {
             let mut command = Command::new("/bin/sh");
             command.args([
                 "-c",
-                "trap '' TERM INT; while IFS= read -r _; do :; done; kill -TERM -- -$$; sleep 0.15; kill -KILL -- -$$",
+                // POSIX `kill ... 0` targets the caller's process group. Unlike
+                // `-- -$$`, it also works with Ubuntu's dash builtin.
+                "trap '' TERM INT; while IFS= read -r _; do :; done; kill -TERM 0; sleep 0.15; kill -KILL 0",
             ]);
             command
         };
