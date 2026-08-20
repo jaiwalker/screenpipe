@@ -4,6 +4,22 @@
 
 export type BrowserDevScenario = "ready" | "empty" | "backend-error";
 
+let mockAgentMemoryEnabled = false;
+
+function mockAgentMemoryPolicy() {
+  return {
+    schema_version: 1,
+    enabled: mockAgentMemoryEnabled,
+    automatic_chat_recall: true,
+    processing: "local_search",
+    uses_model: false,
+    network_egress: false,
+    raw_recordings: false,
+    retrieval_scope: "screenpipe_local_retrieval",
+    agent_model_transport: "managed_by_receiving_agent",
+  };
+}
+
 export function createMockHealth(scenario: BrowserDevScenario = "ready") {
   const now = new Date().toISOString();
   return {
@@ -126,6 +142,18 @@ export function mockLocalApiResponse(
     return Response.json(scenario === "empty" ? [] : [mockMeeting()]);
   }
   if (url.pathname === "/memories") return Response.json(emptyPage);
+  if (url.pathname === "/memories/agent-policy") {
+    if (method === "PUT") {
+      try {
+        const body = JSON.parse(String(init?.body || "{}"));
+        mockAgentMemoryEnabled = body.enabled === true;
+      } catch {
+        return Response.json({ error: "invalid policy body" }, { status: 400 });
+      }
+      return Response.json({ policy: mockAgentMemoryPolicy(), sync_results: [] });
+    }
+    return Response.json(mockAgentMemoryPolicy());
+  }
   if (url.pathname === "/artifacts") {
     return Response.json({ ...emptyPage, sources: [] });
   }
@@ -678,6 +706,7 @@ export function installMockEngine(
   apiPort: number,
   scenario: BrowserDevScenario,
 ) {
+  mockAgentMemoryEnabled = false;
   installMockFetch(apiPort, scenario);
   installMockWebSocket(apiPort, scenario);
 }

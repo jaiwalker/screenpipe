@@ -309,6 +309,11 @@ describe("stdio startup handshake", () => {
         res.end(JSON.stringify({ error: "unauthorized" }));
         return;
       }
+      if (req.url === "/memories/agent-policy") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ enabled: true, automatic_chat_recall: true }));
+        return;
+      }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
         JSON.stringify({
@@ -349,15 +354,14 @@ describe("stdio startup handshake", () => {
         { q: "key rotation", limit: 1 },
       );
       expect(result.content?.[0]?.text).toContain("current memory after key rotation");
-      expect(seenAuth).toEqual([
-        "Bearer sp-stale-test-key",
-        "Bearer current-test-key",
-      ]);
+      expect(seenAuth[0]).toBe("Bearer sp-stale-test-key");
+      expect(seenAuth.slice(1).length).toBeGreaterThanOrEqual(2);
+      expect(new Set(seenAuth.slice(1))).toEqual(new Set(["Bearer current-test-key"]));
     } finally {
       backend.close();
       fs.rmSync(tmp, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 
   it("reports this tree's package version over the wire (SCR-352)", async () => {
     // The version in the initialize response is how support tells builds apart.
@@ -374,12 +378,12 @@ describe("stdio startup handshake", () => {
     expect(response.result?.serverInfo?.version).toBe(expected);
   });
 
-  it("advertises memory preflight instructions at MCP initialization", async () => {
+  it("advertises consent-gated memory instructions at MCP initialization", async () => {
     const { response } = await initializeHandshake({
       SCREENPIPE_LOCAL_API_KEY: "sp-smoke-test-key",
     });
     expect(response.result?.instructions).toContain(
-      "you MUST call recall-memories",
+      "available only when the user enables memory for agents",
     );
     expect(response.result?.instructions).toContain(
       "Skip recall for self-contained requests",
@@ -402,7 +406,7 @@ describe("stdio startup handshake", () => {
     const tools = await listToolsHandshake();
     const recall = tools.find((tool) => tool.name === "recall-memories");
     expect(recall).toBeDefined();
-    expect(recall?.description).toContain("MUST USE when the request explicitly asks");
+    expect(recall?.description).toContain("Returns no context while memory for agents is off");
     expect(recall?.inputSchema?.properties?.limit?.default).toBe(5);
     expect(recall?.inputSchema?.properties?.min_importance?.minimum).toBe(0);
     expect(recall?.inputSchema?.properties?.min_importance?.maximum).toBe(1);

@@ -53,9 +53,10 @@ use crate::{
             stop_meeting_handler, update_meeting_handler,
         },
         memories::{
-            create_memory_handler, delete_memory_handler, get_memory_handler,
-            list_memories_handler, list_memory_tags_handler, sync_external_memories_handler,
-            update_memory_handler,
+            cleanup_external_agent_memory_handler, create_memory_handler, delete_memory_handler,
+            get_memory_agent_policy_handler, get_memory_handler, list_memories_handler,
+            list_memory_tags_handler, sync_external_memories_handler,
+            update_memory_agent_policy_handler, update_memory_handler,
         },
         retranscribe::retranscribe_meeting_handler,
         search::{keyword_search_handler, search},
@@ -931,7 +932,13 @@ impl SCServer {
             .post("/memories", create_memory_handler)
             .get("/memories", list_memories_handler)
             .get("/memories/tags", list_memory_tags_handler)
+            .get("/memories/agent-policy", get_memory_agent_policy_handler)
+            .put("/memories/agent-policy", update_memory_agent_policy_handler)
             .post("/memories/sync-external", sync_external_memories_handler)
+            .post(
+                "/memories/sync-external/:id/cleanup",
+                cleanup_external_agent_memory_handler,
+            )
             .get("/memories/:id", get_memory_handler)
             .put("/memories/:id", update_memory_handler)
             .delete("/memories/:id", delete_memory_handler)
@@ -1877,6 +1884,7 @@ mod tests {
             pipe_token: None,
             pipe_dir: None,
             privacy_filter: false,
+            memory_mode: screenpipe_core::pipes::PipeMemoryMode::Off,
         };
         tokens.insert("sp_pipe_active".to_string(), Arc::new(permissions));
 

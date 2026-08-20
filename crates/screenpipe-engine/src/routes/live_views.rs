@@ -148,6 +148,7 @@ mod tests {
             pipe_token: None,
             pipe_dir: None,
             privacy_filter: false,
+            memory_mode: screenpipe_core::pipes::PipeMemoryMode::Off,
         };
         let extension = Some(Extension(Arc::new(permissions)));
         assert_eq!(

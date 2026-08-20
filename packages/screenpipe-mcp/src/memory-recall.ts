@@ -17,6 +17,21 @@ export type MemoryList = {
   pagination?: { total?: unknown };
 };
 
+const EXTERNAL_AGENT_BLOCKED_TAGS = new Set([
+  "privacy:no-ai",
+  "privacy:local-only",
+  "state:deleted",
+  "state:stale",
+]);
+
+export function memoryAllowedForExternalAgent(row: MemoryRow): boolean {
+  if (row.tags == null) return true;
+  if (!Array.isArray(row.tags)) return false;
+  return !row.tags.some((tag) =>
+    EXTERNAL_AGENT_BLOCKED_TAGS.has(String(tag).trim().toLocaleLowerCase())
+  );
+}
+
 const FALLBACK_STOP_WORDS = new Set([
   "about",
   "apply",
@@ -49,7 +64,10 @@ const FALLBACK_SINGULARS = new Map([
  */
 export function memoryRecallFallbackQueries(q: string, max = 4): string[] {
   const seen = new Set<string>();
-  return (q.match(/[\p{L}\p{N}][\p{L}\p{N}:_-]{2,}/gu) ?? [])
+  return [
+    ...(q.match(/[\p{L}\p{N}][\p{L}\p{N}:_-]{2,}/gu) ?? []),
+    ...(q.match(/[A-Za-z0-9][A-Za-z0-9:_-]{2,}/g) ?? []),
+  ]
     .map((term) => term.replace(/^[-_:]+|[-_:]+$/g, ""))
     // FTS does not stem simple plurals ("preferences" misses "preference").
     // Agent queries frequently pluralize category words, while memories store
@@ -82,6 +100,7 @@ export function mergeMemoryRecallLists(
   for (const list of lists) {
     const rows: MemoryRow[] = Array.isArray(list?.data) ? list.data : [];
     for (const row of rows) {
+      if (!memoryAllowedForExternalAgent(row)) continue;
       const key = String(row.id ?? row.content ?? "");
       if (!key) continue;
       const importance = Math.min(1, Math.max(0, Number(row.importance) || 0));
@@ -137,7 +156,12 @@ export function buildMemoryRecallRequest(args: RecallArgs): {
 }
 
 function truncateContent(value: unknown, max = 700): string {
-  const text = String(value ?? "").replace(/[\r\n]+/g, " ").trim();
+  const text = String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .trim();
   if (text.length <= max) return text;
   const left = Math.floor(max / 2);
   const right = max - left;
@@ -148,7 +172,9 @@ export function formatMemoryRecallResponse(
   raw: MemoryList,
   q: string,
 ): { found: boolean; text: string } {
-  const memories: MemoryRow[] = Array.isArray(raw?.data) ? raw.data : [];
+  const memories: MemoryRow[] = Array.isArray(raw?.data)
+    ? raw.data.filter(memoryAllowedForExternalAgent)
+    : [];
   if (memories.length === 0) {
     return {
       found: false,

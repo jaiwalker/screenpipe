@@ -467,6 +467,7 @@ function buildForkPrompt(pipeName: string): string {
 // watcher so both surface the same friendly message). Imported at the top.
 
 type PipeEffort = "low" | "medium" | "high";
+type PipeMemoryMode = "off" | "relevant" | "required";
 
 interface PipeConfig {
   name: string;
@@ -482,6 +483,7 @@ interface PipeConfig {
   preset?: string | string[];
   enterprise_managed?: boolean;
   history?: boolean;
+  memory?: PipeMemoryMode;
   connections?: string[];
   trigger?: {
     events?: string[];
@@ -3853,6 +3855,72 @@ export function PipesSection() {
                           </SelectContent>
                         </Select>
                       </div>
+                      </section>
+
+                      <section className="grid gap-3 border border-border p-4 sm:grid-cols-[minmax(0,1fr)_11rem] sm:items-center">
+                        <div>
+                          <Label className="text-xs font-medium">screenpipe memory</Label>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            {(pipe.config.memory ?? "off") === "off"
+                              ? "off by default. this task cannot read or receive curated memories."
+                              : pipe.config.memory === "required"
+                                ? "retrieve bounded memory context on every run. the device-wide memory switch still wins."
+                                : "retrieve only when the task prompt depends on prior preferences, decisions, or projects."}
+                          </p>
+                        </div>
+                        <Select
+                          disabled={isReadOnlyPipe(pipe)}
+                          value={pipe.config.memory ?? "off"}
+                          onValueChange={(value) => {
+                            const pipeName = pipe.config.name;
+                            const previous = pipe.config.memory ?? "off";
+                            const memory = value as PipeMemoryMode;
+                            setPipes((items) => items.map((candidate) =>
+                              candidate.config.name === pipeName
+                                ? { ...candidate, config: { ...candidate.config, memory } }
+                                : candidate
+                            ));
+                            const savePromise = fetch(
+                              `${apiBase}/pipes/${encodeURIComponent(pipeName)}/config`,
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ memory }),
+                              },
+                            )
+                              .then(async (response) => {
+                                if (!response.ok) throw new Error(`scheduled tasks API returned ${response.status}`);
+                                void fetchPipes();
+                              })
+                              .catch((error) => {
+                                setPipes((items) => items.map((candidate) =>
+                                  candidate.config.name === pipeName
+                                    ? { ...candidate, config: { ...candidate.config, memory: previous } }
+                                    : candidate
+                                ));
+                                toast({
+                                  title: "memory setting not saved",
+                                  description: error instanceof Error ? error.message : String(error),
+                                  variant: "destructive",
+                                });
+                              })
+                              .finally(() => {
+                                if (pendingConfigSaves.current[pipeName] === savePromise) {
+                                  delete pendingConfigSaves.current[pipeName];
+                                }
+                              });
+                            pendingConfigSaves.current[pipeName] = savePromise;
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-full text-xs" data-testid={`pipe-memory-select-${pipe.config.name}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="off">off (recommended)</SelectItem>
+                            <SelectItem value="relevant">when relevant</SelectItem>
+                            <SelectItem value="required">every run</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </section>
 
                       <section className="flex items-start justify-between gap-4 border border-border p-4">

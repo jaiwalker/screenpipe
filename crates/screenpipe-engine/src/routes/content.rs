@@ -29,6 +29,8 @@ use crate::{
 use axum::extract::Path;
 use screenpipe_screen::OcrEngine;
 
+use super::search::OptionalPipePerms;
+
 #[derive(OaSchema, Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "content")]
 pub enum ContentItem {
@@ -719,11 +721,33 @@ fn validate_raw_sql(query: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Pipe-scoped SQL must not bypass memory policy or per-row privacy tags.
+/// Dedicated memory/search routes apply those checks after reading rows; raw
+/// SQL cannot safely redact arbitrary projections, joins, FTS tables, or
+/// aggregates, so reject any memory-table reference for Pipe requests.
+fn references_memory_storage(query: &str) -> bool {
+    query
+        .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|token| {
+            token.eq_ignore_ascii_case("memories") || token.eq_ignore_ascii_case("memories_fts")
+        })
+}
+
 #[oasgen]
 pub(crate) async fn execute_raw_sql(
     State(state): State<Arc<AppState>>,
+    OptionalPipePerms(permissions): OptionalPipePerms,
     JsonResponse(payload): JsonResponse<RawSqlQuery>,
 ) -> Result<JsonResponse<serde_json::Value>, (StatusCode, JsonResponse<serde_json::Value>)> {
+    if permissions.is_some() && references_memory_storage(&payload.query) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            JsonResponse(json!({
+                "error": "Pipe SQL cannot read memory storage; use /memories or /search so memory policy and privacy tags are enforced"
+            })),
+        ));
+    }
+
     // Pre-execution validation: catch unbounded queries before they hit the DB
     if let Err(msg) = validate_raw_sql(&payload.query) {
         return Err((StatusCode::BAD_REQUEST, JsonResponse(json!({"error": msg}))));
@@ -786,7 +810,7 @@ pub(crate) async fn validate_media_handler(
 
 #[cfg(test)]
 mod raw_sql_validation_tests {
-    use super::{contains_aggregate, validate_raw_sql};
+    use super::{contains_aggregate, references_memory_storage, validate_raw_sql};
 
     #[test]
     fn rejects_row_query_without_limit() {
@@ -826,6 +850,19 @@ mod raw_sql_validation_tests {
         assert!(validate_raw_sql("DELETE FROM frames").is_err());
         assert!(validate_raw_sql("UPDATE frames SET app_name = 'x' LIMIT 1").is_err());
         assert!(validate_raw_sql("INSERT INTO frames VALUES (1)").is_err());
+    }
+
+    #[test]
+    fn detects_every_memory_storage_identifier_without_substring_false_positives() {
+        assert!(references_memory_storage(
+            "SELECT content FROM main.memories LIMIT 1"
+        ));
+        assert!(references_memory_storage(
+            "SELECT content FROM `memories_fts` LIMIT 1"
+        ));
+        assert!(!references_memory_storage(
+            "SELECT memory_source FROM friend_wearable_requests LIMIT 1"
+        ));
     }
 
     #[test]

@@ -346,6 +346,15 @@ pub struct PipeConfig {
     #[serde(default, skip_serializing_if = "is_false")]
     pub history: bool,
 
+    /// Whether this Pipe may receive curated screenpipe memories.
+    ///
+    /// `off` is the privacy-preserving default. `relevant` performs bounded
+    /// retrieval only when the prompt has a prior-context signal. `required`
+    /// performs bounded retrieval for every non-empty run. The device-wide
+    /// agent-memory policy remains an independent kill switch.
+    #[serde(default, skip_serializing_if = "PipeMemoryMode::is_off")]
+    pub memory: PipeMemoryMode,
+
     /// When true, the pipe's agent has `SCREENPIPE_FILTER_PII=1` in its
     /// env so the BASH_ENV shim rewrites every `curl .../search` call to
     /// append `filter_pii=1` — PII is redacted server-side before the
@@ -410,6 +419,36 @@ impl PipeEffort {
 impl Default for PipeEffort {
     fn default() -> Self {
         Self::Low
+    }
+}
+
+/// Per-Pipe memory access policy. This is deliberately separate from API
+/// permissions so a broad reader preset never silently grants durable memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PipeMemoryMode {
+    Off,
+    Relevant,
+    Required,
+}
+
+impl PipeMemoryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Relevant => "relevant",
+            Self::Required => "required",
+        }
+    }
+
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+}
+
+impl Default for PipeMemoryMode {
+    fn default() -> Self {
+        Self::Off
     }
 }
 
@@ -9401,6 +9440,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -10137,6 +10177,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -10297,6 +10338,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -10336,6 +10378,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -10365,6 +10408,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -10403,6 +10447,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -10529,6 +10574,7 @@ mod tests {
                 source_hash: None,
                 subagent: false,
                 history: false,
+                memory: PipeMemoryMode::Off,
                 privacy_filter: false,
                 artifacts: vec![],
                 trigger: None,

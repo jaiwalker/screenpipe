@@ -73,6 +73,12 @@ import {
 } from "@/lib/ai-tools-mcp";
 import { AiToolsCard } from "./ai-tools-card";
 import { CursorLogo } from "./tool-logos";
+import {
+  MEMORY_POLICY_CHANGED_EVENT,
+  MemoryAgentAccessCard,
+  readAgentMemoryPolicy,
+  type AgentMemoryPolicy,
+} from "./memory-agent-access-card";
 
 // ---------------------------------------------------------------------------
 // Utility functions (unchanged)
@@ -1464,6 +1470,9 @@ function ClaudeCodePanel() {
 // Rust serializes the SyncOutcome enum with `rename_all = "snake_case"`, so
 // the variant keys are lowercase (`wrote` / `unchanged` / `skipped`).
 function describeSyncOutcome(result: any): string {
+  if (result?.removed) {
+    return "removed screenpipe memory context";
+  }
   if (result?.wrote) {
     const n = result.wrote.entries;
     return `wrote ${n} ${n === 1 ? "memory" : "memories"}`;
@@ -1568,6 +1577,16 @@ function useMemorySyncDestination(integrationId: string) {
   const disconnect = useCallback(async () => {
     setError(null);
     try {
+      if (integrationId === "claude-code" || integrationId === "codex") {
+        const cleanup = await localFetch(
+          `/memories/sync-external/${integrationId}/cleanup`,
+          { method: "POST" },
+        );
+        if (!cleanup.ok) {
+          const body = await cleanup.json().catch(() => ({}));
+          throw new Error(body?.error || "could not remove memory context");
+        }
+      }
       const res = await localFetch(`/connections/${integrationId}`, { method: "DELETE" });
       if (!res.ok && res.status !== 404) throw new Error("disconnect failed");
       setConnected(false);
@@ -1592,10 +1611,20 @@ function MemorySyncSubsection({
   targetFilename: string;
 }) {
   const [homePath, setHomePath] = useState(defaultPath);
+  const [agentPolicy, setAgentPolicy] = useState<AgentMemoryPolicy | null>(null);
   const {
     connected, setConnected, status, error,
     lastResult, lastResultAt, triggerSyncNow, connect, disconnect,
   } = useMemorySyncDestination(integrationId);
+
+  useEffect(() => {
+    readAgentMemoryPolicy().then(setAgentPolicy).catch(() => setAgentPolicy(null));
+    const onPolicyChanged = (event: Event) => {
+      setAgentPolicy((event as CustomEvent<AgentMemoryPolicy>).detail);
+    };
+    window.addEventListener(MEMORY_POLICY_CHANGED_EVENT, onPolicyChanged);
+    return () => window.removeEventListener(MEMORY_POLICY_CHANGED_EVENT, onPolicyChanged);
+  }, []);
 
   useEffect(() => {
     localFetch(`/connections/${integrationId}`)
@@ -1625,14 +1654,19 @@ function MemorySyncSubsection({
       <div className="space-y-0.5">
         <p className="text-xs font-medium text-foreground">memory sync (beta)</p>
         <p className="text-xs text-muted-foreground">
-          writes your screenpipe memories into {targetFilename} so {assistantName} sees them
-          in every new session. updates automatically every 5 minutes.
+          writes a compact routing profile into {targetFilename}; detailed memories stay
+          behind the recall tool. updates automatically every 5 minutes.
         </p>
+        {agentPolicy && !agentPolicy.enabled && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            paused — turn on memory for agents above. screenpipe-owned context is removed.
+          </p>
+        )}
       </div>
 
       {connected ? (
         <>
-          <div className="p-2 bg-muted border border-border rounded-lg space-y-1">
+          <div className="p-2 bg-muted border border-border space-y-1">
             <div className="space-y-0.5">
               <p className="text-xs text-muted-foreground">file</p>
               <p className="text-xs text-foreground font-mono break-all">{persistedPath}/{targetFilename}</p>
@@ -1645,7 +1679,7 @@ function MemorySyncSubsection({
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={triggerSyncNow} disabled={status === "syncing"} size="sm" variant="outline" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
+            <Button onClick={triggerSyncNow} disabled={status === "syncing" || !agentPolicy?.enabled} size="sm" variant="outline" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
               {status === "syncing" ? (<><Loader2 className="h-3 w-3 animate-spin" />syncing...</>) : (<><Send className="h-3 w-3" />sync now</>)}
             </Button>
             <Button onClick={disconnect} size="sm" variant="ghost" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
@@ -1665,7 +1699,7 @@ function MemorySyncSubsection({
               spellCheck={false}
             />
           </div>
-          <Button onClick={() => connect({ home_path: persistedPath })} disabled={status === "connecting"} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
+          <Button onClick={() => connect({ home_path: persistedPath })} disabled={status === "connecting" || !agentPolicy?.enabled} size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
             {status === "connecting" ? (<><Loader2 className="h-3 w-3 animate-spin" />enabling...</>) : (<><Download className="h-3 w-3" />enable memory sync</>)}
           </Button>
         </>
@@ -4397,6 +4431,8 @@ export function ConnectionsSection({
           />
         </div>
       </div>
+
+      <MemoryAgentAccessCard />
 
       <McpSpotlight
         enabledCount={customMcpEnabledCount}

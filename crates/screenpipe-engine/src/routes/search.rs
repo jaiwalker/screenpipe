@@ -19,7 +19,7 @@ use super::response_format::{
 /// Extracts an optional `Arc<PipePermissions>` from request extensions.
 /// Wrapper exists because `Option<Extension<T>>` falls back to oasgen's
 /// `impl<A: OaSchema> OaParameter for A` and `Extension<T>` is not OaSchema.
-pub(crate) struct OptionalPipePerms(Option<std::sync::Arc<PipePermissions>>);
+pub(crate) struct OptionalPipePerms(pub(crate) Option<std::sync::Arc<PipePermissions>>);
 
 impl<S: Send + Sync> FromRequestParts<S> for OptionalPipePerms {
     type Rejection = std::convert::Infallible;
@@ -245,6 +245,11 @@ fn validate_pipe_search_permissions(
     permissions: &PipePermissions,
     query: &SearchQuery,
 ) -> Result<(), String> {
+    if permissions.memory_mode.is_off() && query.content_type == SearchContentType::Memory {
+        return Err(
+            "memory is off for this Pipe; set memory: relevant or memory: required".to_string(),
+        );
+    }
     if permissions.has_content_type_restrictions() {
         let Some(content_type) = query.content_type.permission_name() else {
             return Err(
@@ -282,7 +287,27 @@ fn validate_pipe_search_permissions(
     Ok(())
 }
 
+#[cfg(test)]
 fn pipe_can_access_content_item(permissions: &PipePermissions, item: &ContentItem) -> bool {
+    pipe_can_access_content_item_with_policy(permissions, item, true)
+}
+
+fn pipe_can_access_content_item_with_policy(
+    permissions: &PipePermissions,
+    item: &ContentItem,
+    agent_memory_enabled: bool,
+) -> bool {
+    if let ContentItem::Memory(content) = item {
+        if !agent_memory_enabled
+            || permissions.memory_mode.is_off()
+            || content
+                .tags
+                .iter()
+                .any(|tag| screenpipe_core::memories::recall::tag_blocks_external_ai(tag))
+        {
+            return false;
+        }
+    }
     let (app_name, window_name, content_type, timestamp) = match item {
         ContentItem::OCR(content) => (
             Some(content.app_name.as_str()),
@@ -707,11 +732,9 @@ pub fn search_result_to_content_item(
                 .source_context
                 .as_ref()
                 .and_then(|s| serde_json::from_str(s).ok()),
-            tags: m
-                .tags
-                .as_ref()
-                .and_then(|t| serde_json::from_str(t).ok())
-                .unwrap_or_default(),
+            tags: screenpipe_core::memories::recall::parse_memory_tags_fail_closed(
+                m.tags.as_deref(),
+            ),
             importance: m.importance,
             frame_id: m.frame_id,
             created_at: m.created_at.clone(),
@@ -987,6 +1010,8 @@ pub(crate) async fn search(
         .as_ref()
         .map(|permissions| permissions.has_data_restrictions())
         .unwrap_or(false);
+    let agent_memory_enabled =
+        screenpipe_core::memories::agent_policy::load_policy(&state.screenpipe_dir).enabled;
 
     // Server-authoritative permission validation and privacy filter: if the request comes from a
     // pipe whose manifest declares `privacy_filter: true`, force PII
@@ -994,6 +1019,12 @@ pub(crate) async fn search(
     // LLM agent has no schema-level way to bypass this — the permissions
     // are looked up from the bearer token by `pipe_permissions_middleware`.
     if let Some(perms) = &pipe_perms {
+        if query.content_type == SearchContentType::Memory && !agent_memory_enabled {
+            return Err((
+                StatusCode::FORBIDDEN,
+                JsonResponse(json!({ "error": "memory for agents is off" })),
+            ));
+        }
         validate_pipe_search_permissions(perms, &query).map_err(|message| {
             (
                 StatusCode::FORBIDDEN,
@@ -1238,7 +1269,9 @@ pub(crate) async fn search(
     };
 
     if let Some(permissions) = &pipe_perms {
-        content_items.retain(|item| pipe_can_access_content_item(permissions, item));
+        content_items.retain(|item| {
+            pipe_can_access_content_item_with_policy(permissions, item, agent_memory_enabled)
+        });
         if pipe_data_restricted {
             // The unrestricted DB count can reveal denied rows. A fully accurate
             // restricted count requires pushing every rule into SQL, so return
@@ -1633,6 +1666,7 @@ mod tests {
             pipe_token: Some("sp_pipe_test".to_string()),
             pipe_dir: None,
             privacy_filter: false,
+            memory_mode: screenpipe_core::pipes::PipeMemoryMode::Off,
         }
     }
 
@@ -1757,6 +1791,38 @@ mod tests {
             frame_id: None,
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn pipe_memory_search_requires_mode_and_filters_private_lifecycle_tags() {
+        let mut permissions = restricted_pipe_permissions(vec![], vec![]);
+        let query = search_query(SearchContentType::Memory, None);
+        assert!(validate_pipe_search_permissions(&permissions, &query).is_err());
+        assert!(!pipe_can_access_content_item(
+            &permissions,
+            &ContentItem::Memory(test_memory(1)),
+        ));
+
+        permissions.memory_mode = screenpipe_core::pipes::PipeMemoryMode::Relevant;
+        assert!(validate_pipe_search_permissions(&permissions, &query).is_ok());
+        assert!(pipe_can_access_content_item(
+            &permissions,
+            &ContentItem::Memory(test_memory(1)),
+        ));
+
+        for tag in [
+            "privacy:no-ai",
+            "privacy:local-only",
+            "state:deleted",
+            "state:stale",
+        ] {
+            let mut private = test_memory(2);
+            private.tags = vec![tag.to_string()];
+            assert!(!pipe_can_access_content_item(
+                &permissions,
+                &ContentItem::Memory(private),
+            ));
         }
     }
 

@@ -29,7 +29,7 @@ use chrono::Weekday;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use super::{PipeConfig, PipePermissionsConfig};
+use super::{PipeConfig, PipeMemoryMode, PipePermissionsConfig};
 
 /// Registry for active pipe tokens.
 #[async_trait::async_trait]
@@ -131,9 +131,10 @@ pub const DEFAULT_ALLOWED_ENDPOINTS: &[&str] = &[
     "GET /meetings/*",
     "GET /meetings/status",
     // Durable user context is a read-only source just like meetings/search.
-    // Native Pi's mandatory memory preflight uses this endpoint; mutations
-    // remain excluded from the reader preset.
+    // Enabled Pipes use these endpoints for bounded recall; the explicit
+    // memory-mode gate below still keeps the privacy-preserving default off.
     "GET /memories",
+    "GET /memories/agent-policy",
     "POST /notify",
     "GET /speakers",
     "POST /speakers/update",
@@ -194,6 +195,11 @@ pub struct PipePermissions {
     /// token plumbing used for endpoint allow/deny rules.
     #[serde(default)]
     pub privacy_filter: bool,
+
+    /// Explicit memory grant for this Pipe. API reader permissions alone do
+    /// not enable durable memory access.
+    #[serde(default)]
+    pub memory_mode: PipeMemoryMode,
 }
 
 impl PipePermissions {
@@ -215,6 +221,7 @@ impl PipePermissions {
             pipe_token: None,
             pipe_dir: None,
             privacy_filter: config.privacy_filter,
+            memory_mode: config.memory,
         }
     }
 
@@ -250,6 +257,23 @@ impl PipePermissions {
 
     /// Check if an HTTP request (method + path) is allowed.
     pub fn is_endpoint_allowed(&self, method: &str, path: &str) -> bool {
+        let m = method.to_uppercase();
+        // A Pipe may observe the device-wide consent state, but it cannot turn
+        // that state on/off or rewrite/remove another agent's startup files.
+        // This boundary applies even to otherwise-unrestricted legacy Pipes.
+        if (path == "/memories/agent-policy" && m != "GET")
+            || path == "/memories/sync-external"
+            || path.starts_with("/memories/sync-external/")
+        {
+            return false;
+        }
+        if m == "GET"
+            && self.memory_mode.is_off()
+            && (path == "/memories" || path.starts_with("/memories/"))
+            && path != "/memories/agent-policy"
+        {
+            return false;
+        }
         // No endpoint restrictions → full access
         let has_api_rules = self
             .allow_rules
@@ -263,8 +287,6 @@ impl PipePermissions {
         if !has_api_rules {
             return true;
         }
-
-        let m = method.to_uppercase();
 
         // Deny wins
         for rule in &self.deny_rules {
@@ -675,6 +697,7 @@ mod tests {
             pipe_token: None,
             pipe_dir: None,
             privacy_filter: false,
+            memory_mode: PipeMemoryMode::Off,
         }
     }
 
@@ -687,6 +710,22 @@ mod tests {
         assert!(
             matches!(&rules[0], PermissionRule::Api { method, path } if method == "GET" && path == "/search")
         );
+    }
+
+    #[test]
+    fn memory_reads_require_an_explicit_pipe_grant_even_when_otherwise_open() {
+        let mut permissions = make_perms();
+        assert!(!permissions.is_endpoint_allowed("GET", "/memories"));
+        assert!(!permissions.is_endpoint_allowed("GET", "/memories/42"));
+        assert!(permissions.is_endpoint_allowed("GET", "/memories/agent-policy"));
+        assert!(!permissions.is_endpoint_allowed("PUT", "/memories/agent-policy"));
+        assert!(!permissions.is_endpoint_allowed("POST", "/memories/sync-external"));
+        assert!(!permissions.is_endpoint_allowed("POST", "/memories/sync-external/codex/cleanup"));
+        assert!(permissions.is_endpoint_allowed("GET", "/search"));
+
+        permissions.memory_mode = PipeMemoryMode::Relevant;
+        assert!(permissions.is_endpoint_allowed("GET", "/memories"));
+        assert!(permissions.is_endpoint_allowed("GET", "/memories/42"));
     }
 
     #[test]
@@ -772,6 +811,9 @@ mod tests {
         assert!(p.is_endpoint_allowed("GET", "/meetings/42"));
         assert!(p.is_endpoint_allowed("POST", "/notify"));
         assert!(p.is_endpoint_allowed("GET", "/feedback"));
+        assert!(!p.is_endpoint_allowed("GET", "/memories"));
+        assert!(p.is_endpoint_allowed("GET", "/memories/agent-policy"));
+        p.memory_mode = PipeMemoryMode::Relevant;
         assert!(p.is_endpoint_allowed("GET", "/memories"));
         assert!(!p.is_endpoint_allowed("POST", "/memories"));
         assert!(p.is_endpoint_allowed("GET", "/outputs/targets"));
@@ -968,6 +1010,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -999,6 +1042,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,
@@ -1042,6 +1086,7 @@ mod tests {
             source_hash: None,
             subagent: false,
             history: false,
+            memory: PipeMemoryMode::Off,
             privacy_filter: false,
             artifacts: vec![],
             trigger: None,

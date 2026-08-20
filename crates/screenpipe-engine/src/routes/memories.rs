@@ -13,7 +13,12 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 
 use super::content::PaginationInfo;
+use super::search::OptionalPipePerms;
 use crate::{analytics, routes::request_origin::ExplicitApiClient, server::AppState};
+use screenpipe_core::memories::agent_policy::{
+    load_policy, save_policy, MemoryAgentPolicy, AGENT_POLICY_SCHEMA,
+};
+use screenpipe_core::memories::recall::{parse_memory_tags_fail_closed, tag_blocks_external_ai};
 
 #[derive(OaSchema, Deserialize)]
 pub(crate) struct CreateMemoryRequest {
@@ -95,6 +100,98 @@ pub(crate) struct UpdateMemoryRequest {
     pub tags: Option<Vec<String>>,
     pub importance: Option<f64>,
     pub source_context: Option<Value>,
+}
+
+#[derive(OaSchema, Deserialize)]
+pub(crate) struct UpdateMemoryAgentPolicyRequest {
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub automatic_chat_recall: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn memory_agent_policy_response(policy: &MemoryAgentPolicy) -> Value {
+    json!({
+        "schema_version": policy.schema_version,
+        "enabled": policy.enabled,
+        "automatic_chat_recall": policy.automatic_chat_recall,
+        "processing": policy.processing,
+        "uses_model": false,
+        "network_egress": false,
+        "raw_recordings": false,
+        "retrieval_scope": "screenpipe_local_retrieval",
+        "agent_model_transport": "managed_by_receiving_agent",
+    })
+}
+
+/// Device-local master consent for agent memory delivery. Direct memory search
+/// and management remain available while this is off.
+#[oasgen]
+pub(crate) async fn get_memory_agent_policy_handler(
+    State(state): State<Arc<AppState>>,
+) -> JsonResponse<Value> {
+    JsonResponse(memory_agent_policy_response(&load_policy(
+        &state.screenpipe_dir,
+    )))
+}
+
+/// Update consent, then immediately reconcile external agent files so turning
+/// access off removes screenpipe-owned context without waiting five minutes.
+#[oasgen]
+pub(crate) async fn update_memory_agent_policy_handler(
+    State(state): State<Arc<AppState>>,
+    JsonResponse(payload): JsonResponse<UpdateMemoryAgentPolicyRequest>,
+) -> Result<JsonResponse<Value>, (StatusCode, JsonResponse<Value>)> {
+    let policy = MemoryAgentPolicy {
+        schema_version: AGENT_POLICY_SCHEMA,
+        enabled: payload.enabled,
+        automatic_chat_recall: payload.automatic_chat_recall,
+        ..MemoryAgentPolicy::default()
+    };
+    save_policy(&state.screenpipe_dir, &policy).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            JsonResponse(json!({"error": format!("save memory agent policy: {error}")})),
+        )
+    })?;
+
+    let results = crate::external_memory_sync::run_once(
+        &state.db,
+        state.secret_store.as_deref(),
+        &state.screenpipe_dir,
+    )
+    .await;
+    let sync_results = serde_json::to_value(results).unwrap_or_else(|_| json!([]));
+    Ok(JsonResponse(json!({
+        "policy": memory_agent_policy_response(&policy),
+        "sync_results": sync_results,
+    })))
+}
+
+/// Revoke a file-based agent destination before its connection credentials
+/// are deleted. Human-readable exports such as Obsidian are intentionally not
+/// eligible for this endpoint.
+#[oasgen]
+pub(crate) async fn cleanup_external_agent_memory_handler(
+    State(state): State<Arc<AppState>>,
+    Path(destination_id): Path<String>,
+) -> Result<JsonResponse<Value>, (StatusCode, JsonResponse<Value>)> {
+    let outcome = crate::external_memory_sync::cleanup_agent_destination(
+        &destination_id,
+        state.secret_store.as_deref(),
+        &state.screenpipe_dir,
+    )
+    .await
+    .map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({"error": error.to_string()})),
+        )
+    })?;
+    Ok(JsonResponse(json!({"outcome": outcome})))
 }
 
 fn memory_to_response(m: screenpipe_db::MemoryRecord) -> MemoryResponse {
@@ -213,9 +310,16 @@ pub(crate) async fn create_memory_handler(
 #[oasgen]
 pub(crate) async fn list_memories_handler(
     State(state): State<Arc<AppState>>,
+    OptionalPipePerms(permissions): OptionalPipePerms,
     api_client: ExplicitApiClient,
     Query(query): Query<ListMemoriesQuery>,
 ) -> Result<JsonResponse<MemoryListResponse>, (StatusCode, JsonResponse<Value>)> {
+    if permissions.is_some() && !load_policy(&state.screenpipe_dir).enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            JsonResponse(json!({"error": "memory for agents is off"})),
+        ));
+    }
     let tags_all = parse_exact_tag_filter(query.tags.as_deref());
     let legacy_tags_filter = if tags_all.is_empty() {
         query.tags.as_deref()
@@ -248,19 +352,29 @@ pub(crate) async fn list_memories_handler(
         )
     );
 
-    let memories = memories_result.map_err(|e| {
+    let mut memories = memories_result.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             JsonResponse(json!({"error": e.to_string()})),
         )
     })?;
 
-    let total = total_result.map_err(|e| {
+    let mut total = total_result.map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             JsonResponse(json!({"error": e.to_string()})),
         )
     })?;
+
+    if permissions.is_some() {
+        memories.retain(|memory| {
+            parse_memory_tags_fail_closed(memory.tags.as_deref())
+                .iter()
+                .all(|tag| !tag_blocks_external_ai(tag))
+        });
+        // Do not reveal how many private rows existed outside this page.
+        total = memories.len() as i64;
+    }
 
     analytics::capture_event_nonblocking(
         "memory_recall_performed",
@@ -313,14 +427,32 @@ fn memory_recall_analytics_properties(
 #[oasgen]
 pub(crate) async fn get_memory_handler(
     State(state): State<Arc<AppState>>,
+    OptionalPipePerms(permissions): OptionalPipePerms,
     Path(id): Path<i64>,
 ) -> Result<JsonResponse<MemoryResponse>, (StatusCode, JsonResponse<Value>)> {
+    if permissions.is_some() && !load_policy(&state.screenpipe_dir).enabled {
+        return Err((
+            StatusCode::FORBIDDEN,
+            JsonResponse(json!({"error": "memory for agents is off"})),
+        ));
+    }
     let memory = state.db.get_memory_by_id(id).await.map_err(|e| {
         (
             StatusCode::NOT_FOUND,
             JsonResponse(json!({"error": format!("memory not found: {}", e)})),
         )
     })?;
+
+    if permissions.is_some()
+        && parse_memory_tags_fail_closed(memory.tags.as_deref())
+            .iter()
+            .any(|tag| tag_blocks_external_ai(tag))
+    {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({"error": "memory not found"})),
+        ));
+    }
 
     Ok(JsonResponse(memory_to_response(memory)))
 }
@@ -520,6 +652,20 @@ mod tests {
         assert_eq!(properties["result_count"], 3);
         assert!(!serialized.contains("private customer launch"));
         assert!(!serialized.contains("project:private"));
+    }
+
+    #[test]
+    fn policy_response_makes_privacy_boundaries_explicit() {
+        let response = memory_agent_policy_response(&MemoryAgentPolicy::default());
+        assert_eq!(response["enabled"], false);
+        assert_eq!(response["uses_model"], false);
+        assert_eq!(response["network_egress"], false);
+        assert_eq!(response["raw_recordings"], false);
+        assert_eq!(response["retrieval_scope"], "screenpipe_local_retrieval");
+        assert_eq!(
+            response["agent_model_transport"],
+            "managed_by_receiving_agent"
+        );
     }
 
     #[test]
