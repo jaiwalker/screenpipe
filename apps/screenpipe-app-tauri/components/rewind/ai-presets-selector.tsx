@@ -1047,6 +1047,39 @@ export function AIProviderConfig({
           </div>
         )}
 
+        {selectedProvider && (
+          <div className="space-y-1">
+            <Label htmlFor="name" className="flex items-center gap-2 text-xs">
+              name
+              {idError && (
+                <span className="text-xs text-destructive font-normal">
+                  {idError}
+                </span>
+              )}
+            </Label>
+            <Input
+              id="name"
+              type="text"
+              placeholder="generated automatically"
+              value={formData.id ?? ""}
+              onChange={(e) => handleIdChange(e.target.value)}
+              onBlur={refillEmptyName}
+              className={cn(
+                "font-mono h-8 text-sm",
+                idError && "border-destructive focus-visible:ring-destructive",
+              )}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              disabled={
+                Boolean(defaultPreset?.id) &&
+                settings.aiPresets.some((p) => p.id === defaultPreset?.id)
+              }
+            />
+          </div>
+        )}
+
         <button
           type="button"
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
@@ -1176,36 +1209,6 @@ export function AIProviderConfig({
             )}
             {selectedProvider && (
               <>
-            <div className="space-y-1">
-              <Label htmlFor="name" className="flex items-center gap-2 text-xs">
-                name
-                {idError && (
-                  <span className="text-xs text-destructive font-normal">
-                    {idError}
-                  </span>
-                )}
-              </Label>
-              <Input
-                id="name"
-                type="text"
-                placeholder="generated automatically"
-                value={formData.id ?? ""}
-                onChange={(e) => handleIdChange(e.target.value)}
-                onBlur={refillEmptyName}
-                className={cn(
-                  "font-mono h-8 text-sm",
-                  idError && "border-destructive focus-visible:ring-destructive",
-                )}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-                disabled={
-                  Boolean(defaultPreset?.id) &&
-                  settings.aiPresets.some((p) => p.id === defaultPreset?.id)
-                }
-              />
-            </div>
             {resolvedModelLimits && (
               <p className="text-[10px] text-muted-foreground">
                 known model limits are configured automatically
