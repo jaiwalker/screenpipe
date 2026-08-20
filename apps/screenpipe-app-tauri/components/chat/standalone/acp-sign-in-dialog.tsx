@@ -148,9 +148,13 @@ export function AcpSignInDialog({
     if (id) setPendingId(id);
     try {
       const ok = await onSelectMethod(optionId);
-      if (!ok) setState("error");
+      if (!ok) {
+        setState("error");
+        setPendingId(null);
+      }
     } catch {
       setState("error");
+      setPendingId(null);
     }
   };
 

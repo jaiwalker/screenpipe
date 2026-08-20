@@ -51,3 +51,42 @@ describe("AcpSignInDialog CLI login", () => {
     expect(screen.getByText("cursor-agent login")).toBeInTheDocument();
   });
 });
+
+describe("AcpSignInDialog method login", () => {
+  it("restores the method button after a failed browser login", async () => {
+    render(
+      <AcpSignInDialog
+        request={{
+          kind: "methods",
+          agentId: "claude-acp",
+          requestId: "auth-request",
+          sessionId: "session",
+          title: "sign in",
+          options: [
+            {
+              optionId: "subscription",
+              name: "Claude Subscription",
+              description: "Continue in your browser with your Claude account.",
+            },
+          ],
+        }}
+        agentName="Claude Code"
+        defaultPresetLabel="screenpipe-cloud"
+        onSwitchToDefault={() => {}}
+        onCliSignIn={() => {}}
+        onSelectMethod={() => false}
+        onDismiss={() => {}}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /claude subscription/i }));
+
+    expect(
+      await screen.findByText("that didn't work. please try again."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /claude subscription/i }),
+    ).toBeEnabled();
+    expect(screen.queryByText("signing in…")).not.toBeInTheDocument();
+  });
+});
