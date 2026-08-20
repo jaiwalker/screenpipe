@@ -92,11 +92,14 @@ import {
   uninstallGeminiMcp,
   detectAiTools,
   connectAiTool,
+  connectAiToolTargets,
   disconnectAiTool,
+  disconnectAiToolTargets,
   friendlyToolError,
 } from "@/lib/ai-tools-mcp";
 
 const CURSOR = "/Users/test/.cursor/mcp.json";
+const CLAUDE_DESKTOP = "/Users/test/Library/Application Support/Claude/claude_desktop_config.json";
 const CLAUDE_CODE = "/Users/test/.claude.json";
 const HERMES = "/Users/test/.hermes/config.yaml";
 const RUNNER = "/Users/test/.runner/mcp.json";
@@ -269,6 +272,35 @@ describe("Claude Code MCP", () => {
     expect(entry.command).toBe("/app/bun");
     expect(entry.env.SCREENPIPE_MCP_CLIENT).toBe("claude-code");
     expect(skillsMock.installExternalAgentSkills).toHaveBeenCalledWith("claude");
+  });
+
+  it("keeps the shared skill when only one Claude config can connect", async () => {
+    fsMock.files.set(CLAUDE_DESKTOP, "{}\n");
+    fsMock.files.set(CLAUDE_CODE, "broken{");
+
+    const result = await connectAiToolTargets(["claude", "claude-code"]);
+
+    expect(result.succeeded).toEqual(["claude"]);
+    expect(result.failed.map(({ id }) => id)).toEqual(["claude-code"]);
+    expect(JSON.parse(fsMock.files.get(CLAUDE_DESKTOP)!).mcpServers.screenpipe).toBeTruthy();
+    expect(fsMock.files.get(CLAUDE_CODE)).toBe("broken{");
+    expect(skillsMock.removeExternalAgentSkills).toHaveBeenCalledTimes(1);
+    expect(skillsMock.installExternalAgentSkills).toHaveBeenLastCalledWith("claude");
+  });
+
+  it("opts out both Claude targets even when one config cannot be removed", async () => {
+    fsMock.files.set(CLAUDE_DESKTOP, JSON.stringify({
+      mcpServers: { screenpipe: { command: "/app/bun" } },
+    }));
+    fsMock.files.set(CLAUDE_CODE, "broken{");
+
+    const result = await disconnectAiToolTargets(["claude", "claude-code"]);
+
+    expect(result.succeeded).toEqual(["claude"]);
+    expect(result.failed.map(({ id }) => id)).toEqual(["claude-code"]);
+    expect(JSON.parse(fsMock.files.get(CLAUDE_DESKTOP)!).mcpServers.screenpipe).toBeUndefined();
+    expect(tauriMock.setAiToolAutoConnectOptOut).toHaveBeenCalledWith("claude", true);
+    expect(tauriMock.setAiToolAutoConnectOptOut).toHaveBeenCalledWith("claude-code", true);
   });
 });
 

@@ -721,6 +721,65 @@ export async function disconnectAiTool(id: ConnectAllToolId): Promise<void> {
   if (mcpError) throw mcpError;
 }
 
+export type AiToolOperationFailure = {
+  id: ConnectAllToolId;
+  error: unknown;
+};
+
+export type AiToolOperationResult = {
+  succeeded: ConnectAllToolId[];
+  failed: AiToolOperationFailure[];
+};
+
+/**
+ * Run one explicit UI action across the native targets hidden behind a single
+ * product row. Failures are isolated so one malformed config cannot prevent a
+ * sibling from being connected or opted out.
+ */
+export async function connectAiToolTargets(
+  targets: ConnectAllToolId[]
+): Promise<AiToolOperationResult> {
+  const succeeded: ConnectAllToolId[] = [];
+  const failed: AiToolOperationFailure[] = [];
+  for (const id of [...new Set(targets)]) {
+    try {
+      await connectAiTool(id);
+      succeeded.push(id);
+    } catch (error) {
+      failed.push({ id, error });
+    }
+  }
+
+  // Claude Desktop and Claude Code share ~/.claude/skills. A failed sibling
+  // rolls that directory back, so restore it when either MCP config succeeded.
+  const claudeOnly = targets.every((id) => id === "claude" || id === "claude-code");
+  if (claudeOnly && succeeded.length > 0 && failed.length > 0) {
+    try {
+      await installExternalAgentSkills("claude");
+    } catch (error) {
+      failed.push({ id: "claude", error });
+      succeeded.length = 0;
+    }
+  }
+  return { succeeded, failed };
+}
+
+export async function disconnectAiToolTargets(
+  targets: ConnectAllToolId[]
+): Promise<AiToolOperationResult> {
+  const succeeded: ConnectAllToolId[] = [];
+  const failed: AiToolOperationFailure[] = [];
+  for (const id of [...new Set(targets)]) {
+    try {
+      await disconnectAiTool(id);
+      succeeded.push(id);
+    } catch (error) {
+      failed.push({ id, error });
+    }
+  }
+  return { succeeded, failed };
+}
+
 // ─── Friendly error mapping for the UI ───────────────────────────────────────
 //
 // The lib throws precise, machine-flavored errors (full path, parser detail).
