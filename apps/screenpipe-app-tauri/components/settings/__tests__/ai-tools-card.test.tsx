@@ -14,6 +14,7 @@ const libMocks = vi.hoisted(() => ({
   detectAiTools: vi.fn(),
   connectAiTool: vi.fn(),
   disconnectAiTool: vi.fn(),
+  isClaudeCodeMcpInstalled: vi.fn(async () => false),
   isOpenclawMcpInstalled: vi.fn(async () => false),
   isHermesMcpInstalled: vi.fn(async () => false),
   isGeminiMcpInstalled: vi.fn(async () => false),
@@ -39,6 +40,7 @@ vi.mock("@/lib/ai-tools-mcp", () => ({
   }),
   CONNECT_ALL_TOOL_NAMES: {
     claude: "Claude",
+    "claude-code": "Claude Code",
     codex: "Codex",
     cursor: "Cursor",
     gemini: "Gemini CLI",
@@ -47,7 +49,12 @@ vi.mock("@/lib/ai-tools-mcp", () => ({
     runner: "Runner",
     windsurf: "Windsurf (Devin Desktop)",
   },
-  SKILLS_TARGET: { claude: "claude", codex: "codex", gemini: "gemini" },
+  SKILLS_TARGET: {
+    claude: "claude",
+    "claude-code": "claude",
+    codex: "codex",
+    gemini: "gemini",
+  },
 }));
 
 vi.mock("@/lib/hooks/use-hardcoded-tiles", () => hookMocks);

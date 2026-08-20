@@ -27,6 +27,7 @@ import {
   detectAiTools,
   friendlyToolError,
   type FriendlyToolError,
+  isClaudeCodeMcpInstalled,
   isOpenclawMcpInstalled,
   isHermesMcpInstalled,
   isGeminiMcpInstalled,
@@ -43,6 +44,7 @@ import {
 const DISPLAY_NAMES: Record<ConnectAllToolId, string> = {
   ...CONNECT_ALL_TOOL_NAMES,
   claude: "Claude Desktop",
+  "claude-code": "Claude Code",
 };
 
 // Connected = MCP entry AND both skills where supported — same rule as tiles.
@@ -50,6 +52,8 @@ async function isToolConnected(id: ConnectAllToolId): Promise<boolean> {
   switch (id) {
     case "claude":
       return !!(await getInstalledMcpVersion()) && (await areExternalAgentSkillsInstalled("claude"));
+    case "claude-code":
+      return (await isClaudeCodeMcpInstalled()) && (await areExternalAgentSkillsInstalled("claude"));
     case "codex":
       return (await isCodexMcpInstalled()) && (await areExternalAgentSkillsInstalled("codex"));
     case "cursor":
@@ -74,6 +78,7 @@ function ToolIcon({ id }: { id: ConnectAllToolId }) {
   const img = "h-5 w-5";
   switch (id) {
     case "claude":
+    case "claude-code":
       return <img src="/images/claude-ai.svg" alt="" className={img} />;
     case "codex":
       return <img src="/images/codex.svg" alt="" className={`${img} rounded dark:invert`} />;
