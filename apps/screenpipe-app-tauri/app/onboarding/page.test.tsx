@@ -31,8 +31,7 @@ const mocks = vi.hoisted(() => ({
       entitlement_source?: string;
       subscription_plan?: string;
       enterprise_account?: { org_name?: string; role?: string };
-      // Plan selection needs a token to open checkout, so page.tsx keeps the
-      // slide out of visibleOrder. Seed it wherever a signed-in user is intended.
+      // Plan selection needs a token when reconciling a hosted checkout return.
       token?: string;
     },
   },
@@ -266,8 +265,8 @@ describe("enterprise onboarding authentication", () => {
     );
   });
 
-  // Per-slide sizes made the window jump on every step and blew up to 760x720
-  // on the payment slide. One size, applied once, for the whole flow.
+  // Per-slide sizes made the window jump on every step. One size, applied once,
+  // for the whole flow.
   it("sizes the window once instead of resizing per slide", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = {
@@ -282,12 +281,16 @@ describe("enterprise onboarding authentication", () => {
       expect(mocks.setWindowSize).toHaveBeenCalledWith("Onboarding", 500, 680),
     );
 
-    // Advancing onto the payment slide, the step that used to widen the window
-    // to 760x720, must not resize it again.
+    // Completing the final setup slide must not resize the window again.
     fireEvent.click(
       await screen.findByRole("button", { name: "finish engine" }),
     );
-    expect(await screen.findByText("plan selection")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(mocks.completeOnboarding).toHaveBeenCalledWith({
+        method: "setup_finished",
+      }),
+    );
+    expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
 
     expect(mocks.setWindowSize).toHaveBeenCalledTimes(1);
   });
@@ -308,7 +311,7 @@ describe("enterprise onboarding authentication", () => {
     expect(screen.queryByText("connect apps")).not.toBeInTheDocument();
   });
 
-  it("shows plan selection last for a new free consumer account", async () => {
+  it("finishes setup for a cardless consumer without mandatory checkout", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = {
       has_payment_method: false,
@@ -322,15 +325,12 @@ describe("enterprise onboarding authentication", () => {
       await screen.findByRole("button", { name: "finish engine" }),
     );
 
-    expect(await screen.findByText("plan selection")).toBeInTheDocument();
-    expect(mocks.completeOnboarding).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: "continue free plan" }));
     await waitFor(() =>
       expect(mocks.completeOnboarding).toHaveBeenCalledWith({
         method: "setup_finished",
       }),
     );
+    expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
   });
 
   // Regression: "plan" is the last slide, so showing it to a user who skipped
@@ -486,7 +486,7 @@ describe("enterprise onboarding authentication", () => {
     expect(screen.queryByText("plan selection")).not.toBeInTheDocument();
   });
 
-  it("marks checkout as required while keeping funnel keys stable", async () => {
+  it("marks ordinary card collection as a post-onboarding modal", async () => {
     mocks.enterprisePolicy.isManagedDeployment = false;
     mocks.settings.user = {
       has_payment_method: false,
@@ -504,8 +504,8 @@ describe("enterprise onboarding authentication", () => {
       expect(mocks.capture).toHaveBeenCalledWith(
         "onboarding_step_reached",
         expect.objectContaining({
-          card_ask_arm: "required",
-          card_ask_placement_active: true,
+          card_ask_arm: "post_onboarding_modal",
+          card_ask_placement_active: false,
         }),
       ),
     );

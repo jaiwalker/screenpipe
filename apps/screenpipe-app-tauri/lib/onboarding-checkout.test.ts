@@ -4,10 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { AppUser } from "@/lib/app-entitlement";
-import {
-  isOnboardingCheckoutResolved,
-  requiresOnboardingCheckout,
-} from "@/lib/onboarding-checkout";
+import { isOnboardingCheckoutResolved } from "@/lib/onboarding-checkout";
 
 const user = (overrides: Partial<AppUser> = {}) =>
   ({
@@ -19,17 +16,10 @@ const user = (overrides: Partial<AppUser> = {}) =>
     ...overrides,
   }) as AppUser;
 
-describe("onboarding checkout eligibility", () => {
-  it("requires checkout only for an authoritatively cardless free account", () => {
-    expect(requiresOnboardingCheckout(user())).toBe(true);
-  });
-
+describe("onboarding checkout return resolution", () => {
   it.each(["subscription", "manual", "enterprise", "lifetime", "dev"])(
-    "does not request checkout for an existing %s entitlement",
+    "accepts an existing %s entitlement as resolved",
     (source) => {
-      expect(
-        requiresOnboardingCheckout(user({ entitlement_source: source })),
-      ).toBe(false);
       expect(
         isOnboardingCheckoutResolved(user({ entitlement_source: source })),
       ).toBe(true);
@@ -38,7 +28,7 @@ describe("onboarding checkout eligibility", () => {
 
   it("does not guess while account payment state is partially hydrated", () => {
     expect(
-      requiresOnboardingCheckout(
+      isOnboardingCheckoutResolved(
         user({ has_payment_method: undefined, entitlement_source: undefined }),
       ),
     ).toBe(false);
@@ -48,7 +38,6 @@ describe("onboarding checkout eligibility", () => {
     const enterpriseUser = user({
       enterprise_account: { org_name: "acme", role: "member" },
     });
-    expect(requiresOnboardingCheckout(enterpriseUser)).toBe(false);
     expect(isOnboardingCheckoutResolved(enterpriseUser)).toBe(true);
   });
 

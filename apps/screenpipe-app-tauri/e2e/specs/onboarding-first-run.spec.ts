@@ -17,8 +17,8 @@
 //   2. One tap writes through to store.bin via the real settings command,
 //      not a mocked updateSettings.
 //   3. Skip records nothing at all.
-//   4. Existing entitlements cannot be restored into mandatory checkout, even
-//      when an older build persisted the plan step.
+//   4. No ordinary install can be restored into mandatory checkout, even when
+//      an older build persisted the plan step.
 //
 // The post-setup learning window lives in first-run-learning-window.spec.ts:
 // it renders on Brain, which is behind the account gate, so it needs the
@@ -261,7 +261,7 @@ const seedLearningWindow = async (state: Record<string, unknown>) => {
     }
   });
 
-  it("keeps lifetime ownership out of mandatory checkout", async () => {
+  it("recovers a legacy plan step without mandatory checkout", async () => {
     await seedOnboardingUser({
       id: "e2e-lifetime-owner",
       email: "lifetime-owner@screenpipe.test",
@@ -298,5 +298,36 @@ const seedLearningWindow = async (state: Record<string, unknown>) => {
 
     const filepath = await saveScreenshot("onboarding-lifetime-checkout-skip");
     expect(existsSync(filepath)).toBe(true);
+  });
+
+  it("keeps a cardless existing account out of mandatory checkout", async () => {
+    await seedOnboardingUser({
+      id: "e2e-existing-cardless-user",
+      email: "existing-cardless@screenpipe.test",
+      token: "e2e-token",
+      app_entitled: false,
+      cloud_subscribed: false,
+      subscription_plan: "free",
+      entitlement_source: "none",
+      has_payment_method: false,
+    });
+
+    // This is the server shape that previously made a reset or reinstalled app
+    // restore a saved plan step into forced checkout.
+    await gotoSlide("plan");
+    await waitForTestId("onboarding-engine-startup", 30_000);
+
+    const text = await bodyText();
+    expect(text).not.toContain("opening secure checkout");
+    expect(
+      await browser.execute(
+        () => !!document.querySelector('[data-testid="onboarding-card-capture"]'),
+      ),
+    ).toBe(false);
+
+    const match = text.match(/setup[^0-9]*(\d+)\s*of\s*(\d+)/);
+    expect(match).not.toBeNull();
+    const [, current, total] = match!.map(Number);
+    expect(current).toBe(total);
   });
 });

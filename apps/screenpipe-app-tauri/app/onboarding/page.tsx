@@ -21,7 +21,6 @@ import { commands } from "@/lib/utils/tauri";
 import { onboardingFunnel } from "@/lib/analytics/onboarding-funnel";
 import type { AppUser } from "@/lib/app-entitlement";
 import { readOnboardingCheckoutStatus } from "@/lib/onboarding-checkout-navigation";
-import { requiresOnboardingCheckout } from "@/lib/onboarding-checkout";
 
 type SlideKey =
   "login" | "acquisition" | "permissions" | "timeline" | "engine" | "plan";
@@ -173,24 +172,14 @@ export default function OnboardingPage() {
     settings.deviceTier === "high"
       ? settings.deviceTier
       : "unknown";
-  const needsOnboardingCheckout = requiresOnboardingCheckout(user);
   const shouldShowPlanSelection =
-    !isManagedDeployment &&
-    (checkoutReturnStatus !== null || needsOnboardingCheckout);
-  // Only a fully resolved new consumer account enters mandatory checkout.
-  // Manual grants, lifetime ownership, Enterprise membership, subscriptions,
-  // and partially hydrated account responses all stay out. A later contextual
-  // card ask may still be appropriate for an expiring manual grant, but that is
-  // a different intervention from first-run setup.
-  // "plan" is the last slide, so auto-advancing onto it without a token traps
-  // the user in onboarding: PlanSelectionStep cannot open hosted checkout
-  // (it renders "sign in to continue"),
-  // and handleNextSlide stops calling completeOnboarding once a next slide
-  // exists. Someone who skipped sign-in would sit on /onboarding forever.
-  //
-  // This gates only the automatic walk out of the engine slide. An eligible
-  // account keeps plan in visibleOrder and can enter it; every other account
-  // excludes it from progress and saved-step restoration as well.
+    !isManagedDeployment && checkoutReturnStatus !== null;
+  // Ordinary setup must always be completable without payment. A reinstall or
+  // unreadable local store replays onboarding even for an existing account,
+  // and local state cannot reliably distinguish that recovery path from a new
+  // install. Card collection therefore happens later through the dismissible
+  // PostHog-owned Home modal. The plan controller remains reachable only while
+  // reconciling an already-started hosted checkout return.
   const canAdvanceIntoPlanSelection =
     shouldShowPlanSelection && Boolean(user?.token);
   const visibleOrder = useMemo(
@@ -363,9 +352,12 @@ export default function OnboardingPage() {
     posthog.capture("onboarding_step_reached", {
       step_name: `${currentSlide}_completed`,
       step_index: visibleOrder.indexOf(currentSlide) + 1,
-      // Keep the existing analytics keys stable across the release cutover.
-      card_ask_arm: "required",
-      card_ask_placement_active: true,
+      // Keep the existing analytics keys stable while recording that ordinary
+      // setup now hands card collection to a dismissible Home placement.
+      card_ask_arm: shouldShowPlanSelection
+        ? "checkout_return"
+        : "post_onboarding_modal",
+      card_ask_placement_active: shouldShowPlanSelection,
     });
 
     // Hidden enterprise deployments only need authentication + permissions.
@@ -444,6 +436,7 @@ export default function OnboardingPage() {
     currentSlide,
     deviceTierForAnalytics,
     isManagedDeployment,
+    shouldShowPlanSelection,
     timelineChoiceLocked,
     timelineChoiceVisible,
     visibleOrder,

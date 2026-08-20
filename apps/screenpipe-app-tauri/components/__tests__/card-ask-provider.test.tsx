@@ -171,6 +171,33 @@ describe("CardAskProvider login trigger", () => {
   });
 });
 
+describe("CardAskProvider onboarding trigger", () => {
+  beforeEach(() => {
+    flagVariant = "at_onboarding";
+    localStorageValues.set(CARD_ASK_ARM_STORAGE_KEY, "at_onboarding");
+  });
+
+  it("shows a dismissible Home modal after onboarding", () => {
+    render(<CardAskProvider />);
+    expect(modal()).not.toBeNull();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(CARD_ASK_SHOWN_STORAGE_KEY) ?? "[]",
+      ),
+    ).toEqual(["onboarding"]);
+  });
+
+  it("waits for account hydration before emitting", () => {
+    settingsState = { settings: { user: null }, isSettingsLoaded: false };
+    const { rerender } = render(<CardAskProvider />);
+    expect(modal()).toBeNull();
+
+    settingsState = { settings: { user: cardlessUser }, isSettingsLoaded: true };
+    rerender(<CardAskProvider />);
+    expect(modal()).not.toBeNull();
+  });
+});
+
 /**
  * The expiry ask in a process that outlives the window it is looking for.
  *
@@ -191,9 +218,9 @@ describe("CardAskProvider grant expiry trigger", () => {
   }
 
   beforeEach(() => {
-    flagVariant = "at_onboarding";
+    flagVariant = "control";
     businessTrialReminderEnabled = true;
-    localStorageValues.set(CARD_ASK_ARM_STORAGE_KEY, "at_onboarding");
+    localStorageValues.set(CARD_ASK_ARM_STORAGE_KEY, "control");
   });
 
   afterEach(() => {

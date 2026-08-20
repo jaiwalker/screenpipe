@@ -20,13 +20,13 @@ import type { AppUser } from "@/lib/app-entitlement";
 /**
  * Mounts the card-ask experiment in the Home window.
  *
- * Why the `login` trigger fires here rather than from onboarding: onboarding
+ * Why the entry triggers fire here rather than from onboarding: onboarding
  * runs in its own webview, and webviews do not share a localStorage partition.
  * Emitting `login` there would resolve and persist a *separate* arm, so one
  * user could sit in two arms at once and contaminate both. Home is the single
- * window that owns the experiment, so "login" is defined as the first Home
- * mount for an eligible user who has not been asked yet — which is the same
- * moment from the user's point of view, immediately after getting into the app.
+ * window that owns the experiment. The onboarding placement is therefore the
+ * first Home mount after setup, where the request is dismissible and cannot
+ * block recovery after a reinstall or local-store reset.
  *
  * `first_value` and `limit` arrive on the trigger bus from product code in this
  * same window.
@@ -56,8 +56,9 @@ export function CardAskProvider() {
     });
   }, [loadUser, user?.token]);
 
-  // Fire the login trigger once the arm has resolved *and* the account is
-  // actually known.
+  // Fire the entry trigger once the arm has resolved *and* the account is
+  // actually known. Both placements are owned by Home so they share one sticky
+  // assignment and shown-list; only their analytics trigger differs.
   //
   // The arm comes from a synchronous localStorage read, the user comes from an
   // async store load, so the arm almost always resolves first. Emitting on
@@ -70,9 +71,15 @@ export function CardAskProvider() {
   // mounted. Re-emission is safe: the controller's shown-list keeps it to one
   // ask per install, and an ineligible emission is a dropped no-op.
   useEffect(() => {
-    if (arm !== "at_login") return;
+    const trigger =
+      arm === "at_login"
+        ? "login"
+        : arm === "at_onboarding"
+          ? "onboarding"
+          : null;
+    if (!trigger) return;
     if (!isSettingsLoaded) return;
-    emitCardAskTrigger("login");
+    emitCardAskTrigger(trigger);
   }, [arm, isSettingsLoaded, settings?.user]);
 
   // Re-arm the expiry check while the app keeps running.

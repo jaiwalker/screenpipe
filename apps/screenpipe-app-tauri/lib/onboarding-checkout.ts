@@ -28,23 +28,6 @@ function hasEnterpriseAccount(user: AppUser | null | undefined): boolean {
 }
 
 /**
- * Mandatory checkout is deliberately narrower than the later card-ask
- * experiment. It is only part of first-run setup for a signed-in consumer
- * account whose modern server response authoritatively says both "free" and
- * "no card". Unknown or partially hydrated account data must never open a
- * purchase flow by guesswork.
- */
-export function requiresOnboardingCheckout(
-  user: AppUser | null | undefined,
-): boolean {
-  if (!user?.token || hasEnterpriseAccount(user)) return false;
-  return (
-    user.has_payment_method === false &&
-    normalizedEntitlementSource(user) === "none"
-  );
-}
-
-/**
  * A hosted-checkout return may race with entitlement reconciliation. Existing
  * access is enough to leave onboarding even when a higher manual, lifetime, or
  * Enterprise entitlement intentionally remains authoritative over the new

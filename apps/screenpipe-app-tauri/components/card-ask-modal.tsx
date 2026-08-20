@@ -34,9 +34,9 @@ const COPY: Record<
   CardAskTrigger,
   { title: string; body: string; cta: string }
 > = {
-  // The onboarding placement is rendered by PlanSelectionStep, not this modal.
-  // Copy still lives here so the map stays exhaustive over CardAskTrigger and
-  // a remote payload cannot route `onboarding` to the modal and find nothing.
+  // This appears after setup in Home. Keeping it dismissible is deliberate: a
+  // local-store reset can replay onboarding for an existing account, and card
+  // collection must never turn that recovery path into a lockout.
   onboarding: {
     title: "Start your 7-day Business trial",
     body: "Full access to AI, unlimited pipes, and cloud transcription. Cancel anytime before day 7 and you are not charged.",
