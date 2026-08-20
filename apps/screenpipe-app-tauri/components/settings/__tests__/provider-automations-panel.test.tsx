@@ -57,6 +57,16 @@ beforeAll(() => {
   globalThis.PointerEvent ||= MouseEvent as typeof PointerEvent;
 });
 
+async function openExternalSchedules() {
+  const trigger = screen.getByRole("button", { name: /external schedules/i });
+  if (trigger.getAttribute("aria-expanded") !== "true") {
+    fireEvent.click(trigger);
+  }
+  await waitFor(() =>
+    expect(trigger).toHaveAttribute("aria-expanded", "true"),
+  );
+}
+
 describe("ProviderAutomationsPanel", () => {
   beforeEach(() => {
     vi.mocked(commands.listProviderAutomations).mockResolvedValue({
@@ -65,8 +75,14 @@ describe("ProviderAutomationsPanel", () => {
     });
   });
 
-  it("separates agent-owned schedules into branded provider tabs", async () => {
+  it("keeps agent-owned schedules secondary until the user opens them", async () => {
     render(<ProviderAutomationsPanel />);
+
+    const trigger = screen.getByRole("button", { name: /external schedules/i });
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(trigger).toHaveTextContent("provider-owned");
+
+    await openExternalSchedules();
 
     expect(await screen.findByText("Daily review")).toBeInTheDocument();
     expect(screen.queryByText("agent schedules")).not.toBeInTheDocument();
@@ -94,6 +110,9 @@ describe("ProviderAutomationsPanel", () => {
       <ProviderAutomationsPanel searchQuery="codex" />,
     );
     expect(await screen.findByText("Daily review")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /external schedules/i }),
+    ).toHaveAttribute("aria-expanded", "true");
     expect(screen.queryByText("Say hi")).not.toBeInTheDocument();
 
     rerender(<ProviderAutomationsPanel searchQuery="no match" />);
@@ -106,6 +125,7 @@ describe("ProviderAutomationsPanel", () => {
     const onOpenProvider = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onOpenProvider={onOpenProvider} />);
 
+    await openExternalSchedules();
     expect(await screen.findByText("Daily review")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "open Codex" }));
 
@@ -122,6 +142,7 @@ describe("ProviderAutomationsPanel", () => {
 
     render(<ProviderAutomationsPanel onOpenProvider={onOpenProvider} />);
 
+    await openExternalSchedules();
     expect(await screen.findByText("Daily review")).toBeInTheDocument();
     expect(screen.getByTestId("provider-heading")).toHaveTextContent("Codex1");
     expect(screen.getByText("Claude cloud")).toBeInTheDocument();
@@ -141,6 +162,7 @@ describe("ProviderAutomationsPanel", () => {
 
     render(<ProviderAutomationsPanel />);
 
+    await openExternalSchedules();
     expect(await screen.findByText("Claude cloud")).toBeInTheDocument();
     expect(screen.queryByText("agent schedules")).not.toBeInTheDocument();
   });
@@ -149,6 +171,7 @@ describe("ProviderAutomationsPanel", () => {
     const onManageTask = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onManageTask={onManageTask} />);
 
+    await openExternalSchedules();
     expect(await screen.findByText("Daily review")).toBeInTheDocument();
     const toggle = screen.getByRole("switch", {
       name: "Turn on Daily review",
@@ -167,6 +190,7 @@ describe("ProviderAutomationsPanel", () => {
     const onManageTask = vi.fn().mockResolvedValue(undefined);
     render(<ProviderAutomationsPanel onManageTask={onManageTask} />);
 
+    await openExternalSchedules();
     expect(await screen.findByText("Daily review")).toBeInTheDocument();
     fireEvent.pointerDown(
       screen.getByRole("button", { name: "actions for Daily review" }),
@@ -201,6 +225,7 @@ describe("ProviderAutomationsPanel", () => {
     });
 
     render(<ProviderAutomationsPanel />);
+    await openExternalSchedules();
     expect(await screen.findByTestId("provider-heading")).toHaveTextContent(
       "Codex6",
     );
@@ -235,6 +260,7 @@ describe("ProviderAutomationsPanel", () => {
     const onOpenProvider = vi.fn().mockRejectedValue(new Error("missing"));
     render(<ProviderAutomationsPanel onOpenProvider={onOpenProvider} />);
 
+    await openExternalSchedules();
     expect(await screen.findByText("Daily review")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "open Codex" }));
 

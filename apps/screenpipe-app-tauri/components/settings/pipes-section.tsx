@@ -395,17 +395,17 @@ function buildCreatePipeDisplayLabel(prompt: string): string {
 // Each `prompt` is sent straight into the create flow (autoSend).
 const PIPE_EXAMPLES: { label: string; prompt: string }[] = [
   {
-    label: "📋 daily recap",
+    label: "daily recap",
     prompt:
-      "every day at 6pm, summarize what i worked on today and send me a notification",
+      "summarize my day every day at 5pm and send me a notification",
   },
   {
-    label: "🧠 track people i meet",
+    label: "track people i meet",
     prompt:
       "keep a running note of the people i talk to and what we discussed, updated every hour",
   },
   {
-    label: "⏱ where my time goes",
+    label: "where my time goes",
     prompt:
       "every evening, break down how i spent my time across apps and projects today",
   },
@@ -2631,13 +2631,6 @@ export function PipesSection() {
       )}
 
       {pipeTypeFilter === "local" && !selectMode && (
-        <ProviderAutomationsPanel
-          searchQuery={searchQuery}
-          refreshToken={providerRefreshToken}
-        />
-      )}
-
-      {pipeTypeFilter === "local" && !selectMode && (
         <div className="flex items-baseline gap-2 px-1 pt-1">
           <h3 className="text-sm font-medium">screenpipe tasks</h3>
           <span className="text-xs tabular-nums text-muted-foreground">
@@ -4194,7 +4187,7 @@ export function PipesSection() {
                         <div className="flex items-center gap-2">
                           <Input
                             autoFocus
-                            placeholder="e.g. every morning, list the people i still need to reply to"
+                            placeholder="e.g. summarize my day every day at 5pm"
                             className="font-mono text-sm"
                           />
                           <button
@@ -4240,6 +4233,13 @@ export function PipesSection() {
             );
           })()}
         </div>
+      )}
+
+      {pipeTypeFilter === "local" && !selectMode && (
+        <ProviderAutomationsPanel
+          searchQuery={searchQuery}
+          refreshToken={providerRefreshToken}
+        />
       )}
 
       {connectionModal && (

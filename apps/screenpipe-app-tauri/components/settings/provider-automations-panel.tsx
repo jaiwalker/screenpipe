@@ -7,6 +7,7 @@
 import React from "react";
 import {
   Bot,
+  ChevronDown,
   Clock3,
   ExternalLink,
   MoreHorizontal,
@@ -293,6 +294,7 @@ export function ProviderAutomationsPanel({
   },
 }: ProviderAutomationsPanelProps) {
   const [tasks, setTasks] = React.useState<ProviderAutomation[]>([]);
+  const [isExpanded, setIsExpanded] = React.useState(false);
   const [selectedProvider, setSelectedProvider] = React.useState<string | null>(
     null,
   );
@@ -413,23 +415,64 @@ export function ProviderAutomationsPanel({
     </button>
   );
 
+  const disclosureId = React.useId();
+  const showSchedules = Boolean(query) || isExpanded;
+  const disclosureTrigger = (
+    <section
+      className="overflow-hidden border border-border bg-muted/10"
+      data-testid="provider-automations-panel"
+    >
+      <button
+        type="button"
+        aria-controls={disclosureId}
+        aria-expanded={showSchedules}
+        className="flex min-h-10 w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-background/70"
+        onClick={() => setIsExpanded((expanded) => !expanded)}
+      >
+        <Clock3 className="h-3.5 w-3.5 text-muted-foreground" />
+        <span className="text-xs font-medium">external schedules</span>
+        {tasks.length > 0 && (
+          <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+            {tasks.length}
+          </span>
+        )}
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          provider-owned
+        </span>
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 text-muted-foreground transition-transform",
+            showSchedules && "rotate-180",
+          )}
+        />
+      </button>
+    </section>
+  );
+
   if (visible.length === 0) {
     if (query) return null;
     return (
-      <section
-        className="overflow-hidden border border-border bg-muted/10"
-        data-testid="provider-automations-panel"
-      >
-        {claudeCloudBoundary}
-        {openError && (
-          <p
-            className="border-t border-border px-4 py-2 text-xs text-destructive"
-            role="alert"
-          >
-            {openError}
-          </p>
-        )}
-      </section>
+      <>
+        {disclosureTrigger}
+        <section
+          id={disclosureId}
+          aria-hidden={!showSchedules}
+          className={cn(
+            "overflow-hidden border-x border-b border-border bg-muted/10",
+            !showSchedules && "hidden",
+          )}
+        >
+          {claudeCloudBoundary}
+          {openError && (
+            <p
+              className="border-t border-border px-4 py-2 text-xs text-destructive"
+              role="alert"
+            >
+              {openError}
+            </p>
+          )}
+        </section>
+      </>
     );
   }
 
@@ -443,10 +486,16 @@ export function ProviderAutomationsPanel({
   const hasMultipleProviders = providers.length > 1;
 
   return (
-    <section
-      className="overflow-hidden border border-border bg-muted/10"
-      data-testid="provider-automations-panel"
-    >
+    <>
+      {disclosureTrigger}
+      <section
+        id={disclosureId}
+        aria-hidden={!showSchedules}
+        className={cn(
+          "overflow-hidden border-x border-b border-border bg-muted/10",
+          !showSchedules && "hidden",
+        )}
+      >
       <div className="flex min-h-10 items-stretch border-b border-border">
         {hasMultipleProviders ? (
           <div
@@ -687,6 +736,7 @@ export function ProviderAutomationsPanel({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </section>
+      </section>
+    </>
   );
 }
