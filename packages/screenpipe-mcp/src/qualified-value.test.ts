@@ -24,6 +24,18 @@ describe("createMcpQualifiedValueReporter", () => {
     });
   });
 
+  it("attributes a successful memory recall without sending memory content", () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const reporter = createMcpQualifiedValueReporter(send, "screenpipe");
+
+    reporter.memoryResult();
+
+    expect(send).toHaveBeenCalledWith({
+      outcome: "memory_result",
+      client: "screenpipe",
+    });
+  });
+
   it("does not surface transport failures", async () => {
     const reporter = createMcpQualifiedValueReporter(() =>
       Promise.reject(new Error("old engine")),
@@ -35,6 +47,8 @@ describe("createMcpQualifiedValueReporter", () => {
 
   it("forces arbitrary client values into the unknown bucket", () => {
     expect(safeMcpClient("codex")).toBe("codex");
+    expect(safeMcpClient("gemini")).toBe("gemini");
+    expect(safeMcpClient("runner")).toBe("runner");
     expect(safeMcpClient("private-customer-project")).toBe("unknown");
     expect(safeMcpClient(undefined)).toBe("unknown");
   });

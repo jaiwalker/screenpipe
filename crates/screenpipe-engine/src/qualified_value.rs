@@ -13,6 +13,9 @@ pub(crate) enum McpClient {
     Cursor,
     Openclaw,
     Hermes,
+    Gemini,
+    Runner,
+    Screenpipe,
     Windsurf,
     Grok,
     #[default]
@@ -27,6 +30,9 @@ impl McpClient {
             Self::Cursor => "cursor",
             Self::Openclaw => "openclaw",
             Self::Hermes => "hermes",
+            Self::Gemini => "gemini",
+            Self::Runner => "runner",
+            Self::Screenpipe => "screenpipe",
             Self::Windsurf => "windsurf",
             Self::Grok => "grok",
             Self::Unknown => "unknown",
@@ -38,6 +44,7 @@ impl McpClient {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum McpOutcomeKind {
     SearchResult,
+    MemoryResult,
     MeetingResult,
     ArtifactResult,
     ArtifactCreated,
@@ -55,6 +62,7 @@ impl McpOutcome {
     pub(crate) fn into_properties(self) -> Value {
         let (action, strength) = match self.outcome {
             McpOutcomeKind::SearchResult => ("search", "retrieved"),
+            McpOutcomeKind::MemoryResult => ("memory", "retrieved"),
             McpOutcomeKind::MeetingResult => ("meeting", "retrieved"),
             McpOutcomeKind::ArtifactResult => ("artifact", "retrieved"),
             McpOutcomeKind::ArtifactCreated => ("artifact", "completed"),
@@ -121,6 +129,20 @@ mod tests {
                 "result_non_empty": true,
             })
         );
+    }
+
+    #[test]
+    fn memory_recall_has_a_dedicated_content_free_action() {
+        let properties = McpOutcome {
+            outcome: McpOutcomeKind::MemoryResult,
+            client: McpClient::Screenpipe,
+        }
+        .into_properties();
+
+        assert_eq!(properties["surface"], "mcp");
+        assert_eq!(properties["agent_client"], "screenpipe");
+        assert_eq!(properties["action"], "memory");
+        assert_eq!(properties["result_non_empty"], true);
     }
 
     #[test]

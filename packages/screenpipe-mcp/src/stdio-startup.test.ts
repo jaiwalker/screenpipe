@@ -242,6 +242,16 @@ describe("stdio startup handshake", () => {
     expect(tools.some((tool) => tool.name === "semantic-context")).toBe(false);
   });
 
+  it("exposes dedicated low-cost memory recall", async () => {
+    const tools = await listToolsHandshake();
+    const recall = tools.find((tool) => tool.name === "recall-memories");
+    expect(recall).toBeDefined();
+    expect(recall?.description).toContain("USE BEFORE nontrivial personalized work");
+    expect(recall?.inputSchema?.properties?.limit?.default).toBe(5);
+    expect(recall?.inputSchema?.properties?.min_importance?.minimum).toBe(0);
+    expect(recall?.inputSchema?.properties?.min_importance?.maximum).toBe(1);
+  });
+
   it("exposes bounded parsed task context on activity-summary", async () => {
     const tools = await listToolsHandshake();
     const activity = tools.find((tool) => tool.name === "activity-summary");

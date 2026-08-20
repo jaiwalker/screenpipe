@@ -9,6 +9,7 @@ import {
   AgentCardProps,
   SCREENPIPE_API_SKILL_MD,
   SCREENPIPE_CLI_SKILL_MD,
+  SCREENPIPE_RECALL_SKILL_MD,
 } from "./agent-card";
 import { Button } from "@/components/ui/button";
 import { commands } from "@/lib/utils/tauri";
@@ -45,6 +46,15 @@ args = ["-y", "screenpipe-mcp@latest"]
 
 function skillVariants(skillsDir: string): AgentCardProps["skills"] {
   return [
+    {
+      id: "recall",
+      label: "Recall",
+      blurb:
+        "Recall relevant preferences and decisions before personalized work, then save stable facts.",
+      md: SCREENPIPE_RECALL_SKILL_MD,
+      downloadName: "screenpipe-recall-SKILL.md",
+      localPath: `${skillsDir}/screenpipe-recall/SKILL.md`,
+    },
     {
       id: "api",
       label: "API",

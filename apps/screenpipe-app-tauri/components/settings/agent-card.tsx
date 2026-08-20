@@ -37,7 +37,7 @@ import { connectionResponseState } from "@/lib/utils/connection-credentials";
 // ---------------------------------------------------------------------------
 // Canonical screenpipe SKILL.md content. Re-exported from a generated module so
 // the "copy / save SKILL.md" text the cards serve is always the source of truth
-// from the repo: .claude/skills/{screenpipe-api,screenpipe-cli}/SKILL.md
+// from the repo: .claude/skills/{screenpipe-api,screenpipe-cli,screenpipe-recall}/SKILL.md
 // (the same folders the `... skills install github:...` one-liners install from).
 // Regenerated on prebuild by scripts/gen-skill-content.js. Do not hand-edit copies.
 // ---------------------------------------------------------------------------
@@ -45,6 +45,7 @@ import { connectionResponseState } from "@/lib/utils/connection-credentials";
 export {
   SCREENPIPE_API_SKILL_MD,
   SCREENPIPE_CLI_SKILL_MD,
+  SCREENPIPE_RECALL_SKILL_MD,
 } from "@/lib/generated/screenpipe-skills";
 
 // ---------------------------------------------------------------------------

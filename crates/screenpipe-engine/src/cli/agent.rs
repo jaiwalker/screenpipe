@@ -26,6 +26,8 @@ const API_SKILL_MD: &str =
     include_str!("../../../screenpipe-core/assets/skills/screenpipe-api/SKILL.md");
 const CLI_SKILL_MD: &str =
     include_str!("../../../screenpipe-core/assets/skills/screenpipe-cli/SKILL.md");
+const RECALL_SKILL_MD: &str =
+    include_str!("../../../screenpipe-core/assets/skills/screenpipe-recall/SKILL.md");
 
 #[derive(clap::Subcommand, Debug)]
 pub enum AgentCommand {
@@ -403,7 +405,7 @@ fn detected_desktop_agents_in(home: &Path) -> Vec<DesktopDetectedAgent> {
 
 fn skills_ready(layout: &AgentLayout) -> bool {
     layout.skills_dir.as_ref().is_none_or(|skills_dir| {
-        ["screenpipe-api", "screenpipe-cli"]
+        ["screenpipe-api", "screenpipe-cli", "screenpipe-recall"]
             .iter()
             .all(|name| skills_dir.join(name).join("SKILL.md").is_file())
     })
@@ -492,6 +494,7 @@ fn install_missing_desktop_skills(layout: &AgentLayout) -> Result<Vec<DesktopSki
     for (name, markdown) in [
         ("screenpipe-api", API_SKILL_MD),
         ("screenpipe-cli", CLI_SKILL_MD),
+        ("screenpipe-recall", RECALL_SKILL_MD),
     ] {
         let dir = skills_dir.join(name);
         if dir.join("SKILL.md").is_file() {
@@ -807,16 +810,8 @@ fn setup(target: &str, api_url: &str) -> Result<()> {
         }
     }
 
-    match l.mcp_format {
-        McpFormat::Json if target == "runner" => {
-            let mut launch = cli_launch_config(remote, api_url);
-            launch.server_type = Some("stdio".to_string());
-            merge_mcp_json_launch(&l.mcp_path, &launch)?;
-        }
-        McpFormat::Json => merge_mcp_json(&l.mcp_path, remote, api_url)?,
-        McpFormat::Yaml => merge_mcp_yaml(&l.mcp_path, remote, api_url)?,
-        McpFormat::Toml => merge_mcp_toml(&l.mcp_path, remote, api_url)?,
-    }
+    let launch = cli_agent_launch_config(target, remote, api_url);
+    merge_mcp_launch(&l, &launch)?;
 
     println!(
         "\ndone — restart {} so it loads the screenpipe {}, then ask it:\n  \"what was i doing yesterday afternoon?\"",
@@ -850,10 +845,11 @@ fn install_skills_in(target: &str, api_url: &str, home: &Path) -> Result<Vec<Pat
     Ok(vec![
         write_skill(skills_dir, "screenpipe-api", API_SKILL_MD, api_url)?,
         write_skill(skills_dir, "screenpipe-cli", CLI_SKILL_MD, api_url)?,
+        write_skill(skills_dir, "screenpipe-recall", RECALL_SKILL_MD, api_url)?,
     ])
 }
 
-/// Remove the two built-in screenpipe skills from an external agent.
+/// Remove the built-in screenpipe skills from an external agent.
 ///
 /// Mirror of [`install_skills`]: deletes only `<skills_dir>/screenpipe-api`
 /// and `<skills_dir>/screenpipe-cli`, never the parent skills directory or any
@@ -870,7 +866,7 @@ pub fn remove_skills(target: &str) -> Result<Vec<PathBuf>> {
 
 fn remove_skills_from(skills_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
-    for name in ["screenpipe-api", "screenpipe-cli"] {
+    for name in ["screenpipe-api", "screenpipe-cli", "screenpipe-recall"] {
         let dir = skills_dir.join(name);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
@@ -1096,6 +1092,24 @@ fn cli_launch_config(remote: bool, api_url: &str) -> McpLaunchConfig {
     }
 }
 
+fn cli_agent_launch_config(target: &str, remote: bool, api_url: &str) -> McpLaunchConfig {
+    let mut launch = cli_launch_config(remote, api_url);
+    let client = match target {
+        "claude-code" | "claude-desktop" => "claude",
+        other => other,
+    };
+    launch
+        .env
+        .insert("SCREENPIPE_MCP_CLIENT".to_string(), client.to_string());
+    if target == "openclaw" {
+        launch.transport = Some("stdio".to_string());
+    }
+    if target == "runner" {
+        launch.server_type = Some("stdio".to_string());
+    }
+    launch
+}
+
 fn merge_mcp_launch(layout: &AgentLayout, launch: &McpLaunchConfig) -> Result<()> {
     match layout.mcp_format {
         McpFormat::Json => merge_mcp_json_launch(&layout.mcp_path, launch),
@@ -1106,6 +1120,7 @@ fn merge_mcp_launch(layout: &AgentLayout, launch: &McpLaunchConfig) -> Result<()
 
 /// Idempotently add the `screenpipe` server to a JSON MCP config (OpenClaw,
 /// Claude), preserving any existing servers/keys.
+#[cfg(test)]
 fn merge_mcp_json(path: &Path, remote: bool, api_url: &str) -> Result<()> {
     merge_mcp_json_launch(path, &cli_launch_config(remote, api_url))
 }
@@ -1157,6 +1172,7 @@ fn merge_mcp_json_launch(path: &Path, launch: &McpLaunchConfig) -> Result<()> {
 /// YAML parser because rewriting the document would discard comments. Instead,
 /// merge only into an ordinary top-level `mcp_servers:` mapping and preserve
 /// every existing line. Inline or otherwise unusual mappings stay manual.
+#[cfg(test)]
 fn merge_mcp_yaml(path: &Path, remote: bool, api_url: &str) -> Result<()> {
     merge_mcp_yaml_launch(path, &cli_launch_config(remote, api_url))
 }
@@ -1269,6 +1285,7 @@ fn merge_mcp_yaml_launch(path: &Path, launch: &McpLaunchConfig) -> Result<()> {
 
 /// Add or repair the `screenpipe` server in a TOML MCP config (Codex),
 /// preserving every unrelated table and top-level key.
+#[cfg(test)]
 fn merge_mcp_toml(path: &Path, remote: bool, api_url: &str) -> Result<()> {
     merge_mcp_toml_launch(path, &cli_launch_config(remote, api_url))
 }
@@ -1404,18 +1421,24 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sp-agent-remove-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
-        // Two screenpipe skills plus a user skill that must survive.
+        // Bundled screenpipe skills plus a user skill that must survive.
         write_skill(&dir, "screenpipe-api", "api", "http://localhost:3030").unwrap();
         write_skill(&dir, "screenpipe-cli", "cli", "http://localhost:3030").unwrap();
+        write_skill(&dir, "screenpipe-recall", "recall", "http://localhost:3030").unwrap();
         write_skill(&dir, "my-own-skill", "mine", "http://localhost:3030").unwrap();
 
         let removed = remove_skills_from(&dir).unwrap();
         assert_eq!(
             removed,
-            vec![dir.join("screenpipe-api"), dir.join("screenpipe-cli")]
+            vec![
+                dir.join("screenpipe-api"),
+                dir.join("screenpipe-cli"),
+                dir.join("screenpipe-recall"),
+            ]
         );
         assert!(!dir.join("screenpipe-api").exists());
         assert!(!dir.join("screenpipe-cli").exists());
+        assert!(!dir.join("screenpipe-recall").exists());
         assert!(dir.join("my-own-skill/SKILL.md").exists());
 
         // Idempotent: nothing left to remove, still Ok.
@@ -1839,6 +1862,14 @@ mod tests {
             "http://localhost:3030",
         )
         .unwrap();
+        assert!(!is_agent_setup_in("codex", home));
+        write_skill(
+            &home.join(".codex/skills"),
+            "screenpipe-recall",
+            "memory",
+            "http://localhost:3030",
+        )
+        .unwrap();
         assert!(is_agent_setup_in("codex", home));
     }
 
@@ -1864,6 +1895,28 @@ mod tests {
         )
         .unwrap();
         assert!(is_agent_setup_in("runner", home));
+    }
+
+    #[test]
+    fn test_cli_launch_attributes_memory_usage_to_the_agent() {
+        let claude = cli_agent_launch_config("claude-code", false, "http://localhost:3030");
+        assert_eq!(
+            claude.env.get("SCREENPIPE_MCP_CLIENT").map(String::as_str),
+            Some("claude")
+        );
+
+        let openclaw = cli_agent_launch_config("openclaw", false, "http://localhost:3030");
+        assert_eq!(
+            openclaw
+                .env
+                .get("SCREENPIPE_MCP_CLIENT")
+                .map(String::as_str),
+            Some("openclaw")
+        );
+        assert_eq!(openclaw.transport.as_deref(), Some("stdio"));
+
+        let runner = cli_agent_launch_config("runner", false, "http://localhost:3030");
+        assert_eq!(runner.server_type.as_deref(), Some("stdio"));
     }
 
     #[test]
@@ -1947,6 +2000,9 @@ mod tests {
         assert!(codex.contains("SCREENPIPE_API_URL = \"http://localhost:31337\""));
         assert!(home.join(".codex/skills/screenpipe-api/SKILL.md").is_file());
         assert!(home.join(".codex/skills/screenpipe-cli/SKILL.md").is_file());
+        assert!(home
+            .join(".codex/skills/screenpipe-recall/SKILL.md")
+            .is_file());
 
         let cursor: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(home.join(".cursor/mcp.json")).unwrap())
@@ -1983,6 +2039,9 @@ mod tests {
             .is_file());
         assert!(home
             .join(".gemini/skills/screenpipe-cli/SKILL.md")
+            .is_file());
+        assert!(home
+            .join(".gemini/skills/screenpipe-recall/SKILL.md")
             .is_file());
 
         let openclaw: serde_json::Value = serde_json::from_str(

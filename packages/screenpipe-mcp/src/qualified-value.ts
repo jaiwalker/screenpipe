@@ -8,6 +8,9 @@ export type McpClient =
   | "cursor"
   | "openclaw"
   | "hermes"
+  | "gemini"
+  | "runner"
+  | "screenpipe"
   | "windsurf"
   | "grok"
   | "unknown";
@@ -15,6 +18,7 @@ export type McpClient =
 type Payload = {
   outcome:
     | "search_result"
+    | "memory_result"
     | "meeting_result"
     | "artifact_result"
     | "artifact_created";
@@ -27,6 +31,9 @@ const SAFE_CLIENTS = new Set<McpClient>([
   "cursor",
   "openclaw",
   "hermes",
+  "gemini",
+  "runner",
+  "screenpipe",
   "windsurf",
   "grok",
 ]);
@@ -73,6 +80,7 @@ export function createMcpQualifiedValueReporter(
 
   return {
     searchResult: () => report("search_result"),
+    memoryResult: () => report("memory_result"),
     meetingResult: () => report("meeting_result"),
     artifactResult: () => report("artifact_result"),
     artifactCreated: () => report("artifact_created"),

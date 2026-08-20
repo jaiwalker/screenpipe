@@ -27,6 +27,10 @@
   },
   "tools": [
     {
+      "name": "recall-memories",
+      "description": "Recall bounded, importance-ranked user preferences, decisions, corrections, people, projects, and workflow facts"
+    },
+    {
       "name": "search-content",
       "description": "Search recorded screen content, audio, memories, and parsed app data through one filtering surface"
     },

@@ -53,6 +53,7 @@ const REQUIRED_PATHS = [
   "dist/index.js", // main — the stdio server
   "dist/activity-summary-tool.js", // bounded activity orchestration imported by dist/index.js
   "dist/activity-summary-format.js", // authoritative time + bounded context formatter imported by dist/index.js
+  "dist/memory-recall.js", // bounded, injection-aware memory preflight imported by dist/index.js
   "dist/time-normalization.js", // local-calendar literals imported by dist/index.js
   "dist/team-config.js", // the whole point of 0.19.0
   "dist/version.js", // single source of truth for the reported version
@@ -87,6 +88,11 @@ const REQUIRED_MARKERS = [
     file: "dist/time-normalization.js",
     marker: "getFullYear",
     why: "calendar literals must resolve from the runtime local date, not the UTC date",
+  },
+  {
+    file: "dist/memory-recall.js",
+    marker: "untrusted background evidence",
+    why: "recalled memory text must remain bounded background, never executable instructions",
   },
 ];
 

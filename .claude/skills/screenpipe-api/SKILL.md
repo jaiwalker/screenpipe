@@ -501,6 +501,11 @@ alone; the parser label is observed evidence, while the actor record is mutable.
 
 **Memories are the highest-signal data source in screenpipe.** They contain curated facts, user preferences, decisions, and project context — distilled from hours of screen/audio data. Always check memories when answering questions or building context.
 
+When MCP tools are available, prefer `recall-memories` for the preflight. It
+uses bounded importance-ranked results and privacy-safe per-agent usage
+measurement. If the installed MCP does not expose it yet, use `GET /memories`
+or `search-content` with `content_type: "memory"`.
+
 ### When to Query Memories
 
 **Query memories FIRST (before or alongside `/search`)** when:
