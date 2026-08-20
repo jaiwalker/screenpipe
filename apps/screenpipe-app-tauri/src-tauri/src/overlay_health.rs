@@ -43,6 +43,25 @@ const USER_RESTART_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL: &str =
     "quit and reopen screenpipe to restore screen capture";
 const MANUAL_RECORDING_RECOVERY_DETAIL: &str = "quit and reopen screenpipe to recover recording";
+pub(crate) const MANUAL_PERMISSION_RECOVERY_DETAIL: &str =
+    "quit and reopen screenpipe to finish screen recording access";
+const MANUAL_RECOVERY_ACTION: &str = "manual-reopen";
+
+fn manual_recovery_detail(detail: &str) -> Option<&'static str> {
+    match detail {
+        MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL => Some(MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL),
+        MANUAL_RECORDING_RECOVERY_DETAIL => Some(MANUAL_RECORDING_RECOVERY_DETAIL),
+        MANUAL_PERMISSION_RECOVERY_DETAIL => Some(MANUAL_PERMISSION_RECOVERY_DETAIL),
+        _ => None,
+    }
+}
+
+fn pending_manual_recovery_detail() -> Option<&'static str> {
+    let inner = INNER.lock().ok()?;
+    (inner.state == OverlayHealthState::Failure)
+        .then(|| manual_recovery_detail(&inner.last_detail))
+        .flatten()
+}
 
 fn passive_recovery_confirm_ticks() -> u32 {
     if crate::stale_tier::capture_loop_silent_e2e_started() {
@@ -492,20 +511,33 @@ fn mark_capture_recovery_e2e() {
 #[cfg(not(all(debug_assertions, feature = "e2e")))]
 fn mark_capture_recovery_e2e() {}
 
-/// Wire format for both overlay surfaces: `state`, `state|detail`, or
-/// `state|detail|subsystem`.
+/// Wire format for both overlay surfaces: `state`, `state|detail`,
+/// `state|detail|subsystem`, or `state|detail|subsystem|action`.
 ///
 /// The subsystem is appended rather than inlined so the pill can name what
 /// actually failed (#6126) while `detail` keeps its existing meaning and
 /// position. It is only present for a failure the engine could attribute to a
 /// single subsystem; both renderers fall back to the generic wording without
-/// it. Neither field ever contains a `|`, so a fixed 3-way split is exact.
+/// it. Manual recovery adds an explicit action field so neither renderer
+/// infers behavior from user-facing English. No field contains a `|`.
 pub(crate) fn build_health_payload(state: OverlayHealthState, detail: Option<&str>) -> String {
     let detail = detail.unwrap_or("");
     if detail.is_empty() {
         return state.as_str().to_string();
     }
-    match crate::health::overlay_failure_subsystem(detail) {
+    let subsystem = crate::health::overlay_failure_subsystem(detail);
+    let manual_recovery =
+        state == OverlayHealthState::Failure && manual_recovery_detail(detail).is_some();
+    if manual_recovery {
+        return format!(
+            "{}|{}|{}|{}",
+            state.as_str(),
+            detail,
+            subsystem,
+            MANUAL_RECOVERY_ACTION
+        );
+    }
+    match subsystem {
         "" => format!("{}|{}", state.as_str(), detail),
         subsystem => format!("{}|{}|{}", state.as_str(), detail, subsystem),
     }
@@ -687,13 +719,20 @@ pub async fn restart_recording(app: tauri::AppHandle) {
     // it may interrupt unrelated user work and its terminal classification is
     // deliberately conservative. Keep the current process alive and leave the
     // final quit/reopen decision to the user.
-    if restart_preflight_action(screenpipe_screen::screencapturekit_process_restart_required())
+    let process_exhausted = screenpipe_screen::screencapturekit_process_exhausted();
+    let pending_manual_detail = pending_manual_recovery_detail();
+    if restart_preflight_action(process_exhausted, pending_manual_detail.is_some())
         == RestartPreflightAction::ShowManualRecovery
     {
+        let detail = if process_exhausted {
+            MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL
+        } else {
+            pending_manual_detail.unwrap_or(MANUAL_RECORDING_RECOVERY_DETAIL)
+        };
         warn!(
-            "overlay health: ScreenCaptureKit process worker ceiling reached; keeping app running for manual recovery"
+            "overlay health: manual-only recovery is still active; refusing recorder restart and keeping app running"
         );
-        show_manual_recovery_failure(&app, MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL);
+        show_manual_recovery_failure(&app, detail);
         return;
     }
 
@@ -732,11 +771,11 @@ pub async fn restart_recording(app: tauri::AppHandle) {
         return;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
-    // A bounded native call can finish after recorder teardown and set the
-    // process-wide latch while we wait for macOS resources to settle. Re-check
+    // A bounded native call can finish after recorder teardown and change the
+    // process-wide status while we wait for macOS resources to settle. Re-check
     // immediately before spawning so that late terminal evidence cannot race
     // us into an in-process restart that ScreenCaptureKit cannot recover from.
-    if screenpipe_screen::screencapturekit_process_restart_required() {
+    if screenpipe_screen::screencapturekit_process_exhausted() {
         warn!(
             "overlay health: ScreenCaptureKit process worker ceiling reached during recorder restart; keeping app running for manual recovery"
         );
@@ -765,7 +804,7 @@ fn show_manual_recovery_failure(app: &tauri::AppHandle, detail: &'static str) {
 fn restart_failure_detail(error: &str) -> &'static str {
     let error = error.to_ascii_lowercase();
     if error.contains("screen recording permission was granted") {
-        "restart screenpipe to finish screen recording access"
+        MANUAL_PERMISSION_RECOVERY_DETAIL
     } else if error.contains("screen recording permission") {
         "screen recording permission is required"
     } else if error.contains("server not") {
@@ -779,7 +818,7 @@ fn is_specific_permission_restart_detail(detail: &str) -> bool {
     matches!(
         detail,
         "screen recording permission is required"
-            | "restart screenpipe to finish screen recording access"
+            | MANUAL_PERMISSION_RECOVERY_DETAIL
     )
 }
 
@@ -789,8 +828,11 @@ enum RestartPreflightAction {
     ShowManualRecovery,
 }
 
-fn restart_preflight_action(process_restart_required: bool) -> RestartPreflightAction {
-    if process_restart_required {
+fn restart_preflight_action(
+    process_exhausted: bool,
+    manual_recovery_pending: bool,
+) -> RestartPreflightAction {
+    if process_exhausted || manual_recovery_pending {
         RestartPreflightAction::ShowManualRecovery
     } else {
         RestartPreflightAction::RestartRecorder
@@ -882,6 +924,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn manual_recovery_is_an_explicit_wire_action() {
+        assert_eq!(
+            build_health_payload(
+                OverlayHealthState::Failure,
+                Some(MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL),
+            ),
+            "failure|quit and reopen screenpipe to restore screen capture|screen|manual-reopen",
+        );
+        assert_eq!(
+            build_health_payload(
+                OverlayHealthState::Failure,
+                Some(MANUAL_RECORDING_RECOVERY_DETAIL),
+            ),
+            "failure|quit and reopen screenpipe to recover recording||manual-reopen",
+        );
+        assert_eq!(
+            build_health_payload(
+                OverlayHealthState::Failure,
+                Some(MANUAL_PERMISSION_RECOVERY_DETAIL),
+            ),
+            "failure|quit and reopen screenpipe to finish screen recording access|screen|manual-reopen",
+        );
+    }
+
     /// An unattributable failure keeps the two-field shape, so the renderers
     /// fall back to the generic wording rather than inventing a subsystem.
     #[test]
@@ -915,8 +982,8 @@ mod tests {
         }
     }
 
-    /// The renderers split on `|` into at most three parts, so no field may
-    /// contain one — otherwise the subsystem would absorb part of the reason.
+    /// The renderers split on `|` into at most four parts, so no field may
+    /// contain one — otherwise a later field would absorb part of the reason.
     #[test]
     fn no_payload_field_contains_the_separator() {
         for detail in [
@@ -924,6 +991,7 @@ mod tests {
             "screen capture is not updating",
             MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL,
             MANUAL_RECORDING_RECOVERY_DETAIL,
+            MANUAL_PERMISSION_RECOVERY_DETAIL,
             "audio and screen capture are not updating",
             "multiple recording errors detected",
             "recording data cannot be saved",
@@ -932,17 +1000,16 @@ mod tests {
             "recording engine stopped",
             "recording stopped unexpectedly",
             "recording did not restart",
-            "restart screenpipe to finish screen recording access",
             "screen recording permission is required",
             "simulated recording failure",
             "updating database",
         ] {
             let payload = build_health_payload(OverlayHealthState::Failure, Some(detail));
             assert!(
-                payload.matches('|').count() <= 2,
-                "{payload:?} would not parse into state/detail/subsystem",
+                payload.matches('|').count() <= 3,
+                "{payload:?} would not parse into state/detail/subsystem/action",
             );
-            let parts: Vec<&str> = payload.splitn(3, '|').collect();
+            let parts: Vec<&str> = payload.splitn(4, '|').collect();
             assert_eq!(parts[1], detail, "detail must survive the round trip");
         }
     }
@@ -964,13 +1031,18 @@ mod tests {
     #[test]
     fn user_restart_never_relaunches_the_app() {
         assert_eq!(
-            restart_preflight_action(false),
+            restart_preflight_action(false, false),
             RestartPreflightAction::RestartRecorder
         );
         assert_eq!(
-            restart_preflight_action(true),
+            restart_preflight_action(true, false),
             RestartPreflightAction::ShowManualRecovery,
             "terminal native evidence must remain advisory"
+        );
+        assert_eq!(
+            restart_preflight_action(false, true),
+            RestartPreflightAction::ShowManualRecovery,
+            "a stale or malformed UI must not bypass a manual-only incident"
         );
         assert_eq!(
             recording_restart_action(&TeardownOutcome::Completed),
@@ -993,7 +1065,7 @@ mod tests {
             restart_failure_detail(
                 "Screen recording permission was granted, but Screenpipe must restart before it can be used."
             ),
-            "restart screenpipe to finish screen recording access"
+            MANUAL_PERMISSION_RECOVERY_DETAIL
         );
         assert_eq!(
             restart_failure_detail("Screen recording permission required"),

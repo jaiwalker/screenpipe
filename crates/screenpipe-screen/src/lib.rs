@@ -58,47 +58,23 @@ pub use tesseract::{perform_ocr_tesseract, tesseract_available};
 pub mod browser_utils;
 pub mod snapshot_writer;
 
-/// Process-wide ScreenCaptureKit state that only a full app relaunch can clear.
+/// True when the native ScreenCaptureKit sync-worker containment layer has
+/// reached its hard parked-worker ceiling.
 ///
-/// `sck-rs` deliberately stops admitting calls after 32 Apple callbacks have
-/// leaked worker threads. CoreGraphics can still return fallback frames after
-/// that terminal error, so ordinary frame freshness is not enough to describe
-/// whether the primary capture process can recover.
-mod screencapturekit_process_state {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    static RESTART_REQUIRED: AtomicBool = AtomicBool::new(false);
-
-    pub(super) fn is_terminal_error(error: &str) -> bool {
-        error.contains("ScreenCaptureKit worker threads leaked")
-            && error.contains("process must be restarted")
-    }
-
-    pub(super) fn note_error(error: &str) {
-        if is_terminal_error(error) && !RESTART_REQUIRED.swap(true, Ordering::AcqRel) {
-            tracing::error!(
-                "ScreenCaptureKit reached its process-wide worker ceiling; full app relaunch required"
-            );
-        }
-    }
-
-    pub(super) fn restart_required() -> bool {
-        RESTART_REQUIRED.load(Ordering::Acquire)
-    }
-}
-
-/// True after ScreenCaptureKit reports a terminal process-wide worker leak.
-///
-/// This latch intentionally never resets in-process: the leaked native worker
-/// threads still exist even if a fallback frame arrives or the recorder task
-/// is restarted.
-pub fn screencapturekit_process_restart_required() -> bool {
-    screencapturekit_process_state::restart_required()
-}
-
+/// Read the typed state directly from `sck-rs`: error wording can change and a
+/// CoreGraphics fallback frame can still look fresh while primary capture is
+/// refusing new work. The app treats this as advisory and never exits itself.
 #[cfg(target_os = "macos")]
-pub(crate) fn note_screencapturekit_error(error: &str) {
-    screencapturekit_process_state::note_error(error);
+pub fn screencapturekit_process_exhausted() -> bool {
+    matches!(
+        sck_rs::process_status(),
+        sck_rs::ProcessStatus::Exhausted { .. }
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn screencapturekit_process_exhausted() -> bool {
+    false
 }
 
 /// Flag to request invalidation of persistent SCStream handles after screen
@@ -160,46 +136,8 @@ pub mod stream_invalidation {
         if peek_monitor_frame(monitor_id).is_some() {
             return true;
         }
-        match sck_rs::capture_monitor_persistent(monitor_id, width, height, excluded_window_ids)
+        sck_rs::capture_monitor_persistent(monitor_id, width, height, excluded_window_ids)
             .await
-        {
-            Ok(_) => true,
-            Err(error) => {
-                crate::note_screencapturekit_error(&error.to_string());
-                false
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod screencapturekit_process_state_tests {
-    use super::screencapturekit_process_state::{is_terminal_error, note_error, restart_required};
-
-    #[test]
-    fn only_the_permanent_worker_ceiling_requires_a_process_restart() {
-        assert!(!is_terminal_error(
-            "6 ScreenCaptureKit calls already wedged; daemon unresponsive, retrying in up to 60s"
-        ));
-        assert!(!is_terminal_error(
-            "ScreenCaptureKit monitor enumeration retry budget exhausted; restart screenpipe to recover"
-        ));
-        assert!(is_terminal_error(
-            "capture_monitor: skipped — 32 ScreenCaptureKit worker threads leaked; the process must be restarted"
-        ));
-    }
-
-    #[test]
-    fn terminal_worker_ceiling_latches_for_the_process_lifetime() {
-        note_error(
-            "capture_monitor: skipped — 32 ScreenCaptureKit worker threads leaked; the process must be restarted",
-        );
-        assert!(restart_required());
-
-        note_error("a later transient ScreenCaptureKit error");
-        assert!(
-            restart_required(),
-            "a later non-terminal result cannot revive leaked native workers"
-        );
+            .is_ok()
     }
 }

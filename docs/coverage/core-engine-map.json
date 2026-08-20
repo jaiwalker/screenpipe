@@ -1109,7 +1109,6 @@
       "label": "Platform monitor enumeration and capture backends",
       "crate": "screenpipe-screen",
       "files": [
-        "src/lib.rs",
         "src/monitor/linux_portal.rs",
         "src/monitor/linux_wayland.rs",
         "src/monitor/macos.rs",
@@ -1130,7 +1129,7 @@
       "criticality": "medium",
       "confidence": "partial",
       "kind": "unit",
-      "notes": "Per-OS monitor enumeration (Windows, macOS, Wayland/portal on Linux), process-wide ScreenCaptureKit terminal-state classification, and the persistent Windows.Graphics.Capture session. Backend files are cfg-gated and only execute on their target OS."
+      "notes": "Per-OS monitor enumeration (Windows, macOS, Wayland/portal on Linux) and the persistent Windows.Graphics.Capture session. Each file is cfg-gated and only executes on its target OS."
     },
     {
       "id": "screen-macos-ocr",

@@ -185,7 +185,7 @@ describe("recording health hover detail", () => {
 
   it("keeps terminal native recovery advisory and never invokes a restart action", async () => {
     mocks.getRecordingHealthState.mockResolvedValue(
-      "failure|quit and reopen screenpipe to restore screen capture|screen",
+      "failure|quit and reopen screenpipe to restore screen capture|screen|manual-reopen",
     );
 
     render(<ShortcutReminderPage />);
@@ -199,6 +199,21 @@ describe("recording health hover detail", () => {
     fireEvent.click(failureButton);
     expect(mocks.overlayRestartRecording).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /restart recording/i })).toBeNull();
+  });
+
+  it("does not infer recovery behavior from user-facing wording", async () => {
+    mocks.getRecordingHealthState.mockResolvedValue(
+      "failure|quit and reopen screenpipe wording without an action|screen",
+    );
+
+    render(<ShortcutReminderPage />);
+
+    const failureButton = await screen.findByRole("button", {
+      name: /restart recording/i,
+    });
+    expect(failureButton).toBeEnabled();
+    fireEvent.click(failureButton);
+    await waitFor(() => expect(mocks.overlayRestartRecording).toHaveBeenCalledTimes(1));
   });
 
   it("shows recovery confirmation instead of a broken or restart state", async () => {

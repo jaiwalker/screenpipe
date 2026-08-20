@@ -71,7 +71,6 @@ const EXPANDED_SIZE = { width: 160, height: 62 };
 const SETTINGS_MENU_SIZE = { width: 164, height: 96 };
 const INCIDENT_SIZE = { width: 160, height: 40 };
 const MEETING_SIZE = { width: 280, height: 80 };
-const MANUAL_RECOVERY_PREFIX = "quit and reopen screenpipe";
 
 export default function ShortcutReminderPage() {
   const { isMac, isLoading } = usePlatform();
@@ -80,6 +79,9 @@ export default function ShortcutReminderPage() {
   // "audio" | "screen" | "" — empty when the cause spans subsystems or could
   // not be attributed, which keeps the pill on its generic wording (#6126).
   const [healthSubsystem, setHealthSubsystem] = useState("");
+  // Explicit wire behavior. Never infer whether a click is safe from the
+  // human-readable detail string.
+  const [healthAction, setHealthAction] = useState("");
   const [overlayShortcut, setOverlayShortcut] = useState<string | null>(null);
   const [chatShortcut, setChatShortcut] = useState<string | null>(null);
   const [searchShortcut, setSearchShortcut] = useState<string | null>(null);
@@ -246,14 +248,14 @@ export default function ShortcutReminderPage() {
   // current via the event.
   useEffect(() => {
     let mounted = true;
-    // Payload is "state", "state|detail", or "state|detail|subsystem" —
-    // detail is a failure reason (or the boot phase label while fixing), and
-    // subsystem names what failed when the engine could attribute it to one.
+    // Payload is "state", "state|detail", "state|detail|subsystem", or the
+    // same with an explicit fourth action field.
     const apply = (payload: string) => {
-      const [state, detail = "", subsystem = ""] = payload.split("|");
+      const [state, detail = "", subsystem = "", action = ""] = payload.split("|");
       setHealthState(state as RecordingHealthState);
       setHealthDetail(detail);
       setHealthSubsystem(subsystem);
+      setHealthAction(action);
     };
     commands
       .getRecordingHealthState()
@@ -454,7 +456,7 @@ export default function ShortcutReminderPage() {
   const smIconPx = 10 * overlayScale;
   const dotPx = Math.max(5 * overlayScale, 5);
   const failureReason = healthDetail || "recording stopped unexpectedly";
-  const manualRecoveryRequired = healthDetail.startsWith(MANUAL_RECOVERY_PREFIX);
+  const manualRecoveryRequired = healthAction === "manual-reopen";
   // Name the subsystem the engine identified. Anything else — both failed, a
   // persistence error, an unattributable stop — keeps the generic wording.
   // Must stay in sync with `healthHeadline` in

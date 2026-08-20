@@ -64,7 +64,6 @@ impl From<XCapError> for CaptureError {
 #[cfg(target_os = "macos")]
 impl From<SckXCapError> for CaptureError {
     fn from(error: SckXCapError) -> Self {
-        crate::note_screencapturekit_error(&error.to_string());
         debug!("sck-rs error occurred: {}", error);
         CaptureError::CaptureBackendError(error.to_string())
     }
@@ -670,11 +669,7 @@ fn get_all_windows() -> Result<Vec<WindowData>, Box<dyn Error>> {
 #[cfg(target_os = "macos")]
 fn get_all_windows_sck() -> Result<Vec<WindowData>, Box<dyn Error>> {
     let result: Result<Vec<WindowData>, String> = cidre::objc::ar_pool(|| {
-        let windows = SckWindow::all().map_err(|error| {
-            let error = error.to_string();
-            crate::note_screencapturekit_error(&error);
-            error
-        })?;
+        let windows = SckWindow::all().map_err(|e| e.to_string())?;
         Ok(windows
             .into_iter()
             .filter_map(extract_window_data_sck)
@@ -732,7 +727,6 @@ fn extract_window_data_sck(window: SckWindow) -> Option<WindowData> {
             image_buffer: buffer,
         }),
         Err(e) => {
-            crate::note_screencapturekit_error(&e.to_string());
             debug!(
                 "Failed to capture image for window {} ({}): {}",
                 app_name, title, e
