@@ -112,6 +112,8 @@ curl -sS -H "$auth" "$api/pipes/my-pipe/logs"
 
 `{"success":true}` means the run started, not that it passed. Poll for a new terminal log. Bind only after `success: true`; otherwise report its `stderr` and leave the Live View unchanged.
 
+This endpoint always runs the Pipe in the background; never claim its output will appear in Chat. To offer **Continue in chat**, the Pipe itself must `POST http://localhost:11435/notify` with an action containing `{"type":"pipe","pipe":"<name>","open_in_chat":true}`. The action opens a fresh Chat only after the user clicks it.
+
 ### Editing Config
 
 Edit frontmatter in `~/.screenpipe/pipes/<name>/pipe.md` directly, or use the API:

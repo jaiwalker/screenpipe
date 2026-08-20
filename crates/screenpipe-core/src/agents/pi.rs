@@ -4023,6 +4023,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn consumer_pipe_skill_explains_continue_in_chat_handoff() {
+        let consumer_skill = include_str!("../../assets/skills/screenpipe-cli/SKILL.md");
+
+        assert!(consumer_skill.contains("always runs the Pipe in the background"));
+        assert!(consumer_skill
+            .contains("{\"type\":\"pipe\",\"pipe\":\"<name>\",\"open_in_chat\":true}"));
+        assert!(consumer_skill.contains("only after the user clicks it"));
+    }
+
     #[cfg(not(feature = "enterprise-build"))]
     #[test]
     fn consumer_build_never_enables_enterprise_team_skill() {
