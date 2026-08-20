@@ -689,12 +689,14 @@ impl ServerCore {
         agent_executors.insert("pi".to_string(), pi_executor.clone());
         agent_executors.insert(
             "acp".to_string(),
-            Arc::new(crate::acp_pipe_executor::AcpPipeExecutor::new(
-                cloud_token_handle,
-                acp_gateway_url,
-                config.port,
-                config.api_auth_key.clone(),
-            )),
+            Arc::new(
+                screenpipe_core::agents::acp::AcpExecutor::with_shared_user_token(
+                    cloud_token_handle,
+                    acp_gateway_url,
+                    config.port,
+                    config.api_auth_key.clone(),
+                ),
+            ),
         );
 
         let pipe_store: Option<Arc<dyn screenpipe_core::pipes::PipeStore>> = Some(Arc::new(
