@@ -378,7 +378,12 @@ impl<R: tauri::Runtime, M: tauri::Manager<R>> GatedWindowPlacement
 /// Finalize a newly created webview window with cross-cutting resilience hooks.
 /// Keep this as the single post-build entrypoint for window creation callsites.
 pub fn finalize_webview_window(window: tauri::WebviewWindow) -> tauri::WebviewWindow {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        setup_content_process_handler(&window);
+        gesture::enable_history_swipe_navigation(&window);
+    }
+    #[cfg(target_os = "windows")]
     setup_content_process_handler(&window);
     if let Err(error) = capture_protection::apply_to_new_window(&window) {
         tracing::warn!("{error}");
