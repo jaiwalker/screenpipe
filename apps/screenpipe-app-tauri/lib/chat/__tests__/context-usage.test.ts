@@ -94,6 +94,22 @@ describe("context usage event parser", () => {
     ).toBeNull();
   });
 
+  it("ignores the non-usage updates emitted by Cursor ACP", () => {
+    for (const sessionUpdate of [
+      "session_info_update",
+      "available_commands_update",
+      "agent_thought_chunk",
+      "agent_message_chunk",
+    ]) {
+      expect(
+        parseContextUsageEvent({
+          type: "acp_update",
+          update: { sessionUpdate },
+        }),
+      ).toBeNull();
+    }
+  });
+
   it("distinguishes detailed native snapshots from totals-only harness data", () => {
     expect(hasContextBreakdown(snapshot)).toBe(true);
     expect(parseContextUsageSnapshot({ ...snapshot, categories: [] })).toEqual({

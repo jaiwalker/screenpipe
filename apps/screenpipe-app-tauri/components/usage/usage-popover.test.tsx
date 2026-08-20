@@ -242,8 +242,11 @@ describe("UsagePopover", () => {
     expect(screen.getByTestId("usage-limits-panel")).toBeTruthy();
   });
 
-  it("shows a neutral circle before any harness reports context", () => {
-    renderUsagePopover({ provider: "anthropic" } as AIPreset);
+  it("shows a neutral circle when Cursor ACP reports no context usage", () => {
+    renderUsagePopover({
+      provider: "acp",
+      acpAgent: { id: "cursor", useScreenpipeCloud: false },
+    } as AIPreset);
 
     const trigger = screen.getByRole("button", { name: "Usage details" });
     expect(
@@ -254,6 +257,7 @@ describe("UsagePopover", () => {
       screen.getByText(/usage appears after this agent reports/i),
     ).toBeTruthy();
     expect(screen.queryByText(/screenpipe cloud usage/i)).toBeNull();
+    expect(mocks.queryEnabled).toHaveBeenCalledWith(false);
   });
 });
 
