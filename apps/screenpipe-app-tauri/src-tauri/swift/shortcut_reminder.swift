@@ -129,6 +129,12 @@ final class OverlayMetrics: ObservableObject {
         default: return "recording needs help"
         }
     }
+
+    /// Terminal native failures are advisory only. The user must decide when
+    /// to quit and reopen the app; the recording-health UI never exits it.
+    var manualRecoveryRequired: Bool {
+        healthDetail.hasPrefix("quit and reopen screenpipe")
+    }
     /// True when the cursor is inside the panel area — drives expand/collapse
     /// since SwiftUI's .onHover tracking areas use .activeInActiveApp which
     /// does not fire when the app is not frontmost (the overlay stays visible
@@ -944,16 +950,15 @@ struct ShortcutReminderView: View {
 
     private var failureView: some View {
         HStack(spacing: 0) {
-            // The message zone is itself a Button — and clicking it RESTARTS.
-            // Users click the thing that says "recording needs help" expecting
-            // the fix (observed repeatedly in testing); a separate restart
-            // button to the right of the text reads as "nothing happened".
+            // The message zone is itself a Button for recoverable failures.
+            // A terminal native failure is advisory only: never turn a health
+            // signal into an app-exit action.
             // Hover has already expanded the row by the time a click is
             // possible, so expand-on-click would always be a no-op anyway.
             // (Plain Button, NOT .onTapGesture: tap recognizers delay/steal
             // mouse events in this nonactivating panel.)
             Button(action: {
-                if isExpanded {
+                if isExpanded && !metrics.manualRecoveryRequired {
                     metrics.healthState = "fixing"
                     onAction("restart_recording")
                 } else {
@@ -980,7 +985,7 @@ struct ShortcutReminderView: View {
 
                     if !isExpanded {
                         // Repair affordance: hint that an action lives here.
-                        Image(systemName: "arrow.clockwise")
+                        Image(systemName: metrics.manualRecoveryRequired ? "power" : "arrow.clockwise")
                             .font(.system(size: 6 * scale, weight: .bold))
                             .foregroundColor(.white.opacity(0.45))
                             .padding(.trailing, s(8))
@@ -994,25 +999,38 @@ struct ShortcutReminderView: View {
             if isExpanded {
                 Rectangle().fill(.white.opacity(0.15)).frame(width: 0.5).frame(height: s(12))
 
-                Button(action: {
-                    // Optimistic — Rust pushes the authoritative "fixing"
-                    // right after it receives the action.
-                    metrics.healthState = "fixing"
-                    onAction("restart_recording")
-                }) {
+                if metrics.manualRecoveryRequired {
                     HStack(spacing: s(2)) {
-                        Image(systemName: "arrow.clockwise")
+                        Image(systemName: "power")
                             .font(.system(size: 6 * scale, weight: .bold))
                             .foregroundColor(.white.opacity(0.95))
-                        Text("restart")
+                        Text("quit & reopen")
                             .font(Brand.swiftUIMonoFont(size: 8 * scale, weight: .bold))
                             .foregroundColor(.white.opacity(0.95))
                     }
                     .padding(.horizontal, s(8))
                     .frame(maxHeight: .infinity)
-                    .contentShape(Rectangle())
+                } else {
+                    Button(action: {
+                        // Optimistic — Rust pushes the authoritative "fixing"
+                        // right after it receives the action.
+                        metrics.healthState = "fixing"
+                        onAction("restart_recording")
+                    }) {
+                        HStack(spacing: s(2)) {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.system(size: 6 * scale, weight: .bold))
+                                .foregroundColor(.white.opacity(0.95))
+                            Text("restart")
+                                .font(Brand.swiftUIMonoFont(size: 8 * scale, weight: .bold))
+                                .foregroundColor(.white.opacity(0.95))
+                        }
+                        .padding(.horizontal, s(8))
+                        .frame(maxHeight: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
                 Rectangle().fill(.white.opacity(0.15)).frame(width: 0.5).frame(height: s(12))
 

@@ -37,9 +37,12 @@ const FIXING_CONFIRM_TICKS: u32 = 2;
 const PASSIVE_RECOVERY_CONFIRM_TICKS: u32 = 90;
 /// A user-triggered recovery must never remain in `fixing` forever while a
 /// checked-out SQLite connection prevents graceful pool close. Past this
-/// bound, a process relaunch is the only safe way to prove every connection is
-/// gone before recording resumes.
+/// bound, keep the app running and ask the user to quit and reopen it manually.
 const USER_RESTART_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+
+pub(crate) const MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL: &str =
+    "quit and reopen screenpipe to restore screen capture";
+const MANUAL_RECORDING_RECOVERY_DETAIL: &str = "quit and reopen screenpipe to recover recording";
 
 fn passive_recovery_confirm_ticks() -> u32 {
     if crate::stale_tier::capture_loop_silent_e2e_started() {
@@ -679,6 +682,21 @@ async fn reveal_overlay_if_hidden(app: &tauri::AppHandle) {
 /// platforms run the identical sequence, and the health loop — not this
 /// function — confirms the recovery.
 pub async fn restart_recording(app: tauri::AppHandle) {
+    // A recorder-only restart cannot release leaked process-wide native
+    // workers. More importantly, this health path must never terminate the app:
+    // it may interrupt unrelated user work and its terminal classification is
+    // deliberately conservative. Keep the current process alive and leave the
+    // final quit/reopen decision to the user.
+    if restart_preflight_action(screenpipe_screen::screencapturekit_process_restart_required())
+        == RestartPreflightAction::ShowManualRecovery
+    {
+        warn!(
+            "overlay health: ScreenCaptureKit process worker ceiling reached; keeping app running for manual recovery"
+        );
+        show_manual_recovery_failure(&app, MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL);
+        return;
+    }
+
     {
         let Ok(mut inner) = INNER.lock() else { return };
         if !begin_fixing(&mut inner, Instant::now()) {
@@ -697,25 +715,34 @@ pub async fn restart_recording(app: tauri::AppHandle) {
         crate::recording::stop_screenpipe(app.state(), app.clone()),
     )
     .await;
-    if recording_restart_action(&teardown) == RecordingRestartAction::RelaunchApp {
-        match teardown {
-            crate::recording::TeardownOutcome::Failed(error) => warn!(
-                "overlay health: stop before restart failed ({error}); relaunching app"
-            ),
+    if recording_restart_action(&teardown) == RecordingRestartAction::KeepAppRunningWithFailure {
+        match &teardown {
+            crate::recording::TeardownOutcome::Failed(error) => {
+                warn!(
+                    "overlay health: stop before restart failed ({error}); keeping app running for manual recovery"
+                )
+            }
             crate::recording::TeardownOutcome::TimedOut => warn!(
-                "overlay health: stop before restart exceeded {:?}; relaunching app",
+                "overlay health: stop before restart exceeded {:?}; keeping app running for manual recovery",
                 USER_RESTART_TEARDOWN_TIMEOUT
             ),
             crate::recording::TeardownOutcome::Completed => unreachable!(),
         }
-        crate::process_exit::request_app_relaunch(
-            app,
-            "recording recovery teardown did not complete",
-            Duration::from_millis(250),
-        );
+        show_manual_recovery_failure(&app, MANUAL_RECORDING_RECOVERY_DETAIL);
         return;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
+    // A bounded native call can finish after recorder teardown and set the
+    // process-wide latch while we wait for macOS resources to settle. Re-check
+    // immediately before spawning so that late terminal evidence cannot race
+    // us into an in-process restart that ScreenCaptureKit cannot recover from.
+    if screenpipe_screen::screencapturekit_process_restart_required() {
+        warn!(
+            "overlay health: ScreenCaptureKit process worker ceiling reached during recorder restart; keeping app running for manual recovery"
+        );
+        show_manual_recovery_failure(&app, MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL);
+        return;
+    }
     if let Err(e) = crate::recording::spawn_screenpipe(app.state(), app.clone(), None).await {
         warn!("overlay health: spawn during restart failed: {}", e);
         let detail = restart_failure_detail(&e);
@@ -725,6 +752,14 @@ pub async fn restart_recording(app: tauri::AppHandle) {
         }
         push_state(&app, OverlayHealthState::Failure, Some(detail));
     }
+}
+
+fn show_manual_recovery_failure(app: &tauri::AppHandle, detail: &'static str) {
+    if let Ok(mut inner) = INNER.lock() {
+        fixing_failed(&mut inner);
+        inner.last_detail = detail.to_string();
+    }
+    push_state(app, OverlayHealthState::Failure, Some(detail));
 }
 
 fn restart_failure_detail(error: &str) -> &'static str {
@@ -749,20 +784,32 @@ fn is_specific_permission_restart_detail(detail: &str) -> bool {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum RecordingRestartAction {
-    SpawnInProcess,
-    RelaunchApp,
+enum RestartPreflightAction {
+    RestartRecorder,
+    ShowManualRecovery,
 }
 
-fn recording_restart_action(
-    outcome: &crate::recording::TeardownOutcome,
-) -> RecordingRestartAction {
+fn restart_preflight_action(process_restart_required: bool) -> RestartPreflightAction {
+    if process_restart_required {
+        RestartPreflightAction::ShowManualRecovery
+    } else {
+        RestartPreflightAction::RestartRecorder
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RecordingRestartAction {
+    SpawnInProcess,
+    KeepAppRunningWithFailure,
+}
+
+fn recording_restart_action(outcome: &crate::recording::TeardownOutcome) -> RecordingRestartAction {
     match outcome {
-        crate::recording::TeardownOutcome::Completed => {
-            RecordingRestartAction::SpawnInProcess
-        }
+        crate::recording::TeardownOutcome::Completed => RecordingRestartAction::SpawnInProcess,
         crate::recording::TeardownOutcome::Failed(_)
-        | crate::recording::TeardownOutcome::TimedOut => RecordingRestartAction::RelaunchApp,
+        | crate::recording::TeardownOutcome::TimedOut => {
+            RecordingRestartAction::KeepAppRunningWithFailure
+        }
     }
 }
 
@@ -875,6 +922,8 @@ mod tests {
         for detail in [
             "audio capture is not updating",
             "screen capture is not updating",
+            MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL,
+            MANUAL_RECORDING_RECOVERY_DETAIL,
             "audio and screen capture are not updating",
             "multiple recording errors detected",
             "recording data cannot be saved",
@@ -913,18 +962,28 @@ mod tests {
     }
 
     #[test]
-    fn user_restart_relaunches_when_teardown_cannot_prove_pools_closed() {
+    fn user_restart_never_relaunches_the_app() {
+        assert_eq!(
+            restart_preflight_action(false),
+            RestartPreflightAction::RestartRecorder
+        );
+        assert_eq!(
+            restart_preflight_action(true),
+            RestartPreflightAction::ShowManualRecovery,
+            "terminal native evidence must remain advisory"
+        );
         assert_eq!(
             recording_restart_action(&TeardownOutcome::Completed),
             RecordingRestartAction::SpawnInProcess
         );
         assert_eq!(
             recording_restart_action(&TeardownOutcome::TimedOut),
-            RecordingRestartAction::RelaunchApp
+            RecordingRestartAction::KeepAppRunningWithFailure
         );
+        let failed = TeardownOutcome::Failed("pool closed".to_string());
         assert_eq!(
-            recording_restart_action(&TeardownOutcome::Failed("pool closed".to_string())),
-            RecordingRestartAction::RelaunchApp
+            recording_restart_action(&failed),
+            RecordingRestartAction::KeepAppRunningWithFailure
         );
     }
 

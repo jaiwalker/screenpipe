@@ -309,7 +309,7 @@ impl SafeMonitor {
     async fn capture_sck_bounded(&self, excluded_window_ids: Vec<u32>) -> Result<DynamicImage> {
         let monitor_id = self.monitor_id;
         let cached_sck = self.cached_sck.clone();
-        run_bounded_macos_capture(
+        let result = run_bounded_macos_capture(
             "ScreenCaptureKit",
             &MACOS_CAPTURE_SERIALIZER,
             MACOS_CAPTURE_WORKERS.clone(),
@@ -345,7 +345,11 @@ impl SafeMonitor {
                 .map_err(anyhow::Error::msg)
             },
         )
-        .await
+        .await;
+        if let Err(error) = &result {
+            crate::note_screencapturekit_error(&error.to_string());
+        }
+        result
     }
 
     async fn capture_xcap_bounded(&self) -> Result<DynamicImage> {
@@ -574,6 +578,7 @@ fn enumerate_sck_monitors() -> std::result::Result<Vec<SafeMonitor>, MonitorList
             .collect()),
         Err(e) => {
             let err_str = e.to_string();
+            crate::note_screencapturekit_error(&err_str);
             if err_str.contains("permission") || err_str.contains("Screen recording") {
                 Err(MonitorListError::PermissionDenied)
             } else if err_str.contains("No monitors") {
@@ -1042,7 +1047,10 @@ impl SafeMonitor {
         );
         let (stream, frames) =
             sck_rs::start_hd_capture(self.monitor_id, width, height, fps, excluded_window_ids)
-                .map_err(|e| anyhow::anyhow!("start_hd_capture failed: {e}"))?;
+                .map_err(|error| {
+                    crate::note_screencapturekit_error(&error.to_string());
+                    anyhow::anyhow!("start_hd_capture failed: {error}")
+                })?;
         Ok(HdCapture {
             fps: stream.fps(),
             width,

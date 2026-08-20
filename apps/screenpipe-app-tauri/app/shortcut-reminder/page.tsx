@@ -19,6 +19,7 @@ import {
   PanelLeft,
   Pin,
   PinOff,
+  Power,
   RotateCw,
   Search,
   Square,
@@ -70,6 +71,7 @@ const EXPANDED_SIZE = { width: 160, height: 62 };
 const SETTINGS_MENU_SIZE = { width: 164, height: 96 };
 const INCIDENT_SIZE = { width: 160, height: 40 };
 const MEETING_SIZE = { width: 280, height: 80 };
+const MANUAL_RECOVERY_PREFIX = "quit and reopen screenpipe";
 
 export default function ShortcutReminderPage() {
   const { isMac, isLoading } = usePlatform();
@@ -452,6 +454,7 @@ export default function ShortcutReminderPage() {
   const smIconPx = 10 * overlayScale;
   const dotPx = Math.max(5 * overlayScale, 5);
   const failureReason = healthDetail || "recording stopped unexpectedly";
+  const manualRecoveryRequired = healthDetail.startsWith(MANUAL_RECOVERY_PREFIX);
   // Name the subsystem the engine identified. Anything else — both failed, a
   // persistence error, an unattributable stop — keeps the generic wording.
   // Must stay in sync with `healthHeadline` in
@@ -499,16 +502,20 @@ export default function ShortcutReminderPage() {
           className="select-none w-full h-full border border-red-500/40 flex flex-col"
           style={{ background: "rgba(0, 0, 0, 0.88)", cursor: "grab" }}
         >
-          {/* The message row itself restarts — users click the thing that
-              says "recording needs help" expecting the fix. */}
+          {/* The message row itself restarts recoverable failures. A terminal
+              native failure is advisory only: never turn a health signal into
+              an app-exit action. */}
           <button
             onClick={handleRestartRecording}
+            disabled={manualRecoveryRequired}
             onMouseDown={(e) => e.stopPropagation()}
             onPointerDown={(e) => e.stopPropagation()}
-            className="flex items-center justify-center flex-1 min-h-0 hover:bg-white/10 transition-colors cursor-pointer"
+            className={`flex items-center justify-center flex-1 min-h-0 transition-colors ${manualRecoveryRequired ? "cursor-default" : "hover:bg-white/10 cursor-pointer"}`}
             style={{ gap: `${gap * 2}px`, padding: `${padY}px ${padX}px`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
             title={failureReason}
-            aria-label={`${failureHeadlineSentence}: ${failureReason}. Restart recording`}
+            aria-label={manualRecoveryRequired
+              ? `${failureHeadlineSentence}: ${failureReason}`
+              : `${failureHeadlineSentence}: ${failureReason}. Restart recording`}
           >
             <div
               className="rounded-full bg-red-500 animate-pulse shrink-0"
@@ -523,19 +530,32 @@ export default function ShortcutReminderPage() {
           </button>
           <div className="bg-white/15" style={{ height: "1px" }} />
           <div className="flex items-stretch justify-center flex-1 min-h-0">
-            <button
-              onClick={handleRestartRecording}
-              onMouseDown={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
-              className="flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer text-white/90 flex-1"
-              style={{ gap: `${gap}px`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
-              title={`Restart recording — ${failureReason}`}
-            >
-              <RotateCw style={{ width: `${smIconPx}px`, height: `${smIconPx}px` }} className="shrink-0" />
-              <span className="font-mono font-bold" style={{ fontSize: `${fontPx}px` }}>
-                restart
-              </span>
-            </button>
+            {manualRecoveryRequired ? (
+              <div
+                className="flex items-center justify-center text-white/90 flex-1"
+                style={{ gap: `${gap}px` }}
+                title={failureReason}
+              >
+                <Power style={{ width: `${smIconPx}px`, height: `${smIconPx}px` }} className="shrink-0" />
+                <span className="font-mono font-bold" style={{ fontSize: `${fontPx}px` }}>
+                  quit &amp; reopen
+                </span>
+              </div>
+            ) : (
+              <button
+                onClick={handleRestartRecording}
+                onMouseDown={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                className="flex items-center justify-center hover:bg-white/10 transition-colors cursor-pointer text-white/90 flex-1"
+                style={{ gap: `${gap}px`, WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                title={`Restart recording — ${failureReason}`}
+              >
+                <RotateCw style={{ width: `${smIconPx}px`, height: `${smIconPx}px` }} className="shrink-0" />
+                <span className="font-mono font-bold" style={{ fontSize: `${fontPx}px` }}>
+                  restart
+                </span>
+              </button>
+            )}
             <div className="bg-white/15" style={{ width: "1px" }} />
             <button
               onClick={handleDismissIncident}
