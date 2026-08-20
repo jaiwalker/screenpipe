@@ -75,6 +75,7 @@ const RUNTIME_ONLY_ENV: &[&str] = &[
     "SCREENPIPE_ACP_CWD",
     "SCREENPIPE_ACP_ID",
     "SCREENPIPE_ACP_RESUME_SESSION_ID",
+    "SCREENPIPE_ACP_UNATTENDED",
 ];
 
 /// Strip every [`RUNTIME_ONLY_ENV`] var from a child command's inherited
@@ -190,6 +191,10 @@ struct RuntimeConfig {
     /// A prior ACP session id to resume on startup instead of creating a
     /// fresh one, when the chat is reopened after the process was gone.
     resume_session_id: Option<String>,
+    /// Scheduled pipes have no foreground UI to answer auth or permission
+    /// cards. In this mode permissions use the pipe's preconfigured sandbox and
+    /// authentication failures return immediately with recovery instructions.
+    unattended: bool,
 }
 
 /// A user-configured MCP server forwarded to the adapter. Header values and
@@ -305,6 +310,8 @@ impl RuntimeConfig {
             )?
             .unwrap_or_default(),
             resume_session_id: env_nonempty("SCREENPIPE_ACP_RESUME_SESSION_ID"),
+            unattended: env_nonempty("SCREENPIPE_ACP_UNATTENDED")
+                .is_some_and(|value| value != "0" && !value.eq_ignore_ascii_case("false")),
         })
     }
 }
@@ -3033,6 +3040,16 @@ fn allow_option_id(options: &Value) -> Option<String> {
     by_kind("allow_always").or_else(|| by_kind("allow_once"))
 }
 
+fn automatic_permission_option_id(
+    options: &Value,
+    unattended: bool,
+    title: Option<&str>,
+) -> Option<String> {
+    (unattended || title.is_some_and(is_screenpipe_read_tool))
+        .then(|| allow_option_id(options))
+        .flatten()
+}
+
 fn external_auth_command(agent_id: &str) -> Option<String> {
     // These agents advertise an ACP auth method but their `authenticate` just
     // re-errors or never responds while signed out. The catalog provides the
@@ -3100,6 +3117,12 @@ async fn authenticate(
     init: &InitializeResponse,
     config: &RuntimeConfig,
 ) -> Result<(), String> {
+    if config.unattended {
+        return Err(format!(
+            "authentication required: {} is not signed in. Open Chat, select this coding-agent preset, and sign in before using it in a pipe.",
+            config.agent_id
+        ));
+    }
     if let Some(command) = external_auth_command(&config.agent_id) {
         let agent_name = init
             .agent_info
@@ -3400,6 +3423,7 @@ async fn run_protocol(
     let wait_terminal_state = state.clone();
     let kill_terminal_state = state.clone();
     let release_terminal_state = state.clone();
+    let unattended = config.unattended;
 
     Client
         .builder()
@@ -3426,20 +3450,23 @@ async fn run_protocol(
                         .filter(|value| !value.is_empty());
                     let kind = tool.get("kind").and_then(Value::as_str);
                     let options = serialized.get("options").cloned().unwrap_or_else(|| json!([]));
-                    // Auto-approve screenpipe's own read-only screen-data tools
-                    // so the agent isn't gated on every search and the user
-                    // isn't buried in identical approval cards. Everything else
-                    // still prompts.
-                    if let Some(title) = title {
-                        if is_screenpipe_read_tool(title) {
-                            if let Some(option_id) = allow_option_id(&options) {
-                                return responder.respond(RequestPermissionResponse::new(
-                                    RequestPermissionOutcome::Selected(
-                                        SelectedPermissionOutcome::new(option_id),
-                                    ),
-                                ));
-                            }
-                        }
+                    // Chat auto-approves only screenpipe's read tools. A scheduled
+                    // pipe has no foreground UI, so its explicit unattended mode
+                    // accepts the adapter's allow option and relies on the pipe's
+                    // scoped API token + filesystem policy for enforcement.
+                    if let Some(option_id) =
+                        automatic_permission_option_id(&options, unattended, title)
+                    {
+                        return responder.respond(RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                                option_id,
+                            )),
+                        ));
+                    }
+                    if unattended {
+                        return responder.respond(RequestPermissionResponse::new(
+                            RequestPermissionOutcome::Cancelled,
+                        ));
                     }
                     // Short heading by kind; the raw command/target rides along
                     // as `detail` and is shown verbatim. Codex sends a shell
@@ -4419,6 +4446,7 @@ mod tests {
             extension_middleware: AcpExtensionMiddleware::default(),
             user_mcp_servers: Vec::new(),
             resume_session_id: None,
+            unattended: false,
         }
     }
 
@@ -5410,6 +5438,14 @@ mod tests {
         assert_eq!(allow_option_id(&once_only).as_deref(), Some("a1"));
         let reject_only = json!([{ "optionId": "r1", "name": "Reject", "kind": "reject_once" }]);
         assert_eq!(allow_option_id(&reject_only), None);
+        assert_eq!(
+            automatic_permission_option_id(&options, false, Some("bash")),
+            None
+        );
+        assert_eq!(
+            automatic_permission_option_id(&options, true, Some("bash")).as_deref(),
+            Some("a2")
+        );
     }
 
     #[cfg(windows)]

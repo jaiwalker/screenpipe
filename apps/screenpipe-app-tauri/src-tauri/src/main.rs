@@ -40,6 +40,7 @@ use updates::start_update_check;
 use window::ShowRewindWindow;
 
 mod acp_extensions;
+mod acp_pipe_executor;
 mod acp_runtime;
 mod acp_schedule_extension;
 mod activity_history;

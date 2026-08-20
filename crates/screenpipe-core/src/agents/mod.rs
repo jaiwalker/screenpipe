@@ -179,6 +179,9 @@ pub trait AgentExecutor: Send + Sync {
         // doesn't set it; only the pi executor (which spawns the subprocess)
         // acts on it.
         _session_owner: Option<&str>,
+        // Executor-specific preset data. The pipe runtime treats this as an
+        // opaque value; adapters such as ACP deserialize their own config.
+        _executor_config: Option<&serde_json::Value>,
     ) -> Result<AgentOutput> {
         let output = self
             .run(

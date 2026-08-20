@@ -1099,7 +1099,6 @@ function PipePresetSelector({
         <AIPresetsSelector
           compact
           allowNone
-          includeAgentPresets={false}
           controlledPresetId={primaryPreset}
           onControlledSelect={(preset) =>
             savePresets(preset?.id ?? null, fallbackPreset)
@@ -1124,7 +1123,6 @@ function PipePresetSelector({
           <AIPresetsSelector
             compact
             allowNone
-            includeAgentPresets={false}
             controlledPresetId={fallbackPreset}
             onControlledSelect={(preset) =>
               savePresets(primaryPreset, preset?.id ?? null)
@@ -1143,7 +1141,7 @@ function PipePresetSelector({
         </button>
       )}
       <p className="text-[10px] text-muted-foreground">
-        coding-agent presets are available in chat; scheduled pipes currently use raw Pi presets
+        coding-agent presets run unattended and use this pipe&apos;s permissions
       </p>
     </div>
   );
