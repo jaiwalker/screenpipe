@@ -62,6 +62,28 @@ pub fn sanitize_fts5_query(query: &str) -> String {
         .join(" ")
 }
 
+/// Build a safe FTS5 disjunction from already-selected recall terms.
+///
+/// Agent recall deliberately uses any-term matching: natural-language prompts
+/// almost never survive the regular exact-AND query, which previously forced
+/// every harness to issue four additional HTTP and SQLite queries. Keeping the
+/// OR construction here preserves the same escaping contract as
+/// [`sanitize_fts5_query`] while allowing the database to rank the candidate
+/// set in one pass.
+pub fn sanitize_fts5_any_query<'a>(terms: impl IntoIterator<Item = &'a str>) -> String {
+    terms
+        .into_iter()
+        .flat_map(|term| {
+            sanitize_fts5_query(term)
+                .split_whitespace()
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>()
+        .join(" OR ")
+}
+
 /// Expand a search query to improve recall on compound words.
 ///
 /// Takes a user query and returns an expanded FTS5 query that searches for:
@@ -228,6 +250,15 @@ mod tests {
     fn test_sanitize_fts5_empty() {
         assert_eq!(sanitize_fts5_query(""), "");
         assert_eq!(sanitize_fts5_query("   "), "");
+    }
+
+    #[test]
+    fn test_sanitize_fts5_any_query_is_escaped_and_disjunctive() {
+        assert_eq!(
+            sanitize_fts5_any_query(["project:atlas", r#"launch\"ready"#]),
+            r#""project:atlas" OR "launchready""#
+        );
+        assert_eq!(sanitize_fts5_any_query(["", r#"\"#]), "");
     }
 
     #[test]

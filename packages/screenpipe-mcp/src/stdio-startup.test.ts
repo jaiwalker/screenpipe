@@ -301,17 +301,14 @@ describe("stdio startup handshake", () => {
 
   it("recovers from a stale launcher key by resolving and retrying the current key", async () => {
     const seenAuth: string[] = [];
+    const seenUrls: string[] = [];
     const backend = createServer((req, res) => {
       const auth = String(req.headers.authorization || "");
       seenAuth.push(auth);
+      seenUrls.push(String(req.url || ""));
       if (auth !== "Bearer current-test-key") {
         res.writeHead(403, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "unauthorized" }));
-        return;
-      }
-      if (req.url === "/memories/agent-policy") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ enabled: true, automatic_chat_recall: true }));
         return;
       }
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -326,6 +323,7 @@ describe("stdio startup handshake", () => {
             },
           ],
           pagination: { total: 1 },
+          access: { enabled: true, automatic_chat_recall: true, allowed: true },
         }),
       );
     });
@@ -354,9 +352,14 @@ describe("stdio startup handshake", () => {
         { q: "key rotation", limit: 1 },
       );
       expect(result.content?.[0]?.text).toContain("current memory after key rotation");
-      expect(seenAuth[0]).toBe("Bearer sp-stale-test-key");
-      expect(seenAuth.slice(1).length).toBeGreaterThanOrEqual(2);
-      expect(new Set(seenAuth.slice(1))).toEqual(new Set(["Bearer current-test-key"]));
+      const recallAuth = seenAuth.filter((_, index) =>
+        seenUrls[index]?.startsWith("/memories/recall?"),
+      );
+      expect(recallAuth).toEqual([
+        "Bearer sp-stale-test-key",
+        "Bearer current-test-key",
+      ]);
+      expect(seenUrls.filter((url) => url.startsWith("/memories/recall?"))).toHaveLength(2);
     } finally {
       backend.close();
       fs.rmSync(tmp, { recursive: true, force: true });

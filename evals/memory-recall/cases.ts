@@ -130,6 +130,17 @@ export const memoryEvalCases: MemoryEvalCase[] = [
     expectedIds: ["jp-atlas"],
   },
   {
+    id: "short-project-identifiers",
+    profile: "enterprise operator",
+    prompt: "Remember my HR workflow for R2",
+    policyEnabled: true,
+    mode: "relevant",
+    target: "external",
+    shouldRoute: true,
+    memories: [memory("hr-r2", "The HR workflow for R2 starts with legal review", 0.9)],
+    expectedIds: ["hr-r2"],
+  },
+  {
     id: "privacy-no-ai",
     profile: "privacy purist",
     prompt: "Remember my payroll workflow",

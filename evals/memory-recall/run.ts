@@ -67,7 +67,7 @@ for (const testCase of memoryEvalCases) {
 }
 
 const harnessContracts = [
-  ["pi + Pipes", "crates/screenpipe-core/assets/extensions/screenpipe-recall.ts", "/memories/agent-policy"],
+  ["pi + Pipes", "crates/screenpipe-core/assets/extensions/screenpipe-recall.ts", "access?.allowed"],
   ["ACP agents", "apps/screenpipe-app-tauri/src-tauri/src/acp_runtime.rs", "prefetch_agent_memory_context"],
   ["Codex/Claude startup", "crates/screenpipe-core/src/memories/external_sync.rs", "MAX_AGENT_PROFILE_ENTRIES"],
   ["MCP agents (Hermes/OpenClaw included)", "packages/screenpipe-mcp/src/index.ts", "agentMemoryEnabled"],
@@ -77,6 +77,17 @@ const harnessResults = harnessContracts.map(([name, path, needle]) => {
   const passed = source.includes(needle);
   if (!passed) failures.push(`${name}: missing structural contract ${needle}`);
   return { name, path, passed };
+});
+const performanceContracts = [
+  ["Pi + Pipes", "crates/screenpipe-core/assets/extensions/screenpipe-recall.ts", "/memories/recall?"],
+  ["ACP agents", "apps/screenpipe-app-tauri/src-tauri/src/acp_runtime.rs", "/memories/recall"],
+  ["MCP agents", "packages/screenpipe-mcp/src/index.ts", "/memories/recall?"],
+] as const;
+const performanceResults = performanceContracts.map(([name, path, needle]) => {
+  const source = readFileSync(resolve(path), "utf8");
+  const passed = source.includes(needle);
+  if (!passed) failures.push(`${name}: missing single-request recall endpoint ${needle}`);
+  return { name, path, max_blocking_retrieval_requests_per_current_recall: 1, passed };
 });
 
 const fingerprint = createHash("sha256")
@@ -94,6 +105,7 @@ const report = {
   privacy_checks: privacyChecks,
   max_context_chars: 4_500,
   harness_contracts: harnessResults,
+  performance_contracts: performanceResults,
   failures,
 };
 

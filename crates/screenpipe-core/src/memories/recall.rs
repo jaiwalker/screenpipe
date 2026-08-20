@@ -119,7 +119,13 @@ pub fn fallback_queries(prompt: &str, max: usize) -> Vec<String> {
         .split(|c: char| !(c.is_alphanumeric() || matches!(c, ':' | '_' | '-')))
         .chain(prompt.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, ':' | '_' | '-'))))
         .map(str::trim)
-        .filter(|term| term.chars().count() >= 3)
+        .filter(|term| {
+            let len = term.chars().count();
+            len >= 3
+                || (len == 2
+                    && (term.chars().any(|c| !c.is_ascii() || c.is_ascii_digit())
+                        || term.chars().all(|c| c.is_ascii_uppercase())))
+        })
         .filter(|term| !stop_words.contains(term.to_lowercase().as_str()))
         .filter(|term| seen.insert(term.to_lowercase()))
         .map(ToOwned::to_owned)
@@ -127,10 +133,12 @@ pub fn fallback_queries(prompt: &str, max: usize) -> Vec<String> {
     terms.sort_by(|left, right| {
         let left_distinctive = left
             .chars()
-            .any(|c| c.is_ascii_digit() || ":_-".contains(c));
+            .any(|c| !c.is_ascii() || c.is_ascii_digit() || ":_-".contains(c))
+            || (left.chars().count() == 2 && left.chars().all(|c| c.is_ascii_uppercase()));
         let right_distinctive = right
             .chars()
-            .any(|c| c.is_ascii_digit() || ":_-".contains(c));
+            .any(|c| !c.is_ascii() || c.is_ascii_digit() || ":_-".contains(c))
+            || (right.chars().count() == 2 && right.chars().all(|c| c.is_ascii_uppercase()));
         right_distinctive
             .cmp(&left_distinctive)
             .then_with(|| right.len().cmp(&left.len()))
@@ -199,6 +207,10 @@ mod tests {
                 "decide".to_string(),
             ]
         );
+        let short_ids = fallback_queries("What did HR decide about R2 and 人事?", 6);
+        assert!(short_ids.contains(&"HR".to_string()));
+        assert!(short_ids.contains(&"R2".to_string()));
+        assert!(short_ids.contains(&"人事".to_string()));
     }
 
     #[test]

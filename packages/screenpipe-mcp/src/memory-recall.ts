@@ -15,6 +15,11 @@ export type MemoryRow = {
 export type MemoryList = {
   data?: unknown;
   pagination?: { total?: unknown };
+  access?: {
+    enabled?: unknown;
+    automatic_chat_recall?: unknown;
+    allowed?: unknown;
+  };
 };
 
 const EXTERNAL_AGENT_BLOCKED_TAGS = new Set([
@@ -65,8 +70,8 @@ const FALLBACK_SINGULARS = new Map([
 export function memoryRecallFallbackQueries(q: string, max = 4): string[] {
   const seen = new Set<string>();
   return [
-    ...(q.match(/[\p{L}\p{N}][\p{L}\p{N}:_-]{2,}/gu) ?? []),
-    ...(q.match(/[A-Za-z0-9][A-Za-z0-9:_-]{2,}/g) ?? []),
+    ...(q.match(/[\p{L}\p{N}][\p{L}\p{N}:_-]{1,}/gu) ?? []),
+    ...(q.match(/[A-Za-z0-9][A-Za-z0-9:_-]{1,}/g) ?? []),
   ]
     .map((term) => term.replace(/^[-_:]+|[-_:]+$/g, ""))
     // FTS does not stem simple plurals ("preferences" misses "preference").
@@ -75,15 +80,17 @@ export function memoryRecallFallbackQueries(q: string, max = 4): string[] {
     .map((term) => FALLBACK_SINGULARS.get(term.toLocaleLowerCase()) ?? term)
     .filter((term) => {
       const key = term.toLocaleLowerCase();
-      if (term.length < 3 || FALLBACK_STOP_WORDS.has(key) || seen.has(key)) {
+      const length = Array.from(term).length;
+      const compactId = length === 2 && (/[^\x00-\x7F]|\d/.test(term) || /^[A-Z]{2}$/.test(term));
+      if ((length < 3 && !compactId) || FALLBACK_STOP_WORDS.has(key) || seen.has(key)) {
         return false;
       }
       seen.add(key);
       return true;
     })
     .sort((left, right) => {
-      const leftDistinctive = /\d|[-_:]/.test(left) ? 1 : 0;
-      const rightDistinctive = /\d|[-_:]/.test(right) ? 1 : 0;
+      const leftDistinctive = /[^\x00-\x7F\s]|\d|[-_:]/.test(left) || /^[A-Z]{2}$/.test(left) ? 1 : 0;
+      const rightDistinctive = /[^\x00-\x7F\s]|\d|[-_:]/.test(right) || /^[A-Z]{2}$/.test(right) ? 1 : 0;
       return rightDistinctive - leftDistinctive || right.length - left.length;
     })
     .slice(0, max);

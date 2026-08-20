@@ -134,6 +134,7 @@ pub const DEFAULT_ALLOWED_ENDPOINTS: &[&str] = &[
     // Enabled Pipes use these endpoints for bounded recall; the explicit
     // memory-mode gate below still keeps the privacy-preserving default off.
     "GET /memories",
+    "GET /memories/recall",
     "GET /memories/agent-policy",
     "POST /notify",
     "GET /speakers",
@@ -718,6 +719,7 @@ mod tests {
         assert!(!permissions.is_endpoint_allowed("GET", "/memories"));
         assert!(!permissions.is_endpoint_allowed("GET", "/memories/42"));
         assert!(permissions.is_endpoint_allowed("GET", "/memories/agent-policy"));
+        assert!(!permissions.is_endpoint_allowed("GET", "/memories/recall"));
         assert!(!permissions.is_endpoint_allowed("PUT", "/memories/agent-policy"));
         assert!(!permissions.is_endpoint_allowed("POST", "/memories/sync-external"));
         assert!(!permissions.is_endpoint_allowed("POST", "/memories/sync-external/codex/cleanup"));
@@ -726,6 +728,7 @@ mod tests {
         permissions.memory_mode = PipeMemoryMode::Relevant;
         assert!(permissions.is_endpoint_allowed("GET", "/memories"));
         assert!(permissions.is_endpoint_allowed("GET", "/memories/42"));
+        assert!(permissions.is_endpoint_allowed("GET", "/memories/recall"));
     }
 
     #[test]
@@ -813,8 +816,10 @@ mod tests {
         assert!(p.is_endpoint_allowed("GET", "/feedback"));
         assert!(!p.is_endpoint_allowed("GET", "/memories"));
         assert!(p.is_endpoint_allowed("GET", "/memories/agent-policy"));
+        assert!(!p.is_endpoint_allowed("GET", "/memories/recall"));
         p.memory_mode = PipeMemoryMode::Relevant;
         assert!(p.is_endpoint_allowed("GET", "/memories"));
+        assert!(p.is_endpoint_allowed("GET", "/memories/recall"));
         assert!(!p.is_endpoint_allowed("POST", "/memories"));
         assert!(p.is_endpoint_allowed("GET", "/outputs/targets"));
         assert!(p.is_endpoint_allowed(

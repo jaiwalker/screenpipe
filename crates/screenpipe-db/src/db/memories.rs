@@ -235,6 +235,55 @@ impl DatabaseManager {
         Ok(row.and_then(|(u,)| u))
     }
 
+    /// Retrieve a bounded agent-memory candidate set in one SQLite query.
+    ///
+    /// Normal memory search intentionally uses exact-AND semantics. Recall is
+    /// different: it receives a handful of locally selected distinctive terms
+    /// and uses FTS5 any-term matching plus BM25 ranking. This replaces the old
+    /// harness-side fan-out of one exact query and four fallback queries.
+    pub async fn recall_memories(
+        &self,
+        terms: &[String],
+        min_importance: f64,
+        limit: u32,
+    ) -> Result<Vec<MemoryRecord>, SqlxError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let fts_query =
+            crate::text_normalizer::sanitize_fts5_any_query(terms.iter().map(String::as_str));
+        if fts_query.is_empty() {
+            return sqlx::query_as::<_, MemoryRecord>(
+                "SELECT id, content, source, source_context, tags, importance, frame_id, \
+                 created_at, updated_at \
+                 FROM memories \
+                 WHERE importance >= ?1 \
+                 ORDER BY importance DESC, updated_at DESC, id DESC \
+                 LIMIT ?2",
+            )
+            .bind(min_importance)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await;
+        }
+
+        sqlx::query_as::<_, MemoryRecord>(
+            "SELECT m.id, m.content, m.source, m.source_context, m.tags, m.importance, \
+             m.frame_id, m.created_at, m.updated_at \
+             FROM memories_fts \
+             JOIN memories m ON m.id = memories_fts.rowid \
+             WHERE memories_fts MATCH ?1 AND m.importance >= ?2 \
+             ORDER BY bm25(memories_fts) ASC, m.importance DESC, m.updated_at DESC, m.id DESC \
+             LIMIT ?3",
+        )
+        .bind(fts_query)
+        .bind(min_importance)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub async fn list_memories(

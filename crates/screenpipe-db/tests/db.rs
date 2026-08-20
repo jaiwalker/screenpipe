@@ -630,6 +630,63 @@ mod tests {
         assert_eq!(n, 2);
     }
 
+    #[tokio::test]
+    async fn test_agent_memory_recall_uses_one_any_term_ranked_query() {
+        let db = setup_test_db().await;
+        let both = db
+            .insert_memory(
+                "Atlas launch channel is orbit",
+                "user",
+                None,
+                Some(r#"["project:atlas"]"#),
+                0.8,
+                None,
+            )
+            .await
+            .unwrap();
+        db.insert_memory("Atlas planning notes", "user", None, Some("[]"), 0.95, None)
+            .await
+            .unwrap();
+        db.insert_memory(
+            "Launch checklist for Quartz",
+            "user",
+            None,
+            Some("[]"),
+            0.9,
+            None,
+        )
+        .await
+        .unwrap();
+        db.insert_memory(
+            "unrelated low importance row",
+            "user",
+            None,
+            Some("[]"),
+            0.2,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let rows = db
+            .recall_memories(&["atlas".into(), "launch".into()], 0.4, 3)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 3, "any-term recall should return the union");
+        assert_eq!(rows[0].id, both, "the row matching both terms ranks first");
+        assert!(rows.iter().all(|row| row.importance >= 0.4));
+
+        let escaped = db
+            .recall_memories(&[r#"\"); DROP TABLE memories; --"#.into()], 0.4, 10)
+            .await
+            .unwrap();
+        assert!(escaped.is_empty(), "query syntax must remain inert text");
+
+        let ambient = db.recall_memories(&[], 0.6, 1).await.unwrap();
+        assert_eq!(ambient.len(), 1);
+        assert_eq!(ambient[0].importance, 0.95);
+    }
+
     /// `related_tags` returns the tags that co-occur with the requested ones,
     /// counted across all three stores (vision frames, audio chunks, memory
     /// JSON), most-frequent first, with the inputs themselves excluded and

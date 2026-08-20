@@ -51,6 +51,10 @@ describe("screenpipe recall routing", () => {
   test("fallbacks stay bounded and favor distinctive terms", () => {
     expect(fallbackQueries("remember prior context about project:atlas-42 pricing"))
       .toEqual(["project:atlas-42", "pricing"]);
+    const shortIds = fallbackQueries("remember HR R2 人事", 6);
+    expect(shortIds).toContain("HR");
+    expect(shortIds).toContain("R2");
+    expect(shortIds).toContain("人事");
   });
 });
 
@@ -123,11 +127,9 @@ describe("screenpipe recall runtime policy", () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       calls.push(url);
-      if (url.endsWith("/memories/agent-policy")) {
-        return Response.json({ enabled: true, automatic_chat_recall: true });
-      }
       return Response.json({
         data: [{ id: "atlas", content: "Atlas uses concise launch notes", importance: 0.9 }],
+        access: { enabled: true, automatic_chat_recall: true, allowed: true },
       });
     }) as typeof fetch;
     try {
@@ -139,7 +141,9 @@ describe("screenpipe recall runtime policy", () => {
       expect(result.systemPrompt).toContain("base system prompt");
       expect(result.systemPrompt).toContain("Atlas uses concise launch notes");
       expect(result.systemPrompt.length).toBeLessThan(5_000);
-      expect(calls.some((url) => url.includes("/memories?"))).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("/memories/recall?");
+      expect(calls[0]).toContain("automatic=true");
     } finally {
       globalThis.fetch = originalFetch;
       if (previousKey === undefined) delete process.env.SCREENPIPE_LOCAL_API_KEY;
@@ -155,16 +159,21 @@ describe("screenpipe recall runtime policy", () => {
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const url = String(input);
       calls.push(url);
-      return Response.json({ enabled: false, automatic_chat_recall: true });
+      return Response.json({
+        data: [],
+        access: { enabled: false, automatic_chat_recall: true, allowed: false },
+      });
     }) as typeof fetch;
     try {
       const { beforeStart, tool } = registerHarness();
       expect(await beforeStart({ prompt: "Remember Atlas", systemPrompt: "base" })).toBeUndefined();
-      expect(calls.filter((url) => url.includes("/memories?")).length).toBe(0);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("/memories/recall?");
 
       const result = await tool.execute("call", { q: "Atlas" }, new AbortController().signal);
       expect(result.content[0].text).toContain("memory for agents is off");
-      expect(calls.filter((url) => url.includes("/memories?")).length).toBe(0);
+      expect(calls).toHaveLength(2);
+      expect(calls.every((url) => url.includes("/memories/recall?"))).toBe(true);
     } finally {
       globalThis.fetch = originalFetch;
       if (previousKey === undefined) delete process.env.SCREENPIPE_LOCAL_API_KEY;

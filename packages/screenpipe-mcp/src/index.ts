@@ -1633,43 +1633,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "recall-memories": {
-        if (!(await agentMemoryEnabled())) {
-          return {
-            content: [{
-              type: "text",
-              text: "Screenpipe memory for agents is off. The user can enable it in Settings; continue without memory context.",
-            }],
-          };
-        }
         const { q, params } = buildMemoryRecallRequest(args);
         const requestedLimit = Number(params.get("limit") ?? 5);
-        const backendParams = new URLSearchParams(params);
-        // Legacy stores may contain pre-contract importance values above 1.
-        // Fetch a bounded candidate pool so ambient recall can re-rank those
-        // values on the documented 0-1 scale instead of letting a few old
-        // "8.0" rows permanently crowd out current high-signal memories.
-        if (!q) backendParams.set("limit", "200");
-        const response = await callAPI(`/memories?${backendParams.toString()}`);
-        let data = (await response.json()) as MemoryList;
-        if (!q && Array.isArray(data?.data)) {
-          const total = data.pagination?.total;
-          data = mergeMemoryRecallLists([data], requestedLimit);
-          data.pagination = { total };
-        }
-        if (q && (!Array.isArray(data?.data) || data.data.length === 0)) {
-          const fallbackResponses = await Promise.allSettled(
-            memoryRecallFallbackQueries(q).map(async (fallbackQuery) => {
-              const fallbackParams = new URLSearchParams(params);
-              fallbackParams.set("q", fallbackQuery);
-              const fallback = await callAPI(`/memories?${fallbackParams.toString()}`);
-              return (await fallback.json()) as MemoryList;
-            }),
-          );
-          const lists = fallbackResponses.flatMap((result) =>
-            result.status === "fulfilled" ? [result.value] : [],
-          );
-          if (lists.length > 0) {
-            data = mergeMemoryRecallLists(lists, requestedLimit);
+        let data: MemoryList;
+        try {
+          // Current backends own consent, fallback selection, privacy
+          // filtering, and ranking in one local request.
+          const response = await callAPI(`/memories/recall?${params.toString()}`);
+          data = (await response.json()) as MemoryList;
+          if (data.access?.enabled !== true) {
+            return {
+              content: [{
+                type: "text",
+                text: "Screenpipe memory for agents is off. The user can enable it in Settings; continue without memory context.",
+              }],
+            };
+          }
+        } catch (error) {
+          // MCP can update independently of the desktop engine. Preserve
+          // compatibility with older local backends while keeping the fast
+          // one-request path for current releases.
+          if (!(error instanceof BackendHttpError) || error.status !== 404) {
+            throw error;
+          }
+          if (!(await agentMemoryEnabled())) {
+            return {
+              content: [{
+                type: "text",
+                text: "Screenpipe memory for agents is off. The user can enable it in Settings; continue without memory context.",
+              }],
+            };
+          }
+          const backendParams = new URLSearchParams(params);
+          if (!q) backendParams.set("limit", "200");
+          const response = await callAPI(`/memories?${backendParams.toString()}`);
+          data = (await response.json()) as MemoryList;
+          if (!q && Array.isArray(data?.data)) {
+            const total = data.pagination?.total;
+            data = mergeMemoryRecallLists([data], requestedLimit);
+            data.pagination = { total };
+          }
+          if (q && (!Array.isArray(data?.data) || data.data.length === 0)) {
+            const fallbackResponses = await Promise.allSettled(
+              memoryRecallFallbackQueries(q).map(async (fallbackQuery) => {
+                const fallbackParams = new URLSearchParams(params);
+                fallbackParams.set("q", fallbackQuery);
+                const fallback = await callAPI(`/memories?${fallbackParams.toString()}`);
+                return (await fallback.json()) as MemoryList;
+              }),
+            );
+            const lists = fallbackResponses.flatMap((result) =>
+              result.status === "fulfilled" ? [result.value] : [],
+            );
+            if (lists.length > 0) {
+              data = mergeMemoryRecallLists(lists, requestedLimit);
+            }
           }
         }
         const formatted = formatMemoryRecallResponse(data, q);

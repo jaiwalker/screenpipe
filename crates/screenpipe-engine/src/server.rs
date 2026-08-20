@@ -55,7 +55,7 @@ use crate::{
         memories::{
             cleanup_external_agent_memory_handler, create_memory_handler, delete_memory_handler,
             get_memory_agent_policy_handler, get_memory_handler, list_memories_handler,
-            list_memory_tags_handler, sync_external_memories_handler,
+            list_memory_tags_handler, recall_memories_handler, sync_external_memories_handler,
             update_memory_agent_policy_handler, update_memory_handler,
         },
         retranscribe::retranscribe_meeting_handler,
@@ -932,6 +932,7 @@ impl SCServer {
             .post("/memories", create_memory_handler)
             .get("/memories", list_memories_handler)
             .get("/memories/tags", list_memory_tags_handler)
+            .get("/memories/recall", recall_memories_handler)
             .get("/memories/agent-policy", get_memory_agent_policy_handler)
             .put("/memories/agent-policy", update_memory_agent_policy_handler)
             .post("/memories/sync-external", sync_external_memories_handler)

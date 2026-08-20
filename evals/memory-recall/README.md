@@ -11,10 +11,19 @@ retrieval recall, privacy-tag exclusion, policy-off behavior, stale/deleted
 handling, adversarial-memory framing, multilingual prompts, large histories,
 and context budgets. Harness checks prove that each integration uses the
 shared policy contract; they do not prove that a model chose a good answer.
+The deterministic report also guards the single-request recall contract used
+by Pi, ACP, and MCP. The engine performs consent, any-term FTS ranking, and
+privacy filtering in one SQLite query rather than making every harness fan out
+one exact request plus four fallback requests.
 
 Model-quality claims require separate repeated runs against the selected real
 models and adapters. Keep those results labeled by model, adapter version,
 dataset fingerprint, trial count, timeout count, and no-memory baseline.
+The model report records p50/p95 wall-clock latency for both baseline and
+memory-enhanced variants. Treat that as an adapter/provider signal, not as the
+local retrieval benchmark: the deterministic harness tests separately enforce
+one blocking local retrieval request per recall. Best-effort telemetry remains
+fire-and-forget and is not on the agent response path.
 
 Run that separate gate with:
 

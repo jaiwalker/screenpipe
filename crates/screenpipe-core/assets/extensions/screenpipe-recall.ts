@@ -29,18 +29,27 @@ export type Memory = {
   updated_at?: unknown;
 };
 
-type AgentPolicy = { enabled?: boolean; automatic_chat_recall?: boolean };
+type RecallResponse = {
+  data?: Memory[];
+  access?: { enabled?: boolean; automatic_chat_recall?: boolean; allowed?: boolean };
+};
 type PipeRuntimePolicy = {
   pipe_token?: string;
   memory_mode?: "off" | "relevant" | "required";
 };
 
+let cachedPipeRuntimePolicy: PipeRuntimePolicy | null = null;
+
 function pipeRuntimePolicy(): PipeRuntimePolicy {
+  if (cachedPipeRuntimePolicy) return cachedPipeRuntimePolicy;
   try {
-    return JSON.parse(readFileSync(join(process.cwd(), ".screenpipe-permissions.json"), "utf8")) as PipeRuntimePolicy;
+    cachedPipeRuntimePolicy = JSON.parse(
+      readFileSync(join(process.cwd(), ".screenpipe-permissions.json"), "utf8"),
+    ) as PipeRuntimePolicy;
   } catch {
-    return {};
+    cachedPipeRuntimePolicy = {};
   }
+  return cachedPipeRuntimePolicy;
 }
 
 let discoveredKey: Promise<string> | null = null;
@@ -133,13 +142,20 @@ export function fallbackQueries(q: string, max = 4): string[] {
   ]);
   return Array.from(new Set(
     [
-      ...(q.match(/[\p{L}\p{N}][\p{L}\p{N}:_-]{2,}/gu) || []),
-      ...(q.match(/[A-Za-z0-9][A-Za-z0-9:_-]{2,}/g) || []),
+      ...(q.match(/[\p{L}\p{N}][\p{L}\p{N}:_-]{1,}/gu) || []),
+      ...(q.match(/[A-Za-z0-9][A-Za-z0-9:_-]{1,}/g) || []),
     ]
       .map((term) => term.replace(/^[-_:]+|[-_:]+$/g, ""))
-      .filter((term) => term.length >= 3 && !stop.has(term.toLocaleLowerCase())),
+      .filter((term) => {
+        const length = Array.from(term).length;
+        const compactId = length === 2 && (/[^\x00-\x7F]|\d/.test(term) || /^[A-Z]{2}$/.test(term));
+        return (length >= 3 || compactId) && !stop.has(term.toLocaleLowerCase());
+      }),
   ))
-    .sort((a, b) => Number(/[\d:_-]/.test(b)) - Number(/[\d:_-]/.test(a)) || b.length - a.length)
+    .sort((a, b) => {
+      const distinctive = (term: string) => /[^\x00-\x7F\s]|[\d:_-]/.test(term) || /^[A-Z]{2}$/.test(term);
+      return Number(distinctive(b)) - Number(distinctive(a)) || b.length - a.length;
+    })
     .slice(0, max);
 }
 
@@ -211,21 +227,16 @@ async function requestMemories(
   query: string,
   minImportance: number,
   limit: number,
+  automatic: boolean,
   signal: AbortSignal,
-): Promise<Memory[]> {
+): Promise<RecallResponse> {
   const params = new URLSearchParams({
     min_importance: String(minImportance),
-    limit: String(Math.max(limit, 8)),
-    order_by: "importance",
-    order_dir: "desc",
+    limit: String(limit),
+    automatic: String(automatic),
   });
   if (query) params.set("q", query);
-  const body = await authorizedJson(apiBase, `/memories?${params}`, signal) as { data?: Memory[] };
-  return Array.isArray(body.data) ? body.data : [];
-}
-
-async function agentPolicy(apiBase: string, signal: AbortSignal): Promise<AgentPolicy> {
-  return authorizedJson(apiBase, "/memories/agent-policy", signal) as Promise<AgentPolicy>;
+  return authorizedJson(apiBase, `/memories/recall?${params}`, signal) as Promise<RecallResponse>;
 }
 
 async function recall(
@@ -233,13 +244,21 @@ async function recall(
   q: string,
   minImportance: number,
   limit: number,
+  automatic: boolean,
   signal: AbortSignal,
-): Promise<Memory[]> {
-  const queries = q ? Array.from(new Set([q, ...fallbackQueries(q)])) : [""];
-  const lists = await Promise.all(
-    queries.map((query) => requestMemories(apiBase, query, minImportance, limit, signal)),
+): Promise<RecallResponse> {
+  const response = await requestMemories(
+    apiBase,
+    q,
+    minImportance,
+    limit,
+    automatic,
+    signal,
   );
-  return rankAndBoundMemories(lists.flat(), limit);
+  return {
+    ...response,
+    data: rankAndBoundMemories(Array.isArray(response.data) ? response.data : [], limit),
+  };
 }
 
 export default function (pi: ExtensionAPI) {
@@ -258,11 +277,17 @@ export default function (pi: ExtensionAPI) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5_000);
     try {
-      const policy = await agentPolicy(apiBase, controller.signal);
-      if (!policy.enabled) return;
-      if (!mode && policy.automatic_chat_recall === false) return;
+      const response = await recall(
+        apiBase,
+        prompt,
+        0.4,
+        AUTO_CONTEXT_LIMIT,
+        !mode,
+        controller.signal,
+      );
+      if (response.access?.allowed !== true) return;
       const context = formatMemoryContext(
-        await recall(apiBase, prompt, 0.4, AUTO_CONTEXT_LIMIT, controller.signal),
+        response.data || [],
       );
       if (!context) return;
       return { systemPrompt: `${event.systemPrompt || ""}\n\n${context}` };
@@ -285,15 +310,15 @@ export default function (pi: ExtensionAPI) {
       signal: AbortSignal,
     ) {
       try {
-        const policy = await agentPolicy(apiBase, signal);
-        if (!policy.enabled) {
-          return { content: [{ type: "text" as const, text: "Screenpipe memory for agents is off. Continue without memory context." }] };
-        }
         const q = String(args.q || "").trim();
         const limit = Math.min(20, Math.max(1, Math.trunc(Number(args.limit) || 5)));
         const minImportance = Math.min(1, Math.max(0, Number(args.min_importance ?? (q ? 0.4 : 0.6))));
+        const response = await recall(apiBase, q, minImportance, limit, false, signal);
+        if (response.access?.enabled !== true) {
+          return { content: [{ type: "text" as const, text: "Screenpipe memory for agents is off. Continue without memory context." }] };
+        }
         const context = formatMemoryContext(
-          await recall(apiBase, q, minImportance, limit, signal),
+          response.data || [],
           12_000,
         );
         return { content: [{

@@ -94,6 +94,10 @@ describe("memory recall", () => {
       "readiness",
       "launch",
     ]);
+    const shortIds = memoryRecallFallbackQueries("remember HR R2 人事", 6);
+    expect(shortIds).toContain("HR");
+    expect(shortIds).toContain("R2");
+    expect(shortIds).toContain("人事");
   });
 
   it("merges relaxed matches by term coverage then bounded importance", () => {

@@ -18,7 +18,9 @@ use crate::{analytics, routes::request_origin::ExplicitApiClient, server::AppSta
 use screenpipe_core::memories::agent_policy::{
     load_policy, save_policy, MemoryAgentPolicy, AGENT_POLICY_SCHEMA,
 };
-use screenpipe_core::memories::recall::{parse_memory_tags_fail_closed, tag_blocks_external_ai};
+use screenpipe_core::memories::recall::{
+    fallback_queries, parse_memory_tags_fail_closed, tag_blocks_external_ai,
+};
 
 #[derive(OaSchema, Deserialize)]
 pub(crate) struct CreateMemoryRequest {
@@ -72,6 +74,20 @@ pub(crate) struct MemoryListResponse {
     pub pagination: PaginationInfo,
 }
 
+#[derive(OaSchema, Serialize)]
+pub(crate) struct RecallAccess {
+    pub enabled: bool,
+    pub automatic_chat_recall: bool,
+    pub allowed: bool,
+}
+
+#[derive(OaSchema, Serialize)]
+pub(crate) struct RecallMemoriesResponse {
+    pub data: Vec<MemoryListItem>,
+    pub pagination: PaginationInfo,
+    pub access: RecallAccess,
+}
+
 #[derive(OaSchema, Deserialize)]
 pub(crate) struct ListMemoriesQuery {
     pub q: Option<String>,
@@ -90,8 +106,24 @@ pub(crate) struct ListMemoriesQuery {
     pub order_dir: Option<String>,
 }
 
+#[derive(OaSchema, Deserialize)]
+pub(crate) struct RecallMemoriesQuery {
+    pub q: Option<String>,
+    pub min_importance: Option<f64>,
+    #[serde(default = "default_recall_limit")]
+    pub limit: u32,
+    /// Automatic injection obeys the narrower chat-recall toggle. Manual tool
+    /// calls leave this false and depend only on the master consent switch.
+    #[serde(default)]
+    pub automatic: bool,
+}
+
 fn default_limit() -> u32 {
     20
+}
+
+fn default_recall_limit() -> u32 {
+    5
 }
 
 #[derive(OaSchema, Deserialize)]
@@ -218,6 +250,8 @@ fn memory_to_response(m: screenpipe_db::MemoryRecord) -> MemoryResponse {
 const MAX_TAG_LENGTH: usize = 100;
 const MAX_TAGS_COUNT: usize = 50;
 const MAX_CONTENT_LENGTH: usize = 50_000;
+const MAX_RECALL_QUERY_CHARS: usize = 4_000;
+const MAX_RECALL_CANDIDATES: u32 = 200;
 
 fn validate_tags(tags: &[String]) -> Result<(), (StatusCode, JsonResponse<Value>)> {
     if tags.len() > MAX_TAGS_COUNT {
@@ -305,6 +339,126 @@ pub(crate) async fn create_memory_handler(
     })?;
 
     Ok(JsonResponse(memory_to_response(memory)))
+}
+
+/// One-request, model-free recall for agent harnesses. The server owns consent,
+/// fallback-term selection, ranking, and privacy filtering so clients do not
+/// fan out several local HTTP and SQLite queries or implement subtly different
+/// privacy rules.
+#[oasgen]
+pub(crate) async fn recall_memories_handler(
+    State(state): State<Arc<AppState>>,
+    api_client: ExplicitApiClient,
+    Query(query): Query<RecallMemoriesQuery>,
+) -> Result<JsonResponse<RecallMemoriesResponse>, (StatusCode, JsonResponse<Value>)> {
+    let policy = load_policy(&state.screenpipe_dir);
+    let allowed = policy.enabled && (!query.automatic || policy.automatic_chat_recall);
+    let limit = query.limit.clamp(1, 20);
+    if !allowed {
+        return Ok(JsonResponse(RecallMemoriesResponse {
+            data: Vec::new(),
+            pagination: PaginationInfo {
+                limit,
+                offset: 0,
+                total: 0,
+            },
+            access: RecallAccess {
+                enabled: policy.enabled,
+                automatic_chat_recall: policy.automatic_chat_recall,
+                allowed: false,
+            },
+        }));
+    }
+
+    let q = query
+        .q
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(MAX_RECALL_QUERY_CHARS)
+        .collect::<String>();
+    let targeted = !q.is_empty();
+    let terms = if targeted {
+        fallback_queries(&q, 6)
+    } else {
+        Vec::new()
+    };
+    let default_floor = if targeted { 0.4 } else { 0.6 };
+    let min_importance = query
+        .min_importance
+        .filter(|value| value.is_finite())
+        .unwrap_or(default_floor)
+        .clamp(0.0, 1.0);
+
+    // A non-empty query with no safe/distinctive terms must not silently turn
+    // into ambient recall and inject unrelated personal context.
+    let candidates = if targeted && terms.is_empty() {
+        Vec::new()
+    } else {
+        let candidate_limit = limit.saturating_mul(8).clamp(40, MAX_RECALL_CANDIDATES);
+        state
+            .db
+            .recall_memories(&terms, min_importance, candidate_limit)
+            .await
+            .map_err(|error| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    JsonResponse(json!({"error": error.to_string()})),
+                )
+            })?
+    };
+
+    let memories = candidates
+        .into_iter()
+        .filter(|memory| {
+            parse_memory_tags_fail_closed(memory.tags.as_deref())
+                .iter()
+                .all(|tag| !tag_blocks_external_ai(tag))
+        })
+        .take(limit as usize)
+        .collect::<Vec<_>>();
+    analytics::capture_event_nonblocking(
+        "memory_recall_performed",
+        json!({
+            "request_source": api_client.source_label(),
+            "has_query": targeted,
+            "has_importance_floor": query.min_importance.is_some(),
+            "result_count": memories.len(),
+            "non_empty": !memories.is_empty(),
+            "limit": limit,
+            "automatic": query.automatic,
+            "local_http_requests": 1,
+            "sqlite_queries": 1,
+        }),
+    );
+
+    let total = memories.len() as i64;
+    Ok(JsonResponse(RecallMemoriesResponse {
+        data: memories
+            .into_iter()
+            .map(|memory| MemoryListItem {
+                id: memory.id,
+                content: memory.content,
+                source: memory.source,
+                tags: parse_memory_tags_fail_closed(memory.tags.as_deref()),
+                importance: memory.importance,
+                frame_id: memory.frame_id,
+                created_at: memory.created_at,
+                updated_at: memory.updated_at,
+            })
+            .collect(),
+        pagination: PaginationInfo {
+            limit,
+            offset: 0,
+            total,
+        },
+        access: RecallAccess {
+            enabled: true,
+            automatic_chat_recall: policy.automatic_chat_recall,
+            allowed: true,
+        },
+    }))
 }
 
 #[oasgen]

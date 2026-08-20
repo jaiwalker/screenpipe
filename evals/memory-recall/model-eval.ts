@@ -107,7 +107,8 @@ async function spawnCapture(
   cwd: string,
   outputFile?: string,
   envOverrides: Record<string, string> = {},
-): Promise<{ output: string; exitCode: number; timeout: boolean }> {
+): Promise<{ output: string; exitCode: number; timeout: boolean; durationMs: number }> {
+  const startedAt = performance.now();
   const process = Bun.spawn(command, {
     cwd,
     stdin: "ignore",
@@ -131,7 +132,12 @@ async function spawnCapture(
     output = await readFile(outputFile, "utf8").catch(() => output);
   }
   if (!output && stderr) output = stderr.trim();
-  return { output: output.trim(), exitCode, timeout: timedOut };
+  return {
+    output: output.trim(),
+    exitCode,
+    timeout: timedOut,
+    durationMs: Math.round(performance.now() - startedAt),
+  };
 }
 
 type RunResult = Awaited<ReturnType<typeof spawnCapture>> & {
@@ -257,6 +263,8 @@ async function adapterWorker(adapter: Adapter) {
           ),
           exit_code: result.exitCode,
           timeout: result.timeout,
+          duration_ms: result.durationMs,
+          output_chars: result.output.length,
           available: unavailable === null,
           unavailable_reason: unavailable,
           model: result.model ?? modelOverrides[adapter]
@@ -291,6 +299,19 @@ const scored = (variant: string) =>
   results.filter((result) => result.variant === variant && result.available === true);
 const rate = (rows: Array<Record<string, unknown>>, key: string) =>
   rows.length ? rows.filter((row) => row[key] === true).length / rows.length : 0;
+const percentile = (rows: Array<Record<string, unknown>>, percentileValue: number) => {
+  const values = rows
+    .map((row) => Number(row.duration_ms))
+    .filter(Number.isFinite)
+    .sort((left, right) => left - right);
+  if (!values.length) return null;
+  return values[Math.min(values.length - 1, Math.ceil(values.length * percentileValue) - 1)];
+};
+const latencySummary = (rows: Array<Record<string, unknown>>) => ({
+  runs: rows.length,
+  p50_ms: percentile(rows, 0.5),
+  p95_ms: percentile(rows, 0.95),
+});
 const unavailable = results.filter((result) => result.available === false);
 const executionErrors = results.filter(
   (result) => result.exit_code !== 0 && result.unavailable_reason === null,
@@ -307,6 +328,12 @@ const adapterSummary = selected.map((adapter) => {
     unavailable_reason: rows.find((result) => result.unavailable_reason)?.unavailable_reason ?? null,
     models: Array.from(new Set(rows.map((result) => result.model).filter(Boolean))),
     providers: Array.from(new Set(rows.map((result) => result.provider).filter(Boolean))),
+    no_memory_latency: latencySummary(
+      eligible.filter((result) => result.variant === "no_memory"),
+    ),
+    memory_latency: latencySummary(
+      eligible.filter((result) => result.variant === "memory"),
+    ),
   };
 });
 const report = {
@@ -332,6 +359,8 @@ const report = {
   baseline_unknown_rate: rate(scored("no_memory"), "correct"),
   memory_answer_accuracy: rate(scored("memory"), "correct"),
   forbidden_output_rate: rate(scored("memory"), "forbidden"),
+  no_memory_latency: latencySummary(scored("no_memory")),
+  memory_latency: latencySummary(scored("memory")),
   timeout_count: results.filter((result) => result.timeout).length,
   nonzero_exit_count: results.filter((result) => result.exit_code !== 0).length,
   adapter_summary: adapterSummary,
