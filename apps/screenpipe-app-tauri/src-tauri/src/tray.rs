@@ -48,9 +48,6 @@ struct TrayMenuData {
     show_shortcut: String,
     search_shortcut: String,
     chat_shortcut: String,
-    cloud_subscribed: bool,
-    /// Internal plan id from /api/user (standard|pro|team|enterprise|lifetime|none).
-    subscription_plan: Option<String>,
     has_permission_issue: bool,
     app_ui_hidden: bool,
     disable_timeline: bool,
@@ -115,8 +112,6 @@ fn prefetch_tray_menu_data(app: &AppHandle) -> TrayMenuData {
         chat_shortcut.clear();
     }
 
-    let cloud_subscribed = settings.user.cloud_subscribed == Some(true);
-    let subscription_plan = settings.user.subscription_plan.clone();
     let disable_timeline = settings.recording.disable_timeline;
     let all_capture_disabled =
         settings.recording.disable_audio && settings.recording.disable_vision;
@@ -142,70 +137,11 @@ fn prefetch_tray_menu_data(app: &AppHandle) -> TrayMenuData {
         show_shortcut,
         search_shortcut,
         chat_shortcut,
-        cloud_subscribed,
-        subscription_plan,
         has_permission_issue,
         app_ui_hidden,
         disable_timeline,
         all_capture_disabled,
     }
-}
-
-/// Map an internal plan id to the public pricing-page display name.
-/// The pricing page renames the tiers: standard→"Basic", pro→"Business",
-/// enterprise→"Enterprise". Keep in sync with `planDisplayName` in
-/// lib/app-entitlement.ts.
-///
-/// `team`/`enterprise` are org/license-derived: the consumer build has no
-/// self-serve Team/Enterprise product, so an account entitled via an enterprise
-/// org (e.g. an admin or member of an active license) — which still gets
-/// Business-equivalent features here — is shown as "Business" rather than
-/// "Enterprise". Only the enterprise build surfaces the real org label.
-fn plan_display_name(plan: Option<&str>) -> &'static str {
-    let enterprise_build = cfg!(feature = "enterprise-build");
-    match plan.unwrap_or("none").to_ascii_lowercase().as_str() {
-        "standard" | "basic" => "Basic",
-        "pro" | "business" => "Business",
-        // Business Max/Ultra were added to the web and TS plan maps but never
-        // here, so they fell through to `_ => "Free"`: a paying $100/mo Max or
-        // $200/mo Ultra account was labelled "Free plan" in the tray and shown
-        // an "Upgrade to Business" item for a plan it already exceeds.
-        "pro_max" | "business_max" => "Business Max",
-        "pro_ultra" | "business_ultra" => "Business Ultra",
-        "team" => {
-            if enterprise_build {
-                "Team"
-            } else {
-                "Business"
-            }
-        }
-        "enterprise" => {
-            if enterprise_build {
-                "Enterprise"
-            } else {
-                "Business"
-            }
-        }
-        "lifetime" => "Lifetime",
-        _ => "Free",
-    }
-}
-
-/// True when the plan already includes Business or better, so the tray must not
-/// offer an upgrade to it. Lifetime maps to Basic and is deliberately excluded:
-/// a Lifetime holder can still add Business for cloud sync and cloud AI.
-fn plan_includes_business(plan: Option<&str>) -> bool {
-    matches!(
-        plan.unwrap_or("none").to_ascii_lowercase().as_str(),
-        "pro"
-            | "business"
-            | "pro_max"
-            | "business_max"
-            | "pro_ultra"
-            | "business_ultra"
-            | "team"
-            | "enterprise"
-    )
 }
 
 /// Global storage for the update menu item so we can recreate the tray
@@ -432,7 +368,7 @@ pub(crate) fn installed_recording_status_text() -> Result<Option<String>> {
     let Some(item) = menu.get("recording_status") else {
         return Ok(None);
     };
-    let Some(item) = item.as_menuitem() else {
+    let Some(item) = item.as_check_menuitem() else {
         return Ok(None);
     };
     Ok(Some(item.text()?))
@@ -507,8 +443,6 @@ fn snapshot_menu_state(data: &TrayMenuData, effective_status: RecordingStatus) -
             .iter()
             .map(|d| (d.name.clone(), d.active))
             .collect(),
-        cloud_subscribed: data.cloud_subscribed,
-        subscription_plan: data.subscription_plan.clone(),
         hd: hd_menu_state(&hd),
         all_capture_disabled: data.all_capture_disabled,
     }
@@ -657,10 +591,6 @@ struct MenuState {
     has_permission_issue: bool,
     /// Device names + active status for change detection
     devices: Vec<(String, bool)>,
-    /// Whether user has a cloud (Business+) subscription (triggers menu rebuild on login)
-    cloud_subscribed: bool,
-    /// Plan id (Free/Basic/Business/…) so plan-label changes also rebuild the menu
-    subscription_plan: Option<String>,
     /// Stable HD session fields determine whether the menu structure changed.
     /// The per-tick countdown is updated on the existing item instead of being
     /// part of this equality key, which avoids rebuilding the native menu.
@@ -846,34 +776,34 @@ fn set_autosave_name(_tray: &TrayIcon<Wry>) {
 #[cfg(not(target_os = "macos"))]
 fn set_autosave_name(_tray: &TrayIcon<Wry>) {}
 
-fn recording_status_text(
+fn recording_control_label(
     status: RecordingStatus,
     all_capture_disabled: bool,
     audio_capture_status: Option<AudioCaptureStatus>,
 ) -> &'static str {
     match (status, all_capture_disabled, audio_capture_status) {
-        (RecordingStatus::Recording, true, _) => "○ Stopped",
+        (RecordingStatus::Recording, true, _) => "Stopped — no devices enabled",
         (RecordingStatus::Recording, false, Some(AudioCaptureStatus::WaitingForMeeting)) => {
-            "● Screen recording · audio waiting for meeting"
+            "Recording screen · audio waiting for meeting"
         }
         (
             RecordingStatus::Recording,
             false,
             Some(AudioCaptureStatus::MeetingDetectorUnavailable),
-        ) => "● Screen recording · meeting detection unavailable",
-        (RecordingStatus::Starting, _, _) => "○ Starting…",
-        (RecordingStatus::Recording, _, _) => "● Recording",
-        (RecordingStatus::Paused, _, _) => "◐ Paused",
-        (RecordingStatus::ScheduledPause, _, _) => "○ Outside work hours",
-        (RecordingStatus::Stopped, _, _) => "○ Stopped",
-        (RecordingStatus::Error, _, _) => "○ Error",
+        ) => "Recording screen · meeting detection unavailable",
+        (RecordingStatus::Starting, _, _) => "Starting…",
+        (RecordingStatus::Recording, _, _) => "Recording normally",
+        (RecordingStatus::Paused, _, _) => "Paused — click to resume",
+        (RecordingStatus::ScheduledPause, _, _) => "Outside work hours — paused by schedule",
+        (RecordingStatus::Stopped, _, _) => "Stopped — click to record",
+        (RecordingStatus::Error, _, _) => "Recording needs attention — click to retry",
     }
 }
 
 fn create_dynamic_menu(
     app: &AppHandle,
     _state: &MenuState,
-    update_item: Option<&tauri::menu::MenuItem<Wry>>,
+    _update_item: Option<&tauri::menu::MenuItem<Wry>>,
     data: &TrayMenuData,
 ) -> Result<tauri::menu::Menu<Wry>> {
     let mut menu_builder = MenuBuilder::new(app);
@@ -903,25 +833,52 @@ fn create_dynamic_menu(
     let show_shortcut = &data.show_shortcut;
     let search_shortcut = &data.search_shortcut;
     let chat_shortcut = &data.chat_shortcut;
+    let all_capture_disabled = data.all_capture_disabled;
+    let effective_status = get_effective_recording_status();
+    let info = get_recording_info();
+    let recording_controls_visible = !is_tray_item_hidden("tray_recording_controls");
 
-    // --- Open screenpipe ---
-    if !data.app_ui_hidden {
-        menu_builder = menu_builder
-            .item(&MenuItemBuilder::with_id("open_app", "Open screenpipe").build(app)?)
-            .item(&PredefinedMenuItem::separator(app)?);
+    // One live recording control replaces the old disabled status row plus
+    // the second toggle at the bottom of the menu.
+    if recording_controls_visible {
+        let label = recording_control_label(
+            effective_status,
+            all_capture_disabled,
+            info.audio_capture_status,
+        );
+        let is_recording = effective_status == RecordingStatus::Recording && !all_capture_disabled;
+        let toggle = CheckMenuItemBuilder::with_id("recording_status", label)
+            .checked(is_recording)
+            .enabled(!all_capture_disabled)
+            .build(app)?;
+        menu_builder = menu_builder.item(&toggle);
+
+        if effective_status == RecordingStatus::Error && data.has_permission_issue {
+            menu_builder = menu_builder
+                .item(&MenuItemBuilder::with_id("fix_permissions", "Fix permissions…").build(app)?);
+        }
     }
 
     // --- Primary actions (most-used first) ---
     // Use native accelerators for right-aligned shortcut display (like Notion Calendar)
+    if !data.app_ui_hidden {
+        if recording_controls_visible {
+            menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
+        }
+    }
     if !data.app_ui_hidden && !is_tray_item_hidden("tray_chat") {
-        let mut item = MenuItemBuilder::with_id("show_chat", "Chat");
+        let mut item = MenuItemBuilder::with_id("show_chat", "Ask screenpipe");
         if !chat_shortcut.is_empty() {
             item = item.accelerator(&to_accelerator(chat_shortcut));
         }
         menu_builder = menu_builder.item(&item.build(app)?);
     }
+    if !data.app_ui_hidden && !is_tray_item_hidden("tray_meetings") {
+        menu_builder = menu_builder
+            .item(&MenuItemBuilder::with_id("meeting_notes", "Meeting notes").build(app)?);
+    }
     if !data.app_ui_hidden && !is_tray_item_hidden("tray_search") {
-        let mut item = MenuItemBuilder::with_id("show_search", "Search");
+        let mut item = MenuItemBuilder::with_id("show_search", "Search memory");
         if !search_shortcut.is_empty() {
             item = item.accelerator(&to_accelerator(search_shortcut));
         }
@@ -934,34 +891,13 @@ fn create_dynamic_menu(
         }
         menu_builder = menu_builder.item(&item.build(app)?);
     }
-
-    // --- Recording status + devices ---
-    let all_capture_disabled = data.all_capture_disabled;
-    let effective_status = get_effective_recording_status();
-    let info = get_recording_info();
-    let status_text = recording_status_text(
-        effective_status,
-        all_capture_disabled,
-        info.audio_capture_status,
-    );
-    menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
-
-    if !all_capture_disabled
-        && (effective_status == RecordingStatus::Recording
-            || effective_status == RecordingStatus::Starting)
-    {
-        menu_builder = menu_builder.item(
-            &MenuItemBuilder::with_id("privacy_info", "Your data stays local")
-                .enabled(false)
-                .build(app)?,
-        );
+    if !data.app_ui_hidden && !is_tray_item_hidden("tray_connections") {
+        menu_builder = menu_builder
+            .item(&MenuItemBuilder::with_id("ai_tools", "Use with AI tools…").build(app)?);
     }
 
-    menu_builder = menu_builder.item(
-        &MenuItemBuilder::with_id("recording_status", status_text)
-            .enabled(false)
-            .build(app)?,
-    );
+    let mut recording_options = SubmenuBuilder::new(app, "Recording options");
+    let mut has_recording_options = false;
 
     if !all_capture_disabled {
         // Monitors: CheckMenuItem when the sidecar reports a numeric id (per-display
@@ -980,7 +916,8 @@ fn create_dynamic_menu(
             crate::tray_monitor_preview::sync_refresh_monitors(&monitor_ids);
         }
         for device in monitors {
-            let label = format!("  ▣ {}", device.name);
+            has_recording_options = true;
+            let label = format!("▣ {}", device.name);
             if let Some(monitor_id) = device.monitor_id {
                 let is_active = vision_status
                     .iter()
@@ -1008,7 +945,7 @@ fn create_dynamic_menu(
                     )
                     .item(&preview_row)
                     .build()?;
-                    menu_builder = menu_builder.item(&submenu);
+                    recording_options = recording_options.item(&submenu);
                 }
 
                 #[cfg(not(target_os = "macos"))]
@@ -1019,12 +956,12 @@ fn create_dynamic_menu(
                     )
                     .checked(is_active)
                     .build(app)?;
-                    menu_builder = menu_builder.item(&toggle);
+                    recording_options = recording_options.item(&toggle);
                 }
             } else {
                 let dot = if device.active { "●" } else { "○" };
-                let fallback_label = format!("  {} ▣ {}", dot, device.name);
-                menu_builder = menu_builder.item(
+                let fallback_label = format!("{} ▣ {}", dot, device.name);
+                recording_options = recording_options.item(
                     &MenuItemBuilder::with_id(format!("monitor_{}", device.name), fallback_label)
                         .enabled(false)
                         .build(app)?,
@@ -1044,6 +981,7 @@ fn create_dynamic_menu(
             .collect();
         audio_devices.sort_by(|a, b| a.name.cmp(&b.name));
         for device in audio_devices {
+            has_recording_options = true;
             let suffix = if device.kind == DeviceKind::AudioInput {
                 "input"
             } else {
@@ -1059,88 +997,20 @@ fn create_dynamic_menu(
             let is_running = device_status
                 .iter()
                 .any(|d| d.name == full_name && d.is_running);
-            let label = format!("  {} {}", icon, device.name);
+            let label = format!("{} {}", icon, device.name);
             let toggle =
                 CheckMenuItemBuilder::with_id(format!("toggle_audio_device_{}", full_name), label)
                     .checked(is_running)
                     .build(app)?;
-            menu_builder = menu_builder.item(&toggle);
+            recording_options = recording_options.item(&toggle);
         }
     }
-
-    // Show "fix permissions" when recording is in error state
-    if effective_status == RecordingStatus::Error && data.has_permission_issue {
-        menu_builder = menu_builder
-            .item(&MenuItemBuilder::with_id("fix_permissions", "⚠ Fix permissions").build(app)?);
-    }
-
-    // --- Plan / usage info ---
-    if !data.app_ui_hidden && !is_tray_item_hidden("tray_plan") {
-        let plan_label = plan_display_name(data.subscription_plan.as_deref());
-        let has_cloud = data.cloud_subscribed;
-        menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
-        menu_builder = menu_builder.item(
-            &MenuItemBuilder::with_id("plan_info", format!("{} plan", plan_label))
-                .enabled(false)
-                .build(app)?,
-        );
-        // Anyone without cloud (Free, Basic, or Lifetime-only) can move up to
-        // Business to add cloud sync, cloud AI, and integrations. Plan truth is
-        // also checked: `cloud_subscribed` is a persisted flag that can lag
-        // behind the entitlement, and offering "Upgrade to Business" beside
-        // "Business Ultra plan" reads as a bug to the person paying for Ultra.
-        if !has_cloud && !plan_includes_business(data.subscription_plan.as_deref()) {
-            menu_builder = menu_builder
-                .item(&MenuItemBuilder::with_id("upgrade", "⚡ Upgrade to Business").build(app)?);
-        }
-    }
-
-    // --- Update item (if available) ---
-    if !data.app_ui_hidden {
-        if let Some(update_item) = update_item {
-            menu_builder = menu_builder
-                .item(&PredefinedMenuItem::separator(app)?)
-                .item(update_item);
-        }
-    }
-
-    // --- Version (below update item) ---
-    let is_beta = app.config().identifier.contains("beta");
-    let is_enterprise = cfg!(feature = "enterprise-build");
-    let version_text = match (is_beta, is_enterprise) {
-        (_, true) => format!("screenpipe v{} (Enterprise)", app.package_info().version),
-        (true, false) => format!("screenpipe v{} (Beta)", app.package_info().version),
-        (false, false) => format!("screenpipe v{}", app.package_info().version),
-    };
-    menu_builder = menu_builder.item(
-        &MenuItemBuilder::with_id("version", version_text)
-            .enabled(false)
-            .build(app)?,
-    );
 
     // --- Recording controls ---
-    if !is_tray_item_hidden("tray_recording_controls") {
+    if recording_controls_visible {
         menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
 
         let is_recording = effective_status == RecordingStatus::Recording && !all_capture_disabled;
-        let label = if all_capture_disabled {
-            "Stopped — no devices enabled"
-        } else {
-            match effective_status {
-                RecordingStatus::Recording => "Recording",
-                RecordingStatus::Paused => "Paused — click to resume",
-                RecordingStatus::ScheduledPause => "Outside work hours — paused by schedule",
-                RecordingStatus::Starting => "Starting…",
-                RecordingStatus::Error => "Error — click to retry",
-                _ => "Stopped — click to record",
-            }
-        };
-        let toggle = CheckMenuItemBuilder::with_id("toggle_recording", label)
-            .checked(is_recording)
-            .enabled(!all_capture_disabled)
-            .build(app)?;
-        menu_builder = menu_builder.item(&toggle);
-
         // "Pause for…" submenu — only meaningful while currently recording.
         // Each click stops capture immediately, then a tokio task auto-resumes
         // after the chosen interval. See cancel_pause_timer / handle_menu_event.
@@ -1161,18 +1031,25 @@ fn create_dynamic_menu(
         // Hidden when no devices are enabled — nothing to record in HD.
         let hd = get_high_fps_status();
         if hd.active {
+            if has_recording_options {
+                recording_options = recording_options.item(&PredefinedMenuItem::separator(app)?);
+            }
             let item = MenuItemBuilder::with_id("stop_hd_recording", hd_stop_menu_label(&hd))
                 .build(app)?;
             *HD_STOP_MENU_ITEM.lock().unwrap_or_else(|e| e.into_inner()) = Some(item.clone());
-            menu_builder = menu_builder.item(&item);
+            recording_options = recording_options.item(&item);
             // "Just realized I want to keep recording" path. +30 min is
             // the most common "one more demo / one more topic" extension;
             // bigger bumps go via the API or restart timer from scratch.
-            menu_builder = menu_builder.item(
+            recording_options = recording_options.item(
                 &MenuItemBuilder::with_id("extend_hd_30", "Extend HD by +30 min").build(app)?,
             );
+            has_recording_options = true;
         } else if !all_capture_disabled {
             *HD_STOP_MENU_ITEM.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            if has_recording_options {
+                recording_options = recording_options.item(&PredefinedMenuItem::separator(app)?);
+            }
             // Idle: offer timer-bound sessions only. The meeting-bound path
             // is reached via the meeting-start notification's "+ HD" action.
             let submenu = SubmenuBuilder::new(app, "Record HD")
@@ -1181,10 +1058,28 @@ fn create_dynamic_menu(
                 .item(&MenuItemBuilder::with_id("hd_timer_60", "1 hour").build(app)?)
                 .item(&MenuItemBuilder::with_id("hd_timer_120", "2 hours").build(app)?)
                 .build()?;
-            menu_builder = menu_builder.item(&submenu);
+            recording_options = recording_options.item(&submenu);
+            has_recording_options = true;
         } else {
             *HD_STOP_MENU_ITEM.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
+
+        if !data.app_ui_hidden {
+            if has_recording_options {
+                recording_options = recording_options.item(&PredefinedMenuItem::separator(app)?);
+            }
+            recording_options = recording_options.item(
+                &MenuItemBuilder::with_id("recording_settings", "Open recording settings…")
+                    .build(app)?,
+            );
+            has_recording_options = true;
+        }
+
+        if has_recording_options {
+            menu_builder = menu_builder.item(&recording_options.build()?);
+        }
+    } else {
+        *HD_STOP_MENU_ITEM.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     // TODO: vault lock tray item disabled — CLI-only for now
@@ -1199,7 +1094,7 @@ fn create_dynamic_menu(
     menu_builder = menu_builder.item(&PredefinedMenuItem::separator(app)?);
     if !data.app_ui_hidden && !is_tray_item_hidden("tray_settings") {
         menu_builder = menu_builder.item(
-            &MenuItemBuilder::with_id("settings", "Settings...")
+            &MenuItemBuilder::with_id("settings", "Settings…")
                 .accelerator("CmdOrCtrl+,")
                 .build(app)?,
         );
@@ -1290,8 +1185,11 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
             "show"
                 | "show_search"
                 | "show_chat"
+                | "meeting_notes"
+                | "ai_tools"
                 | "open_app"
                 | "settings"
+                | "recording_settings"
                 | "upgrade"
                 | "onboarding"
         )
@@ -1330,7 +1228,29 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                 let _ = app.emit("tray-show-chat", ());
             });
         }
-        "start_recording" | "stop_recording" | "toggle_recording" => {
+        "meeting_notes" => {
+            let app = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                crate::headless::wake_from_tray(&app);
+                let _ = ShowRewindWindow::Home {
+                    page: Some("meetings".to_string()),
+                }
+                .show(&app);
+                let _ = app.emit("tray-show-meetings", ());
+            });
+        }
+        "ai_tools" => {
+            let app = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                crate::headless::wake_from_tray(&app);
+                let _ = ShowRewindWindow::Home {
+                    page: Some("connections".to_string()),
+                }
+                .show(&app);
+                let _ = app.emit("tray-show-connections", ());
+            });
+        }
+        "start_recording" | "stop_recording" | "toggle_recording" | "recording_status" => {
             // Manual toggle cancels any pending auto-resume — otherwise a user
             // who paused for 30 min and then resumed early would get re-paused
             // when the original timer fires.
@@ -1682,6 +1602,14 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                 let _ = ShowRewindWindow::Home { page }.show(&app);
             });
         }
+        "recording_settings" => {
+            let app = app_handle.clone();
+            let page = Some("recording".to_string());
+            let _ = app_handle.run_on_main_thread(move || {
+                crate::headless::wake_from_tray(&app);
+                let _ = ShowRewindWindow::Home { page }.show(&app);
+            });
+        }
         "feedback" => {
             let app = app_handle.clone();
             let page = Some("help".to_string());
@@ -1920,26 +1848,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recording_status_text_distinguishes_meetings_only_audio_states() {
+    fn recording_control_label_distinguishes_meetings_only_audio_states() {
         assert_eq!(
-            recording_status_text(
+            recording_control_label(
                 RecordingStatus::Recording,
                 false,
                 Some(AudioCaptureStatus::WaitingForMeeting),
             ),
-            "● Screen recording · audio waiting for meeting"
+            "Recording screen · audio waiting for meeting"
         );
         assert_eq!(
-            recording_status_text(
+            recording_control_label(
                 RecordingStatus::Recording,
                 false,
                 Some(AudioCaptureStatus::MeetingDetectorUnavailable),
             ),
-            "● Screen recording · meeting detection unavailable"
+            "Recording screen · meeting detection unavailable"
         );
         assert_eq!(
-            recording_status_text(RecordingStatus::Recording, false, None),
-            "● Recording"
+            recording_control_label(RecordingStatus::Recording, false, None),
+            "Recording normally"
         );
     }
 
@@ -2022,51 +1950,5 @@ mod tests {
                 ..hd.clone()
             })
         );
-    }
-
-    /// Business Max and Ultra were absent from `plan_display_name`, so a
-    /// paying account fell through to the `_` arm and the tray told them they
-    /// were on "Free plan".
-    #[test]
-    fn plan_display_name_covers_every_paid_tier() {
-        assert_eq!(plan_display_name(Some("standard")), "Basic");
-        assert_eq!(plan_display_name(Some("pro")), "Business");
-        assert_eq!(plan_display_name(Some("pro_max")), "Business Max");
-        assert_eq!(plan_display_name(Some("pro_ultra")), "Business Ultra");
-        assert_eq!(plan_display_name(Some("business_max")), "Business Max");
-        assert_eq!(plan_display_name(Some("business_ultra")), "Business Ultra");
-        assert_eq!(plan_display_name(Some("PRO_MAX")), "Business Max");
-        assert_eq!(plan_display_name(Some("lifetime")), "Lifetime");
-        assert_eq!(plan_display_name(None), "Free");
-        assert_eq!(plan_display_name(Some("something_new")), "Free");
-    }
-
-    /// `cloud_subscribed` is a persisted flag that can lag the entitlement, so
-    /// the upgrade item must also consult plan truth. Offering "Upgrade to
-    /// Business" beside "Business Ultra plan" reads as a bug to the person
-    /// paying for Ultra.
-    #[test]
-    fn business_and_above_are_never_offered_an_upgrade_to_business() {
-        for plan in [
-            "pro",
-            "business",
-            "pro_max",
-            "business_max",
-            "pro_ultra",
-            "business_ultra",
-            "team",
-            "enterprise",
-        ] {
-            assert!(
-                plan_includes_business(Some(plan)),
-                "{plan} should not upsell"
-            );
-        }
-
-        // Free, Basic and Lifetime can all still add Business for cloud sync.
-        for plan in ["standard", "basic", "lifetime", "none", "something_new"] {
-            assert!(!plan_includes_business(Some(plan)), "{plan} may upsell");
-        }
-        assert!(!plan_includes_business(None));
     }
 }
