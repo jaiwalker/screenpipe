@@ -69,9 +69,12 @@ export function ChatTabStrip({
   const openChatIds = useChatStore((state) => state.openChatIds);
   const actions = useChatActions();
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const closingActiveIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (activeId) actions.openChat(activeId);
+    if (!activeId || closingActiveIdRef.current === activeId) return;
+    closingActiveIdRef.current = null;
+    actions.openChat(activeId);
   }, [actions, activeId]);
 
   const tabs = useMemo(
@@ -98,20 +101,52 @@ export function ChatTabStrip({
     });
   }, [activeId, tabs.length]);
 
+  const focusTab = (id: string) => {
+    const tab = Array.from(
+      scrollerRef.current?.querySelectorAll<HTMLElement>(
+        "[data-chat-tab-id]",
+      ) ?? [],
+    ).find((candidate) => candidate.dataset.chatTabId === id);
+    tab?.querySelector<HTMLButtonElement>('[role="tab"]')?.focus();
+  };
+
   const activateAt = (index: number) => {
     const next = tabs[index];
-    if (next) void onActivate(next.id);
+    if (!next) return;
+    // WAI-ARIA tabs use roving focus: arrow/Home/End changes both the
+    // selected chat and keyboard focus. Keeping focus on the old, now
+    // tabIndex=-1 element strands keyboard users after one navigation.
+    focusTab(next.id);
+    void onActivate(next.id);
   };
 
   const closeTab = (id: string) => {
     const index = tabs.findIndex((tab) => tab.id === id);
     const fallback = tabs[index + 1] ?? tabs[index - 1] ?? null;
+    if (id === activeId) closingActiveIdRef.current = id;
     actions.closeChat(id);
     if (id !== activeId) return;
+
+    const finishClose = async (activate: () => void | Promise<void>) => {
+      try {
+        await activate();
+      } finally {
+        // startNewConversation deliberately awaits a dynamic import before it
+        // publishes the replacement id. During that gap React can re-render
+        // with the just-closed activeId; the synchronization effect above must
+        // not reopen it. Once navigation settles, make the current (possibly
+        // same reusable blank) session visible and release the guard.
+        const currentId = useChatStore.getState().currentId;
+        closingActiveIdRef.current = null;
+        if (currentId) actions.openChat(currentId);
+      }
+    };
+
     if (fallback) {
-      void onActivate(fallback.id);
+      focusTab(fallback.id);
+      void finishClose(() => onActivate(fallback.id));
     } else {
-      void onNewChat();
+      void finishClose(onNewChat);
     }
   };
 
