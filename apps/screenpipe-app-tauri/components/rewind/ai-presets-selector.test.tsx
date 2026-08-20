@@ -284,6 +284,33 @@ describe("AIPresetsSelector controlled preset creation", () => {
     );
   });
 
+  it("can collapse an ACP preset to its provider icon", () => {
+    mocks.settings.current = {
+      aiPresets: [
+        {
+          ...originalPreset,
+          id: "claude code",
+          provider: "acp",
+          model: "claude-acp",
+          acpAgent: { id: "claude-acp" },
+        },
+      ],
+      user: { token: "test-token" },
+    };
+
+    render(<AIPresetsSelector compact showModelOnly providerIconOnly />);
+
+    const trigger = screen.getByRole("combobox", {
+      name: "AI provider: Claude Code. Change provider",
+    });
+    expect(trigger).not.toHaveTextContent("Claude Code");
+    expect(trigger).not.toHaveTextContent("claude-acp");
+    expect(screen.getByTestId("active-model-provider-icon")).toHaveAttribute(
+      "src",
+      "/images/claude-ai.svg",
+    );
+  });
+
   it("accepts a surface-specific accessible label", () => {
     render(
       <AIPresetsSelector
