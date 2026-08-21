@@ -32,13 +32,20 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { openHomeWindow, waitForAppReady, t } from "../helpers/test-utils.js";
+import {
+  openHomeWindow,
+  reloadAndWaitForHome,
+  waitForAppReady,
+  t,
+} from "../helpers/test-utils.js";
 import { E2E_DATA_DIR } from "../helpers/app-launcher.js";
+import { PiConversationHarness } from "../helpers/pi-conversation-harness.js";
 
 const CHATS_DIR = join(E2E_DATA_DIR, "chats");
 const CARD_SLUG = "day-recap";
 const CARD_DISPLAY_LABEL = "📋 Day Recap";
 const PHANTOM_ACTIVITY_ID = "88888888-cccc-4ccc-8ccc-cccccccccccc";
+const LEARNING_STORAGE_KEY = "screenpipe.first-run.learning-window.v1";
 
 interface MatchingChat {
   name: string;
@@ -147,7 +154,7 @@ async function settleRetryArtifacts(displayLabel: string): Promise<void> {
   }
 }
 
-async function openIsolatedChat(): Promise<void> {
+async function openIsolatedChat(): Promise<string> {
   const conversationId = randomUUID();
   await emitTauri("chat-load-conversation", {
     conversationId,
@@ -166,6 +173,49 @@ async function openIsolatedChat(): Promise<void> {
       timeoutMsg: "isolated chat never became the foreground conversation",
     },
   );
+  return conversationId;
+}
+
+/**
+ * This spec owns the normal returning-user Home surface. The authenticated E2E
+ * seed also records onboarding as freshly completed, which starts the separate
+ * first-run learning experience and intentionally replaces Home's summary-card
+ * fallback. Retire that lifecycle in this webview before the test reloads so
+ * the real Day Recap card is visible without waiting two minutes for its
+ * evidence window to settle.
+ */
+async function settleFirstRunLearningWindow(): Promise<void> {
+  await browser.execute((key: string) => {
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        phase: "done",
+        // Newer than the backend onboarding completion, so the fresh mount
+        // does not interpret this as stale state from an older setup.
+        startedAt: new Date().toISOString(),
+        showProgress: false,
+        seededAt: null,
+        chatId: null,
+        summaryOpenedAt: null,
+        emptyReason: null,
+        pendingEmptyReport: false,
+      }),
+    );
+  }, LEARNING_STORAGE_KEY);
+  await reloadAndWaitForHome();
+  // `home-page` renders before the nested StandaloneChat effects finish
+  // registering their Tauri listeners. Do not emit into that short gap.
+  await browser.waitUntil(
+    async () =>
+      (await browser.execute(
+        () => typeof (window as any).__e2eForegroundReady === "string",
+      )) as boolean,
+    {
+      timeout: t(15_000),
+      interval: 200,
+      timeoutMsg: "chat runtime did not remount after settling first-run state",
+    },
+  );
 }
 
 async function sidebarSnapshot() {
@@ -174,7 +224,9 @@ async function sidebarSnapshot() {
       document.querySelectorAll<HTMLElement>('[data-testid^="chat-row-"]'),
     );
     return {
-      ids: rows.map((row) => row.dataset.testid?.replace("chat-row-", "") ?? ""),
+      ids: rows.map(
+        (row) => row.dataset.testid?.replace("chat-row-", "") ?? "",
+      ),
       phantomVisible: Boolean(
         document.querySelector(`[data-testid="chat-row-${phantomId}"]`),
       ),
@@ -245,14 +297,21 @@ async function stopCurrentTurn(): Promise<void> {
 
 describe("Automation card creates exactly one chat (#4719)", function () {
   this.timeout(300_000);
+  let piConversation: PiConversationHarness | null = null;
 
   before(async () => {
     await waitForAppReady();
     await openHomeWindow();
+    await settleFirstRunLearningWindow();
   });
 
   after(async () => {
     await emitTauri("chat-deleted", { id: PHANTOM_ACTIVITY_ID });
+  });
+
+  afterEach(async () => {
+    await piConversation?.dispose().catch(() => {});
+    piConversation = null;
   });
 
   it(`'${CARD_SLUG}' card creates ONE conversation, not a duplicate`, async () => {
@@ -260,7 +319,15 @@ describe("Automation card creates exactly one chat (#4719)", function () {
     // persistence only. Switch before cleanup so late saves from a prior WDIO
     // retry cannot recreate a deleted file after this attempt starts.
     await stopCurrentTurn();
-    await openIsolatedChat();
+    const conversationId = await openIsolatedChat();
+    // A clean E2E data directory has no AI preset, and the real Home surface
+    // correctly hides summary cards until a model is usable. Own a loopback
+    // provider for this exact conversation so the test exercises the real
+    // card send/save path without depending on a developer's persisted setup.
+    piConversation = new PiConversationHarness(conversationId);
+    await piConversation.initialize();
+    await piConversation.configureAppPreset();
+    await piConversation.restartPi();
     await settleRetryArtifacts(CARD_DISPLAY_LABEL);
     await waitForCard(CARD_SLUG);
     const sidebarBefore = await sidebarSnapshot();
