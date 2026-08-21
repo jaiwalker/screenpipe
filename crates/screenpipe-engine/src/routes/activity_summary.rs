@@ -483,8 +483,12 @@ async fn collect_summary_core(
 
     let resolved_frames_cte = resolved_frames_cte(start, end);
 
-    let apps_query = format!(
-        "{resolved_frames_cte}, raw AS ( \
+    // Resolve frame attribution once, then derive app usage, window usage,
+    // the whole-range active-time total, and attribution coverage from one
+    // shared relation. Keeping these in one statement avoids rebuilding the same
+    // materialized fallback relation in four concurrent queries.
+    let frame_summary_query = format!(
+        "{resolved_frames_cte}, app_raw AS ( \
            SELECT app_name, \
              COUNT(*) AS frame_count, \
              MIN(timestamp) AS first_seen, \
@@ -493,7 +497,7 @@ async fn collect_summary_core(
            WHERE 1 = 1{app_filter} \
            AND app_name IS NOT NULL AND app_name != '' \
            GROUP BY app_name \
-         ), selected AS ( \
+         ), app_selected AS ( \
            SELECT id, app_name, timestamp AS ts \
            FROM ( \
              SELECT id, app_name, timestamp, focused, \
@@ -506,7 +510,7 @@ async fn collect_summary_core(
              AND app_name IS NOT NULL AND app_name != '' \
            ) ranked \
            WHERE rn = 1 \
-         ), allocated AS ( \
+         ), app_allocated AS ( \
            SELECT app_name, \
              CASE \
                WHEN gap_sec > 0 AND gap_sec < {IDLE_CAP_SECS} THEN gap_sec \
@@ -515,23 +519,24 @@ async fn collect_summary_core(
            FROM ( \
              SELECT app_name, ts, \
                (JULIANDAY(LEAD(ts) OVER (ORDER BY ts, id)) - JULIANDAY(ts)) * 86400 AS gap_sec \
-             FROM selected \
+             FROM app_selected \
            ) gaps \
-         ) \
-         SELECT raw.app_name, \
-           raw.frame_count, \
-           COALESCE(ROUND(SUM(allocated.active_sec) / 60.0, 1), 0.0) AS minutes, \
-           raw.first_seen, \
-           raw.last_seen \
-         FROM raw \
-         LEFT JOIN allocated ON allocated.app_name = raw.app_name \
-         GROUP BY raw.app_name \
-         ORDER BY minutes DESC, raw.frame_count DESC, raw.app_name ASC \
-         LIMIT 20"
-    );
-
-    let windows_query = format!(
-        "{resolved_frames_cte}, raw AS ( \
+         ), app_totals AS ( \
+           SELECT app_raw.app_name, \
+             app_raw.frame_count, \
+             COALESCE(ROUND(SUM(app_allocated.active_sec) / 60.0, 1), 0.0) AS minutes, \
+             app_raw.first_seen, \
+             app_raw.last_seen \
+           FROM app_raw \
+           LEFT JOIN app_allocated ON app_allocated.app_name = app_raw.app_name \
+           GROUP BY app_raw.app_name \
+         ), app_ranked AS ( \
+           SELECT app_name, frame_count, minutes, first_seen, last_seen, \
+             ROW_NUMBER() OVER ( \
+               ORDER BY minutes DESC, frame_count DESC, app_name ASC \
+             ) AS row_order \
+           FROM app_totals \
+         ), window_raw AS ( \
            SELECT app_name, \
              COALESCE(window_name, '') AS window_name, \
              COALESCE(MAX(browser_url), '') AS browser_url, \
@@ -541,7 +546,7 @@ async fn collect_summary_core(
            AND app_name IS NOT NULL AND app_name != '' \
            AND window_name IS NOT NULL AND window_name != '' \
            GROUP BY app_name, window_name \
-         ), selected AS ( \
+         ), window_selected AS ( \
            SELECT id, app_name, COALESCE(window_name, '') AS window_name, timestamp AS ts \
            FROM ( \
              SELECT id, app_name, window_name, timestamp, focused, \
@@ -555,7 +560,7 @@ async fn collect_summary_core(
              AND window_name IS NOT NULL AND window_name != '' \
            ) ranked \
            WHERE rn = 1 \
-         ), allocated AS ( \
+         ), window_allocated AS ( \
            SELECT app_name, window_name, \
              CASE \
                WHEN gap_sec > 0 AND gap_sec < {IDLE_CAP_SECS} THEN gap_sec \
@@ -564,21 +569,63 @@ async fn collect_summary_core(
            FROM ( \
              SELECT app_name, window_name, ts, \
                (JULIANDAY(LEAD(ts) OVER (ORDER BY ts, id)) - JULIANDAY(ts)) * 86400 AS gap_sec \
-             FROM selected \
+             FROM window_selected \
            ) gaps \
+         ), window_totals AS ( \
+           SELECT window_raw.app_name, \
+             window_raw.window_name, \
+             window_raw.browser_url, \
+             window_raw.frame_count, \
+             COALESCE(ROUND(SUM(window_allocated.active_sec) / 60.0, 1), 0.0) AS minutes \
+           FROM window_raw \
+           LEFT JOIN window_allocated \
+             ON window_allocated.app_name = window_raw.app_name \
+            AND window_allocated.window_name = window_raw.window_name \
+           GROUP BY window_raw.app_name, window_raw.window_name \
+         ), window_ranked AS ( \
+           SELECT app_name, window_name, browser_url, frame_count, minutes, \
+             ROW_NUMBER() OVER ( \
+               ORDER BY minutes DESC, frame_count DESC, app_name ASC, window_name ASC \
+             ) AS row_order \
+           FROM window_totals \
+         ), active_gaps AS ( \
+           SELECT ( \
+             JULIANDAY(LEAD(timestamp) OVER (ORDER BY timestamp, id)) \
+             - JULIANDAY(timestamp) \
+           ) * 86400.0 AS gap_sec \
+           FROM resolved_frames WHERE 1 = 1{app_filter} \
+         ), active_total AS ( \
+           SELECT COALESCE(ROUND(SUM( \
+             CASE WHEN gap_sec > 0 AND gap_sec < {IDLE_CAP_SECS} \
+               THEN gap_sec ELSE 0 END \
+           ) / 60.0, 1), 0.0) AS total_active_minutes \
+           FROM active_gaps \
+         ), attribution_totals AS ( \
+           SELECT COUNT(*) AS total_frames, \
+             COALESCE(SUM(attribution_source = 'frame'), 0) AS native_frames, \
+             COALESCE(SUM(attribution_source = 'ui_event'), 0) AS recovered_frames, \
+             COALESCE(SUM(attribution_source IS NULL), 0) AS unresolved_frames \
+           FROM resolved_frames \
+           WHERE 1 = 1{app_filter} \
          ) \
-         SELECT raw.app_name, \
-           raw.window_name, \
-           raw.browser_url, \
-           raw.frame_count, \
-           COALESCE(ROUND(SUM(allocated.active_sec) / 60.0, 1), 0.0) AS minutes \
-         FROM raw \
-         LEFT JOIN allocated \
-           ON allocated.app_name = raw.app_name \
-          AND allocated.window_name = raw.window_name \
-         GROUP BY raw.app_name, raw.window_name \
-         ORDER BY minutes DESC, raw.frame_count DESC, raw.app_name ASC, raw.window_name ASC \
-         LIMIT 30"
+         SELECT 1 AS section_order, 'app' AS row_kind, row_order, \
+           app_name, '' AS window_name, '' AS browser_url, frame_count, minutes, \
+           first_seen, last_seen, NULL AS total_frames, \
+           NULL AS native_frames, NULL AS recovered_frames, NULL AS unresolved_frames \
+         FROM app_ranked WHERE row_order <= 20 \
+         UNION ALL \
+         SELECT 2, 'window', row_order, app_name, window_name, browser_url, \
+           frame_count, minutes, '', '', NULL, NULL, NULL, NULL \
+         FROM window_ranked WHERE row_order <= 30 \
+         UNION ALL \
+         SELECT 3, 'active', 1, '', '', '', NULL, total_active_minutes, '', '', \
+           NULL, NULL, NULL, NULL \
+         FROM active_total \
+         UNION ALL \
+         SELECT 4, 'attribution', 1, '', '', '', NULL, NULL, '', '', \
+           total_frames, native_frames, recovered_frames, unresolved_frames \
+         FROM attribution_totals \
+         ORDER BY section_order, row_order"
     );
 
     // One representative text per app+window context. Prefer user input
@@ -642,85 +689,84 @@ async fn collect_summary_core(
          LIMIT 50"
     );
 
-    // Whole-range active time: the gap from each frame to the next (across all
-    // apps), idle gaps excluded. We return raw epoch-seconds and fold them in
-    // Rust via `active_minutes` so the grand total is deterministic, unit
-    // tested, and never truncated the way top-N `windows` is.
-    let active_ts_query = format!(
-        "{resolved_frames_cte} \
-         SELECT (JULIANDAY(timestamp) - 2440587.5) * 86400.0 AS epoch \
-         FROM resolved_frames \
-         WHERE 1 = 1{app_filter} \
-         ORDER BY timestamp"
-    );
-
-    let attribution_query = format!(
-        "{resolved_frames_cte} \
-         SELECT COUNT(*) AS total_frames, \
-           COALESCE(SUM(attribution_source = 'frame'), 0) AS native_frames, \
-           COALESCE(SUM(attribution_source = 'ui_event'), 0) AS recovered_frames, \
-           COALESCE(SUM(attribution_source IS NULL), 0) AS unresolved_frames \
-         FROM resolved_frames \
-         WHERE 1 = 1{app_filter}"
-    );
+    let should_query_texts = query.include_key_texts || query.include_snippets;
+    let texts_future = async {
+        if should_query_texts {
+            db.query_raw_sql(&texts_query).await
+        } else {
+            Ok(Value::Array(Vec::new()))
+        }
+    };
 
     let (
-        apps_result,
-        windows_result,
+        frame_summary_result,
         texts_result,
         audio_speakers_result,
         audio_transcripts_result,
         edited_files_result,
-        active_ts_result,
-        attribution_result,
     ) = tokio::join!(
-        db.query_raw_sql(&apps_query),
-        db.query_raw_sql(&windows_query),
-        db.query_raw_sql(&texts_query),
+        db.query_raw_sql(&frame_summary_query),
+        texts_future,
         db.query_raw_sql(&audio_speakers_query),
         db.query_raw_sql(&audio_transcripts_query),
         db.query_raw_sql(&edited_files_query),
-        db.query_raw_sql(&active_ts_query),
-        db.query_raw_sql(&attribution_query),
     );
 
     let mut apps = Vec::new();
-    if let Ok(rows) = apps_result {
-        if let Some(arr) = rows.as_array() {
-            for row in arr {
-                let frame_count = row.get("frame_count").and_then(|v| v.as_i64()).unwrap_or(0);
-                apps.push(AppUsage {
-                    name: str_field(row, "app_name"),
-                    frame_count,
-                    minutes: num_field(row, "minutes"),
-                    first_seen: str_field(row, "first_seen"),
-                    last_seen: str_field(row, "last_seen"),
-                });
-            }
-        }
-    } else if let Err(e) = &apps_result {
-        error!("activity summary: apps query failed: {}", e);
-    }
-
     let mut windows = Vec::new();
-    if let Ok(rows) = windows_result {
+    let mut total_active_minutes = 0.0;
+    let mut total_frames = 0;
+    let mut native_frames = 0;
+    let mut recovered_frames = 0;
+    let mut unresolved_frames = 0;
+    if let Ok(rows) = frame_summary_result {
         if let Some(arr) = rows.as_array() {
             for row in arr {
-                let window_name = str_field(row, "window_name");
-                if window_name.is_empty() || window_name.len() < 3 {
-                    continue;
+                match str_field(row, "row_kind").as_str() {
+                    "app" => {
+                        let frame_count = row.get("frame_count").and_then(value_i64).unwrap_or(0);
+                        apps.push(AppUsage {
+                            name: str_field(row, "app_name"),
+                            frame_count,
+                            minutes: num_field(row, "minutes"),
+                            first_seen: str_field(row, "first_seen"),
+                            last_seen: str_field(row, "last_seen"),
+                        });
+                    }
+                    "window" => {
+                        let window_name = str_field(row, "window_name");
+                        if window_name.len() >= 3 {
+                            windows.push(WindowActivity {
+                                app_name: str_field(row, "app_name"),
+                                window_name,
+                                browser_url: str_field(row, "browser_url"),
+                                minutes: num_field(row, "minutes"),
+                                frame_count: row
+                                    .get("frame_count")
+                                    .and_then(value_i64)
+                                    .unwrap_or(0),
+                            });
+                        }
+                    }
+                    "active" => {
+                        total_active_minutes = num_field(row, "minutes");
+                    }
+                    "attribution" => {
+                        total_frames = row.get("total_frames").and_then(value_i64).unwrap_or(0);
+                        native_frames = row.get("native_frames").and_then(value_i64).unwrap_or(0);
+                        recovered_frames =
+                            row.get("recovered_frames").and_then(value_i64).unwrap_or(0);
+                        unresolved_frames = row
+                            .get("unresolved_frames")
+                            .and_then(value_i64)
+                            .unwrap_or(0);
+                    }
+                    _ => {}
                 }
-                windows.push(WindowActivity {
-                    app_name: str_field(row, "app_name"),
-                    window_name,
-                    browser_url: str_field(row, "browser_url"),
-                    minutes: num_field(row, "minutes"),
-                    frame_count: row.get("frame_count").and_then(|v| v.as_i64()).unwrap_or(0),
-                });
             }
         }
-    } else if let Err(e) = &windows_result {
-        error!("activity summary: windows query failed: {}", e);
+    } else if let Err(e) = &frame_summary_result {
+        error!("activity summary: frame summary query failed: {}", e);
     }
 
     let mut key_texts = Vec::new();
@@ -797,47 +843,6 @@ async fn collect_summary_core(
         error!("activity summary: edited files query failed: {}", e);
     }
 
-    let mut active_epochs: Vec<f64> = Vec::new();
-    if let Ok(rows) = &active_ts_result {
-        if let Some(arr) = rows.as_array() {
-            active_epochs.reserve(arr.len());
-            for row in arr {
-                let epoch = num_field(row, "epoch");
-                if epoch > 0.0 {
-                    active_epochs.push(epoch);
-                }
-            }
-        }
-    } else if let Err(e) = &active_ts_result {
-        error!("activity summary: active timestamps query failed: {}", e);
-    }
-    // Round to 0.1 min, matching the SQL `minutes` columns.
-    let total_active_minutes = (active_minutes(&active_epochs) * 10.0).round() / 10.0;
-
-    let attribution_row = attribution_result
-        .as_ref()
-        .ok()
-        .and_then(Value::as_array)
-        .and_then(|rows| rows.first());
-    if let Err(e) = &attribution_result {
-        error!("activity summary: app attribution query failed: {}", e);
-    }
-    let total_frames = attribution_row
-        .and_then(|row| row.get("total_frames"))
-        .and_then(value_i64)
-        .unwrap_or(0);
-    let native_frames = attribution_row
-        .and_then(|row| row.get("native_frames"))
-        .and_then(value_i64)
-        .unwrap_or(0);
-    let recovered_frames = attribution_row
-        .and_then(|row| row.get("recovered_frames"))
-        .and_then(value_i64)
-        .unwrap_or(0);
-    let unresolved_frames = attribution_row
-        .and_then(|row| row.get("unresolved_frames"))
-        .and_then(value_i64)
-        .unwrap_or(0);
     let coverage = if total_frames > 0 {
         ((native_frames + recovered_frames) as f64 / total_frames as f64 * 1000.0).round() / 1000.0
     } else {
@@ -874,17 +879,30 @@ async fn load_recording_status(
     app_name: Option<&str>,
 ) -> Result<RecordingStatus, String> {
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
-    let app_filter = app_name
-        .map(|a| format!(" AND app_name = '{}'", sql_escape(a)))
-        .unwrap_or_default();
-    let resolved_frames_cte = resolved_frames_cte(start, end);
+    // The default recording-health count does not need app attribution. Keep
+    // that common path on the indexed frames table and only pay for recovery
+    // when the caller explicitly filters by a recovered app name.
+    let (frame_cte, frames_in_range_expr) = if let Some(app_name) = app_name {
+        (
+            format!("{} ", resolved_frames_cte(start, end)),
+            format!(
+                "(SELECT COUNT(*) FROM resolved_frames WHERE app_name = '{}')",
+                sql_escape(app_name)
+            ),
+        )
+    } else {
+        (
+            String::new(),
+            format!("(SELECT COUNT(*) FROM frames WHERE timestamp BETWEEN '{start}' AND '{end}')"),
+        )
+    };
 
     let query = format!(
-        "{resolved_frames_cte} \
+        "{frame_cte} \
          SELECT \
          (SELECT MAX(timestamp) FROM frames) AS last_frame_at, \
          (SELECT MAX(timestamp) FROM audio_transcriptions) AS last_audio_at, \
-         (SELECT COUNT(*) FROM resolved_frames WHERE 1 = 1{app_filter}) AS frames_in_range, \
+         {frames_in_range_expr} AS frames_in_range, \
          (SELECT COUNT(*) FROM audio_transcriptions WHERE timestamp BETWEEN '{start}' AND '{end}') AS audio_segments_in_range, \
          (SELECT ROUND((JULIANDAY('{now}') - JULIANDAY(MAX(timestamp))) * 86400) FROM frames) AS seconds_since_last_frame, \
          (SELECT ROUND((JULIANDAY('{now}') - JULIANDAY(MAX(timestamp))) * 86400) FROM audio_transcriptions) AS seconds_since_last_audio"
@@ -1261,12 +1279,10 @@ fn value_i64(value: &Value) -> Option<i64> {
         .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
-/// Sum the frame-to-frame gaps (in seconds) that fall under the idle cap and
-/// return the result in minutes. `epochs` must be ascending epoch-seconds.
-/// Gaps >= `IDLE_CAP_SECS` are treated as idle and skipped; non-positive gaps
-/// (duplicate or out-of-order timestamps) are ignored. Pure and deterministic
-/// — this is the canonical definition of "active time" the SQL `minutes`
-/// columns mirror, so the number never comes from an LLM.
+/// Test oracle for the SQL active-time calculation. Sum frame-to-frame gaps
+/// under the idle cap from ascending epoch-seconds and return minutes. Gaps at
+/// or above `IDLE_CAP_SECS` and non-positive gaps are ignored.
+#[cfg(test)]
 fn active_minutes(epochs: &[f64]) -> f64 {
     let cap = IDLE_CAP_SECS as f64;
     let mut secs = 0.0;
@@ -2348,6 +2364,34 @@ mod db_tests {
             "key_texts missing the accessibility text: {:?}",
             core.key_texts.iter().map(|k| &k.text).collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn key_text_query_is_skipped_when_texts_and_snippets_are_disabled() {
+        let (db, _d) = fresh_db().await;
+        add_frame(
+            &db,
+            &format!("{DAY} 10:00:00"),
+            Some("Notes"),
+            Some("Draft"),
+        )
+        .await;
+        db.execute_raw_sql_write(
+            "INSERT INTO elements (frame_id, source, role, text, depth, sort_order) \
+             VALUES (1, 'accessibility', 'AXTextField', \
+             'This text must stay out of the lean activity summary', 0, 0)",
+        )
+        .await
+        .unwrap();
+
+        let mut lean_query = query(None);
+        lean_query.include_key_texts = false;
+        lean_query.include_snippets = false;
+        let (s, e) = full_range();
+        let core = collect_summary_core(&db, &lean_query, &s, &e).await;
+
+        assert!(core.key_texts.is_empty());
+        assert_eq!(core.total_frames, 1);
     }
 
     #[tokio::test]
