@@ -987,16 +987,12 @@ function SkillsSpotlight({
 }
 
 function PiExtensionsSpotlight({
-  count,
   selected,
   onClick,
 }: {
-  count: number;
   selected: boolean;
   onClick: () => void;
 }) {
-  const summary = `5 work with every agent · ${count} Pi package${count === 1 ? "" : "s"}`;
-
   return (
     <div
       className={`
@@ -1016,10 +1012,10 @@ function PiExtensionsSpotlight({
           />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-medium text-foreground">Agent extensions</h3>
+              <h3 className="text-sm font-medium text-foreground">Agent tools</h3>
               <span className="h-2 w-2 rounded-full bg-foreground" />
             </div>
-            <p className="text-xs text-muted-foreground">{summary}</p>
+            <p className="text-xs text-muted-foreground">Give your AI more ways to work</p>
           </div>
         </button>
         <Button
@@ -1030,7 +1026,7 @@ function PiExtensionsSpotlight({
           className="h-8 gap-1.5 text-xs normal-case font-sans tracking-normal"
         >
           <Plus className="h-3.5 w-3.5" />
-          Manage
+          Browse
         </Button>
       </div>
     </div>
@@ -3794,7 +3790,6 @@ export function ConnectionsSection({
   const [mcpProviderConnected, setMcpProviderConnected] = useState<Record<string, boolean>>({});
   const [excalidrawConnected, setExcalidrawConnected] = useState(false);
   const [importedSkillsCount, setImportedSkillsCount] = useState(0);
-  const [piExtensionCount, setPiExtensionCount] = useState(0);
   // Composio-backed connections (managed auth through screenpipe.com; see
   // composio-card.tsx): gmail, zoom, google drive/docs/sheets.
   const { settings: composioSettings } = useSettings();
@@ -3827,17 +3822,9 @@ export function ConnectionsSection({
       .catch(() => setImportedSkillsCount(0));
   }, []);
 
-  const loadPiExtensionCount = useCallback(() => {
-    commands
-      .piListExtensionPackages()
-      .then((res) => setPiExtensionCount(res.status === "ok" ? res.data.length : 0))
-      .catch(() => setPiExtensionCount(0));
-  }, []);
-
   useEffect(() => {
     loadSkillsCount();
-    loadPiExtensionCount();
-  }, [loadSkillsCount, loadPiExtensionCount]);
+  }, [loadSkillsCount]);
 
   const refreshStatus = useCallback(() => {
     detectInstalledConnectionIds()
@@ -4026,7 +4013,7 @@ export function ConnectionsSection({
       { id: "excalidraw", name: "Excalidraw", icon: "excalidraw", connected: excalidrawConnected },
       { id: "custom-mcp", name: "Custom MCP", icon: "custom-mcp", connected: false, detected: customMcpServerCount > 0 },
       { id: "skills", name: "Skills", icon: "skills", connected: importedSkillsCount > 0, category: "Agent" },
-      { id: "pi-extensions", name: "Agent extensions", icon: "pi-extensions", connected: true, category: "Agent" },
+      { id: "pi-extensions", name: "Agent tools", icon: "pi-extensions", connected: true, category: "Agent" },
     ];
     // Merge API tiles, skipping duplicates already in hardcoded.
     // owned-default is hidden from settings — the agent drives it via the
@@ -4089,7 +4076,7 @@ export function ConnectionsSection({
       category: CONNECTION_CATEGORY_BY_ID[tile.id] ?? tile.category ?? "Other",
       description: tile.description ?? CONNECTION_HARDCODED_DESCRIPTIONS[tile.id],
     }));
-  }, [os, claudeInstalled, cursorInstalled, codexInstalled, grokInstalled, chatgptConnected, browserUrlConnected, browserUrlDetected, integrations, appleCalendarConnected, googleCalendarConnected, googleDocsConnected, customMcpConnected, customMcpServerCount, krispConnected, plaudConnected, mcpProviderConnected, excalidrawConnected, importedSkillsCount, piExtensionCount, detectedConnectionIds, composioConnected]);
+  }, [os, claudeInstalled, cursorInstalled, codexInstalled, grokInstalled, chatgptConnected, browserUrlConnected, browserUrlDetected, integrations, appleCalendarConnected, googleCalendarConnected, googleDocsConnected, customMcpConnected, customMcpServerCount, krispConnected, plaudConnected, mcpProviderConnected, excalidrawConnected, importedSkillsCount, detectedConnectionIds, composioConnected]);
 
   const isDefaultView = !search.trim() && categoryFilter === ALL_CONNECTION_CATEGORIES;
 
@@ -4278,7 +4265,7 @@ export function ConnectionsSection({
       case "anythingllm": return <AnythingLLMPanel />;
       case "custom-mcp": return <CustomMcpCard />;
       case "skills": return <SkillsCard onChanged={loadSkillsCount} />;
-      case "pi-extensions": return <PiExtensionsCard onChanged={loadPiExtensionCount} />;
+      case "pi-extensions": return <PiExtensionsCard />;
       case "krisp": return <OAuthMcpPanel
         name="Krisp"
         mcpUrl={KRISP_MCP_URL}
@@ -4438,7 +4425,6 @@ export function ConnectionsSection({
       />
 
       <PiExtensionsSpotlight
-        count={piExtensionCount}
         selected={selected === "pi-extensions"}
         onClick={() => setSelected(selected === "pi-extensions" ? null : "pi-extensions")}
       />
@@ -4449,7 +4435,7 @@ export function ConnectionsSection({
         onClick={() => setSelected(selected === "skills" ? null : "skills")}
       />
 
-      {/* AI tools block — 4th sibling to MCP servers / Agent extensions / Skills.
+      {/* AI tools block — 4th sibling to MCP servers / Agent tools / Skills.
           Connect-all when nothing is on, per-tool manage + disconnect-all once
           connected (Louis's "easy way to uninstall" ask). Default view only. */}
       {isDefaultView && (
@@ -4571,7 +4557,9 @@ export function ConnectionsSection({
                     )}
                   </div>
                   {selectedTile.connected && (
-                    <span className="text-xs text-foreground">connected</span>
+                    <span className="text-xs text-foreground">
+                      {selectedTile.id === "pi-extensions" ? "ready" : "connected"}
+                    </span>
                   )}
                 </div>
                 <DialogClose asChild>

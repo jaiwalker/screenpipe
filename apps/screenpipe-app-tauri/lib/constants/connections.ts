@@ -205,7 +205,7 @@ export const CONNECTION_HARDCODED_DESCRIPTIONS: Record<string, string> = {
   "excalidraw": "Search and edit your Excalidraw+ whiteboards",
   "custom-mcp": "Connect any MCP-compatible server",
   "skills": "Import Claude Code skills for AI automations",
-  "pi-extensions": "Manage portable agent extensions and native Pi packages",
+  "pi-extensions": "Add tools your AI can use",
 };
 
 // High-activation defaults fill the suggested row when there are not enough

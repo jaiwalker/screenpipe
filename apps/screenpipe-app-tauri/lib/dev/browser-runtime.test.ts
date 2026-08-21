@@ -143,6 +143,12 @@ describe("browser development runtime", () => {
     expect(tasks[2].executionScope).toBe("session");
   });
 
+  it("provides an empty extension list for browser design review", () => {
+    const invoke = createBrowserIpcMock({ mode: "mock", apiPort: 3030 });
+
+    expect(invoke("pi_list_extension_packages")).toEqual([]);
+  });
+
   it("returns useful empty engine responses", async () => {
     const health = mockLocalApiResponse(
       new URL("http://localhost:3030/health"),

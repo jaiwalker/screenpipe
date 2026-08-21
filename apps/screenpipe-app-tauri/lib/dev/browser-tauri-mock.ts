@@ -657,6 +657,7 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
         return null;
       case "get_installed_browsers":
       case "get_missing_permissions":
+      case "pi_list_extension_packages":
       case "pi_pending":
         return [];
       case "list_brain_views":

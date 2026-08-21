@@ -89,7 +89,7 @@ async function openHomeForAgentExtensionsCatalog(): Promise<void> {
   }
 }
 
-describe('Agent extensions catalog', function () {
+describe('Agent tools catalog', function () {
   this.timeout(t(180_000));
 
   before(async () => {
@@ -105,15 +105,15 @@ describe('Agent extensions catalog', function () {
     await browser.waitUntil(
       async () => {
         const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
-        return body.includes('connections') && body.includes('agent extensions');
+        return body.includes('connections') && body.includes('agent tools');
       },
-      { timeout: t(12_000), timeoutMsg: 'Connections did not render Agent extensions entry' },
+      { timeout: t(12_000), timeoutMsg: 'Connections did not render Agent tools entry' },
     );
 
     await browser.execute(() => {
       const buttons = Array.from(document.querySelectorAll('button'));
       const target = buttons.find((button) =>
-        button.textContent?.toLowerCase().includes('agent extensions'),
+        button.textContent?.toLowerCase().includes('agent tools'),
       ) ?? buttons.find((button) => button.textContent?.toLowerCase().includes('manage'));
       target?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
@@ -121,18 +121,18 @@ describe('Agent extensions catalog', function () {
     await browser.waitUntil(
       async () => {
         const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
-        return body.includes('screenpipe extensions use acp client middleware') &&
+        return body.includes('community tools can run code') &&
           body.includes('screen history') &&
-          body.includes('all acp agents') &&
+          body.includes('ready in every agent') &&
           body.includes('pi only') &&
           body.includes('subagents') &&
           body.includes('web agent') &&
           body.includes('ask user');
       },
-      { timeout: t(12_000), timeoutMsg: 'Agent extensions catalog did not open' },
+      { timeout: t(12_000), timeoutMsg: 'Agent tools catalog did not open' },
     );
 
-    const search = await $('input[placeholder="Search Pi packages..."]');
+    const search = await $('input[placeholder="Search tools..."]');
     await search.waitForExist({ timeout: t(8_000) });
     await search.setValue('web');
 
@@ -140,10 +140,10 @@ describe('Agent extensions catalog', function () {
       async () => {
         const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
         return body.includes('web agent') &&
-          body.includes('npm:@demigodmode/pi-web-agent') &&
+          body.includes('@demigodmode/pi-web-agent') &&
           !body.includes('delegate work to focused child agents');
       },
-      { timeout: t(8_000), timeoutMsg: 'Agent extensions catalog search did not filter to web agent' },
+      { timeout: t(8_000), timeoutMsg: 'Agent tools catalog search did not filter to web agent' },
     );
 
     const filepath = await saveScreenshot('connections-agent-extensions');

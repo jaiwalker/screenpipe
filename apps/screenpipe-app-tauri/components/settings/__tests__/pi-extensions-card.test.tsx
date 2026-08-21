@@ -79,15 +79,16 @@ describe("PiExtensionsCard", () => {
     expect(commandMocks.piListExtensionPackages).toHaveBeenCalledTimes(1);
   });
 
-  it("shows provider-neutral extensions as built-in ACP middleware", async () => {
+  it("shows included tools without protocol or package details", async () => {
     render(<PiExtensionsCard />);
 
     expect(await screen.findByText("Screen history")).toBeInTheDocument();
-    expect(screen.getAllByText("ACP client middleware · MCP")).toHaveLength(5);
     expect(
-      screen.getByRole("switch", { name: "Screen history available to all agents" }),
-    ).toBeDisabled();
-    expect(screen.getByText("activity-summary")).toBeInTheDocument();
+      screen.getByText("Ready in every agent. Nothing to set up."),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Screen history ready")).toBeInTheDocument();
+    expect(screen.queryByText("ACP client middleware · MCP")).not.toBeInTheDocument();
+    expect(screen.queryByText("activity-summary")).not.toBeInTheDocument();
   });
 
   it("keeps subagents on when legacy settings do not list the package", async () => {
@@ -105,13 +106,13 @@ describe("PiExtensionsCard", () => {
     render(<PiExtensionsCard />);
     await screen.findByText("Subagents");
 
-    fireEvent.change(screen.getByPlaceholderText("Search Pi packages..."), {
+    fireEvent.change(screen.getByPlaceholderText("Search tools..."), {
       target: { value: "web" },
     });
 
     expect(screen.getByText("Web agent")).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "Subagents always enabled" })).not.toBeInTheDocument();
-    expect(screen.getByText(/third-party pi packages can execute local code/i)).toBeInTheDocument();
+    expect(screen.getByText(/community tools can run code/i)).toBeInTheDocument();
   });
 
   it("installs a curated package and refreshes enabled state from the returned package list", async () => {
@@ -157,7 +158,7 @@ describe("PiExtensionsCard", () => {
     } as Response);
     render(<PiExtensionsCard />);
 
-    expect(await screen.findByText("All packages")).toBeInTheDocument();
+    expect(await screen.findByText("Community")).toBeInTheDocument();
     expect(await screen.findByText("Reflag")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "Enable Reflag" }));
@@ -195,7 +196,7 @@ describe("PiExtensionsCard", () => {
     } as Response);
     render(<PiExtensionsCard />);
 
-    expect(await screen.findByText("Recently published")).toBeInTheDocument();
+    expect(await screen.findByText("Recently added")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Add Recent Tool" }));
 
     await waitFor(() =>
@@ -247,14 +248,14 @@ describe("PiExtensionsCard", () => {
     });
     render(<PiExtensionsCard />);
 
-    expect(await screen.findByText("Installed outside this list")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("switch", { name: "Disable npm:custom-pi-tool" }));
+    expect(await screen.findByText("Other installed tools")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "Disable custom-pi-tool" }));
 
     await waitFor(() =>
       expect(commandMocks.piRemoveExtensionPackage).toHaveBeenCalledWith("npm:custom-pi-tool"),
     );
     await waitFor(() =>
-      expect(screen.queryByText("npm:custom-pi-tool")).not.toBeInTheDocument(),
+      expect(screen.queryByText("custom-pi-tool")).not.toBeInTheDocument(),
     );
   });
 

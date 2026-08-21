@@ -93,7 +93,7 @@ export const PORTABLE_AGENT_EXTENSION_CATALOG: PortableAgentExtensionCatalogItem
   {
     id: "connections",
     name: "Connections",
-    summary: "Discover connected apps, request access, and call their MCP tools.",
+    summary: "Find and use the apps you've connected to screenpipe.",
     tools: ["list_connections", "screenpipe_connect_app", "sp_mcp_call"],
   },
   {
