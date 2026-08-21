@@ -11140,7 +11140,7 @@ dependencies = [
 
 [[package]]
 name = "screenpipe-app"
-version = "2.6.74"
+version = "2.6.75"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -11165,7 +11165,6 @@ dependencies = [
  "dispatch2",
  "eventkit-rs",
  "fix-path-env",
- "flate2",
  "freedesktop-desktop-entry",
  "freedesktop-icon-lookup",
  "futures",
@@ -11225,7 +11224,6 @@ dependencies = [
  "specta-typescript",
  "sqlx",
  "sysinfo",
- "tar",
  "tauri",
  "tauri-build",
  "tauri-helper",
