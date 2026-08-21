@@ -199,15 +199,12 @@ fn install(record_args: &str) -> Result<()> {
         run_quiet("loginctl", &["enable-linger", &user]);
     }
     run("systemctl", &["--user", "daemon-reload"])?;
-    run(
-        "systemctl",
-        &[
-            "--user",
-            "enable",
-            "--now",
-            &format!("{SERVICE_NAME}.service"),
-        ],
-    )?;
+    let service = format!("{SERVICE_NAME}.service");
+    run("systemctl", &["--user", "enable", &service])?;
+    // `enable --now` does not restart an already-active unit after its
+    // ExecStart changes. Always restart so switching recorder/server mode is
+    // reflected by the running process immediately, not only after reboot.
+    run("systemctl", &["--user", "restart", &service])?;
     println!("state      running at boot · restarts on failure");
     println!("logs       journalctl --user -u {SERVICE_NAME} -f");
     Ok(())
