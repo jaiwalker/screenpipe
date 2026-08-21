@@ -349,6 +349,7 @@ You are running inside screenpipe. Prefer its MCP tools over shell/curl (this is
   - `search-content` for specific lookups; filter by content_type, app_name, window_name, and a time range.
   - `update-memory` (and search with content_type=memory) to persist and recall facts across sessions.
 - `user_profile` and `skill_manage` provide self-improvement capabilities; follow their tool descriptions and the shared session guidance.
+- `search_chats` finds exact existing screenpipe, Codex, Claude, and Cursor chat targets. `send_to_chat` delivers to one returned source + id only after the user explicitly authorizes that exact send.
 - `list_connections` shows the user's connected apps; `screenpipe_connect_app` connects one and waits for the user when a task needs it.
 - for a connection returned with mcp=true (Linear, Notion, Stripe, Sentry, Jira, Gmail, Zoom, Drive), use `sp_mcp_list_tools` then `sp_mcp_call` (with its `mcp_server_id`) to actually use it — not the connection proxy.
 - `sp_web_search` searches the public web; `save_artifact` saves a finished, user-facing deliverable (text or, with encoding=base64, an image) to the Artifacts library.
@@ -2821,6 +2822,9 @@ fn mcp_servers(config: &RuntimeConfig) -> Vec<McpServer> {
             if let Some(chat_id) = env_nonempty("SCREENPIPE_CHAT_SESSION_ID") {
                 tools_env.push(EnvVariable::new("SCREENPIPE_CHAT_SESSION_ID", chat_id));
             }
+            if config.unattended {
+                tools_env.push(EnvVariable::new("SCREENPIPE_CHAT_CONTROL_DISABLED", "1"));
+            }
             servers.push(McpServer::Stdio(
                 McpServerStdio::new("screenpipe-tools", &config.bun_path)
                     .args(vec![tools_server.to_string_lossy().into_owned()])
@@ -2918,6 +2922,9 @@ fn spawn_http_mcp_servers(config: &RuntimeConfig) -> Vec<std::process::Child> {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
+        if config.unattended {
+            cmd.env("SCREENPIPE_CHAT_CONTROL_DISABLED", "1");
+        }
         if let Some(url) = &engine_url {
             cmd.env("SCREENPIPE_API_URL", url);
         }
@@ -3156,11 +3163,13 @@ fn is_screenpipe_read_tool(tool_title: &str) -> bool {
     // http-only agents (Cursor, Copilot) — all plain GETs of the user's own
     // recordings, so auto-approved exactly like their mcp__screenpipe__*
     // equivalents on stdio. The write/bridge tools (save_artifact, sp_mcp_call,
-    // screenpipe_connect_app, live_view, sp_web_search) stay NOT auto-approved.
+    // screenpipe_connect_app, live_view, sp_web_search, send_to_chat) stay NOT
+    // auto-approved. `search_chats` is local and read-only.
     matches!(
         tool_title,
         "mcp__screenpipe-tools__query_recordings"
             | "mcp__screenpipe-tools__list_connections"
+            | "mcp__screenpipe-tools__search_chats"
             | "mcp__screenpipe-tools__activity_summary"
             | "mcp__screenpipe-tools__keyword_search"
             | "mcp__screenpipe-tools__search_elements"
@@ -5118,6 +5127,19 @@ mod tests {
             .join(".screenpipe")
             .join("screenpipe-tools.mjs")
             .exists());
+
+        config.unattended = true;
+        let unattended = mcp_servers(&config);
+        let tools = unattended
+            .iter()
+            .find_map(|server| match server {
+                McpServer::Stdio(stdio) if stdio.name == "screenpipe-tools" => Some(stdio),
+                _ => None,
+            })
+            .expect("unattended screenpipe-tools server");
+        assert!(tools.env.iter().any(|variable| {
+            variable.name == "SCREENPIPE_CHAT_CONTROL_DISABLED" && variable.value == "1"
+        }));
     }
 
     #[test]
@@ -5168,6 +5190,8 @@ mod tests {
         assert!(none.contains("save_artifact"));
         assert!(none.contains("user_profile"));
         assert!(none.contains("skill_manage"));
+        assert!(none.contains("search_chats"));
+        assert!(none.contains("send_to_chat"));
         assert!(none.contains(".pi/skills/*/SKILL.md"));
         assert!(
             none.contains("today\" is the user's local calendar day starting at local midnight")
@@ -5715,6 +5739,9 @@ mod tests {
         assert!(is_screenpipe_read_tool(
             "mcp__screenpipe-tools__list_connections"
         ));
+        assert!(is_screenpipe_read_tool(
+            "mcp__screenpipe-tools__search_chats"
+        ));
         // Core read tools mirrored on screenpipe-tools for http-only agents.
         assert!(is_screenpipe_read_tool(
             "mcp__screenpipe-tools__activity_summary"
@@ -5733,6 +5760,9 @@ mod tests {
         ));
         assert!(!is_screenpipe_read_tool(
             "mcp__screenpipe-tools__save_artifact"
+        ));
+        assert!(!is_screenpipe_read_tool(
+            "mcp__screenpipe-tools__send_to_chat"
         ));
         assert!(!is_screenpipe_read_tool("bash"));
 

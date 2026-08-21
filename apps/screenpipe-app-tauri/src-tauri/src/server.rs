@@ -453,6 +453,14 @@ pub async fn run_server(app_handle: tauri::AppHandle, port: u16) {
             axum::routing::get(list_installed_apps_handler),
         )
         .route("/window-size", axum::routing::post(set_window_size))
+        .route(
+            "/agent/chats/search",
+            axum::routing::post(crate::chat_control::search),
+        )
+        .route(
+            "/agent/chats/send",
+            axum::routing::post(crate::chat_control::send),
+        )
         .route("/focus", axum::routing::post(handle_focus));
 
     // E2E driver for the packaged updater test (e2e/mock-updates). Native

@@ -1074,6 +1074,19 @@ impl PiExecutor {
         Ok(())
     }
 
+    /// Install inter-chat discovery and delivery for an interactive chat.
+    /// Pipe executors do not call this: cross-chat sends are intentionally a
+    /// user-facing chat capability, not ambient automation authority.
+    pub fn ensure_chat_control_extension(project_dir: &Path) -> Result<()> {
+        let ext_dir = project_dir.join(".pi").join("extensions");
+        std::fs::create_dir_all(&ext_dir)?;
+        let ext_content = include_str!("../../assets/extensions/chat-control.ts");
+        let ext_path = ext_dir.join("chat-control.ts");
+        std::fs::write(&ext_path, ext_content)?;
+        debug!("chat-control extension installed at {:?}", ext_path);
+        Ok(())
+    }
+
     /// Install the register-artifact extension so pipes can register files
     /// as artifacts mid-execution via the local /artifacts/register API.
     pub fn ensure_register_artifact_extension(project_dir: &Path) -> Result<()> {
@@ -4201,6 +4214,24 @@ mod tests {
         assert!(content.contains("name: \"user_profile\""));
         assert!(content.contains("name: \"skill_manage\""));
         assert!(content.contains("/agent/skills/manage"));
+    }
+
+    #[test]
+    fn chat_control_extension_installs_guarded_search_and_send_tools() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        PiExecutor::ensure_chat_control_extension(dir.path())
+            .expect("install chat-control extension");
+
+        let content = std::fs::read_to_string(
+            dir.path()
+                .join(".pi")
+                .join("extensions")
+                .join("chat-control.ts"),
+        )
+        .expect("read chat-control extension");
+        assert!(content.contains("name: \"search_chats\""));
+        assert!(content.contains("name: \"send_to_chat\""));
+        assert!(content.contains("confirmed=true"));
     }
 
     #[cfg(windows)]

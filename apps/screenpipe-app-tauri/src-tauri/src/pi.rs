@@ -1624,6 +1624,15 @@ fn ensure_self_improvement_extension(project_dir: &str) -> Result<(), String> {
         .map_err(|e| format!("Failed to install self-improvement extension: {}", e))
 }
 
+/// Install exact-target chat search/send tools for interactive Pi chats.
+/// Kept separate from self-improvement so background Pipe agents never gain
+/// cross-chat delivery authority.
+fn ensure_chat_control_extension(project_dir: &str) -> Result<(), String> {
+    use screenpipe_core::agents::pi::PiExecutor;
+    PiExecutor::ensure_chat_control_extension(std::path::Path::new(project_dir))
+        .map_err(|e| format!("Failed to install chat-control extension: {}", e))
+}
+
 /// Emit privacy-safe context-usage counts from native Pi's exact model payload.
 /// Other ACP agents own their prompt assembly and do not load Pi extensions.
 fn ensure_context_usage_extension(project_dir: &str) -> Result<(), String> {
@@ -2639,6 +2648,7 @@ pub async fn pi_start_inner(
     // pi-acp, which is pi and can't consume the MCP servers.
     if !use_acp {
         ensure_self_improvement_extension(&project_dir)?;
+        ensure_chat_control_extension(&project_dir)?;
         ensure_context_usage_extension(&project_dir)?;
 
         // Install web-search extension only for screenpipe-cloud presets
@@ -2664,6 +2674,7 @@ pub async fn pi_start_inner(
         }
     } else if is_pi_acp {
         ensure_self_improvement_extension(&project_dir)?;
+        ensure_chat_control_extension(&project_dir)?;
 
         // Same pi as native — seed the project-local extensions so its tools
         // reach the model. web-search uses the LOCAL-proxy variant: the cloud
@@ -4049,13 +4060,27 @@ pub async fn pi_queue_prompt(
     display_preview: Option<String>,
 ) -> Result<String, String> {
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
-    let mut conversation = acquire_pi_conversation_lease(state.inner(), &sid).await?;
+    pi_queue_prompt_inner(&app, state.inner(), &sid, message, images, display_preview).await
+}
+
+/// Queue a follow-up from a non-Tauri caller such as the loopback chat-control
+/// API. This keeps agent-to-agent sends on the same synchronized queue as the
+/// visible composer.
+pub(crate) async fn pi_queue_prompt_inner(
+    app: &AppHandle,
+    state: &PiState,
+    sid: &str,
+    message: String,
+    images: Option<Vec<PiImageContent>>,
+    display_preview: Option<String>,
+) -> Result<String, String> {
+    let mut conversation = acquire_pi_conversation_lease(state, sid).await?;
     let message = conversation.prepare_prompt(message);
 
     let preview = display_preview.unwrap_or_else(|| message.clone());
-    let message = attach_foreground_connections_context(&app, &sid, message).await;
+    let message = attach_foreground_connections_context(app, sid, message).await;
     #[cfg(feature = "e2e")]
-    emit_e2e_pi_wire_prompt(&app, &sid, "queue", &message);
+    emit_e2e_pi_wire_prompt(app, sid, "queue", &message);
     let cmd = build_prompt_command(message, images, &preview)?;
     let (queue_id, rx) = conversation
         .queue
@@ -4066,8 +4091,8 @@ pub async fn pi_queue_prompt(
             true,
         )
         .await?;
-    let state_for_watchdog = state.inner().clone();
-    let sid_for_watchdog = sid.clone();
+    let state_for_watchdog = state.clone();
+    let sid_for_watchdog = sid.to_string();
     if conversation.is_synced() {
         // Warm process: the history-wrapper decision is already settled, so
         // holding the lease until this prompt starts would only serialize
@@ -4116,9 +4141,19 @@ pub async fn pi_steer(
     images: Option<Vec<PiImageContent>>,
 ) -> Result<(), String> {
     let sid = session_id.unwrap_or_else(|| "chat".to_string());
+    pi_steer_inner(&app, state.inner(), &sid, message, images).await
+}
+
+pub(crate) async fn pi_steer_inner(
+    app: &AppHandle,
+    state: &PiState,
+    sid: &str,
+    message: String,
+    images: Option<Vec<PiImageContent>>,
+) -> Result<(), String> {
     let queue = {
         let mut pool = state.0.lock().await;
-        let m = pool.sessions.get_mut(&sid).ok_or("Pi not initialized")?;
+        let m = pool.sessions.get_mut(sid).ok_or("Pi not initialized")?;
         if !m.is_running() {
             return Err("Pi is not running".to_string());
         }
@@ -4128,7 +4163,7 @@ pub async fn pi_steer(
             .ok_or("Pi command queue not initialized")?
     };
 
-    let message = attach_foreground_connections_context(&app, &sid, message).await;
+    let message = attach_foreground_connections_context(app, sid, message).await;
     let mut cmd = json!({
         "type": "steer",
         "message": message,

@@ -61,8 +61,11 @@ class Server {
   private buffer = "";
   private pending = new Map<number, (value: Record<string, unknown>) => void>();
 
-  constructor() {
-    this.proc = spawn(process.execPath, [SERVER], { stdio: ["pipe", "pipe", "pipe"] });
+  constructor(env: NodeJS.ProcessEnv = {}) {
+    this.proc = spawn(process.execPath, [SERVER], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, ...env },
+    });
     this.proc.stdout.setEncoding("utf-8");
     this.proc.stdout.on("data", (chunk: string) => {
       this.buffer += chunk;
@@ -121,6 +124,8 @@ describe("screenpipe-tools MCP server", () => {
         "list_connections",
         "live_view",
         "save_artifact",
+        "search_chats",
+        "send_to_chat",
         "screenpipe_connect_app",
         "skill_manage",
         "sp_mcp_call",
@@ -140,6 +145,16 @@ describe("screenpipe-tools MCP server", () => {
       properties?: Record<string, { enum?: string[] }>;
     })?.properties?.action?.enum;
     expect(actionEnum).toEqual(["list", "get", "save"]);
+
+    const sendToChat = tools.find((t) => t.name === "send_to_chat");
+    const sendProperties = sendToChat?.inputSchema as {
+      properties?: Record<string, { description?: string }>;
+      required?: string[];
+    };
+    expect(sendProperties.required).toContain("confirmed");
+    expect(sendProperties.properties?.confirmed?.description).toContain(
+      "explicit user authorization",
+    );
   });
 
   it("errors clearly on an unknown tool", async () => {
@@ -147,6 +162,16 @@ describe("screenpipe-tools MCP server", () => {
     await server.request(1, "initialize", {});
     const res = await server.request(3, "tools/call", { name: "does_not_exist", arguments: {} });
     expect(res.error).toMatchObject({ code: -32602 });
+  });
+
+  it("keeps cross-chat sends out of unattended ACP tasks", async () => {
+    server = new Server({ SCREENPIPE_CHAT_CONTROL_DISABLED: "1" });
+    const listed = await server.request(1, "tools/list");
+    const names = (listed.result as { tools: Array<{ name: string }> }).tools.map(
+      (tool) => tool.name,
+    );
+    expect(names).toContain("search_chats");
+    expect(names).not.toContain("send_to_chat");
   });
 
   it("normalizes calendar ranges from the ACP runtime's local day", async () => {
