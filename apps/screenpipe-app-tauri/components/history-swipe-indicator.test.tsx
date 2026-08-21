@@ -84,13 +84,18 @@ describe("HistorySwipeIndicator", () => {
     );
     const backIndicator = screen.getByTestId("history-swipe-indicator");
     expect(backIndicator).toHaveAttribute("data-edge", "left");
-    expect(backIndicator).toHaveClass("h-[6.5rem]", "w-10", "bg-[#7DADF9]");
+    expect(backIndicator).toHaveClass(
+      "h-[6.5rem]",
+      "w-10",
+      "bg-signal",
+      "text-signal-foreground",
+    );
     expect(backIndicator.style.left).toBe("var(--app-sidebar-width, 0px)");
     expect(backIndicator.style.transform).toContain("-66.666");
     expect(screen.getByTestId("history-swipe-arrow-back")).toHaveClass(
       "h-8",
       "w-8",
-      "text-white",
+      "text-signal-foreground",
     );
 
     emitNativeScroll({ deltaX: -30, deltaY: 2, phase: 1 });

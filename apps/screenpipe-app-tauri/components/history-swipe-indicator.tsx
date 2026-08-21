@@ -134,8 +134,8 @@ export function HistorySwipeIndicator({ enabled }: { enabled: boolean }) {
     <div
       aria-hidden="true"
       className={cn(
-        "pointer-events-none fixed top-1/2 z-[120] flex h-[6.5rem] w-10 items-center justify-center bg-[#7DADF9] text-white",
-        "shadow-[0_6px_20px_rgba(37,99,235,0.18)] will-change-transform",
+        "pointer-events-none fixed top-1/2 z-[120] flex h-[6.5rem] w-10 items-center justify-center bg-signal text-signal-foreground",
+        "shadow-md will-change-transform",
         "motion-safe:transition-[transform,opacity] motion-safe:duration-75 motion-safe:ease-out",
         "motion-reduce:transition-none",
         isBack ? "rounded-r-2xl" : "rounded-l-2xl",
@@ -152,7 +152,7 @@ export function HistorySwipeIndicator({ enabled }: { enabled: boolean }) {
       }}
     >
       <Arrow
-        className="h-8 w-8 text-white"
+        className="h-8 w-8 text-signal-foreground"
         data-testid={`history-swipe-arrow-${indicator.direction}`}
         strokeWidth={2.5}
       />
