@@ -16,9 +16,6 @@ a pointer.
 - `docs/human-only-app-publication.md` — before anything release-related.
 - `docs/macos-dev-builds.md` — canonical fast native build commands and the
   exceptional signed-bundle/TCC path.
-- `crates/screenpipe-core/assets/skills/screenpipe-cli/SKILL.md` — before using
-  screenpipe as a CLI product: recorder setup, status, search, pipes, or
-  connections. This is the canonical agent-facing CLI guide.
 - skill `screenpipe-tauri` — before adding or changing Tauri commands or their
   TypeScript bindings.
 

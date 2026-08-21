@@ -112,7 +112,7 @@ If Claude Code, Codex, Gemini CLI, Cursor, or another coding agent is working fr
 
 > Read the [screenpipe CLI skill](crates/screenpipe-core/assets/skills/screenpipe-cli/SKILL.md) before operating screenpipe. Set up always-on local capture, verify capture freshness and storage, then query my history without relying on the desktop app.
 
-The root [`AGENTS.md`](AGENTS.md) routes repository-aware agents to the same skill automatically. To install the screenpipe skills and MCP configuration into every supported agent detected on your computer, run:
+To install the screenpipe skills and MCP configuration into every supported agent detected on your computer, run:
 
 ```bash
 npx screenpipe setup
