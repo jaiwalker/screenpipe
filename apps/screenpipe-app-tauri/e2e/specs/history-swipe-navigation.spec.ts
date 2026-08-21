@@ -18,6 +18,55 @@ async function prepareScreenshot(): Promise<void> {
   await browser.pause(t(150));
 }
 
+async function captureSwipePreview(
+  direction: "back" | "forward",
+  screenshotName: string,
+): Promise<void> {
+  await invokeOrThrow("plugin:e2e|preview_history_swipe", {
+    label: "home",
+    direction,
+  });
+
+  const indicator = $('[data-testid="history-swipe-indicator"]');
+  await indicator.waitForDisplayed({ timeout: t(10_000) });
+  await browser.waitUntil(
+    async () =>
+      (await indicator.getAttribute("data-direction")) === direction &&
+      Number(await indicator.getAttribute("data-progress")) >= 0.5,
+    {
+      timeout: t(10_000),
+      timeoutMsg: `${direction} history swipe preview did not animate`,
+    },
+  );
+  // Safari's screenshot endpoint omits fixed composited layers. For visual
+  // evidence only, keep the rendered production element at the same edge and
+  // midpoint while removing its compositor-triggering transforms.
+  await browser.execute(() => {
+    const element = document.querySelector<HTMLElement>(
+      '[data-testid="history-swipe-indicator"]',
+    );
+    if (!element) return;
+    element.style.position = "absolute";
+    element.style.top = `${window.scrollY + window.innerHeight / 2 - 24}px`;
+    element.style.transform = "none";
+    const surface = element.firstElementChild as HTMLElement | null;
+    if (surface) {
+      surface.style.animation = "none";
+      surface.style.transition = "none";
+      surface.style.transform = "none";
+    }
+  });
+  await saveScreenshot(screenshotName);
+  await invokeOrThrow("plugin:e2e|preview_history_swipe", {
+    label: "home",
+    direction: "dismiss",
+  });
+  await indicator.waitForDisplayed({
+    reverse: true,
+    timeout: t(10_000),
+  });
+}
+
 (supportsNativeHistorySwipe ? describe : describe.skip)(
   "Native history swipe navigation",
   function () {
@@ -96,6 +145,9 @@ async function prepareScreenshot(): Promise<void> {
       expect(new URL(await browser.getUrl()).searchParams.get("section")).toBe(
         "help",
       );
+      // WebKit can drop a second WebDriver history traversal while the first
+      // popstate is still settling, even after the destination has rendered.
+      await browser.pause(t(750));
 
       await browser.forward();
       const settingsRootAgain = await $('[data-testid="settings-back-to-app"]');
@@ -113,6 +165,7 @@ async function prepareScreenshot(): Promise<void> {
       );
       await prepareScreenshot();
       await saveScreenshot("history-swipe-04-restored-help");
+      await browser.pause(t(750));
 
       await browser.back();
       await browser.waitUntil(
@@ -132,6 +185,15 @@ async function prepareScreenshot(): Promise<void> {
       ).toBeNull();
       await prepareScreenshot();
       await saveScreenshot("history-swipe-05-restored-home");
+    });
+
+    it("captures the back and forward gesture feedback design", async () => {
+      await invokeOrThrow("set_history_swipe_navigation_enabled", {
+        enabled: true,
+      });
+
+      await captureSwipePreview("back", "history-swipe-06-back-preview");
+      await captureSwipePreview("forward", "history-swipe-07-forward-preview");
     });
   },
 );

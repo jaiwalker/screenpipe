@@ -31,6 +31,8 @@ describe("HistorySwipeIndicator", () => {
     deltaY: number;
     ctrlKey?: boolean;
     metaKey?: boolean;
+    e2ePreview?: boolean;
+    e2ePreviewDismiss?: boolean;
     phase?: number;
     momentumPhase?: number;
   }) {
@@ -50,6 +52,7 @@ describe("HistorySwipeIndicator", () => {
     mocks.listeners.clear();
     mocks.listen.mockClear();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("stays detached while the experimental gesture is disabled", () => {
@@ -89,6 +92,35 @@ describe("HistorySwipeIndicator", () => {
     expect(
       screen.getByTestId("history-swipe-arrow-forward"),
     ).toBeInTheDocument();
+  });
+
+  it("renders a feature-only E2E preview without activating the app", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SCREENPIPE_E2E", "true");
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    render(<HistorySwipeIndicator enabled />);
+
+    await waitFor(() =>
+      expect(mocks.listeners.has("native-scroll")).toBe(true),
+    );
+
+    emitNativeScroll({
+      deltaX: 60,
+      deltaY: 0,
+      e2ePreview: true,
+      phase: 1,
+    });
+    expect(screen.getByTestId("history-swipe-indicator")).toHaveAttribute(
+      "data-direction",
+      "back",
+    );
+
+    emitNativeScroll({
+      deltaX: 0,
+      deltaY: 0,
+      e2ePreview: true,
+      e2ePreviewDismiss: true,
+    });
+    expect(screen.queryByTestId("history-swipe-indicator")).toBeNull();
   });
 
   it("ignores vertical and modified scroll, then dismisses at gesture end", async () => {

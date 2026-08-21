@@ -7,8 +7,8 @@ and layer declared in the manifest, weighted by confidence and criticality.
 - Manifest: `e2e/coverage-map.json`
 - Specs directory: `e2e/specs`
 - Mapped specs: 119
-- Declared test blocks: 344
-- Weighted coverage points: 269.9
+- Declared test blocks: 345
+- Weighted coverage points: 270.4
 
 Confidence weights: strong=1.0, partial=0.7, conditional=0.4, smoke=0.3.
 Criticality weights: high=1.0, medium=0.7, low=0.4.
@@ -19,8 +19,8 @@ can execute more runtime cases than this number shows.
 
 | Platform | Specs | Declared tests | Weighted points | Layers | Features | Critical score |
 | --- | --- | --- | --- | --- | --- | --- |
-| windows | 91 | 298 | 244.0 | 15 | 96 | 92% |
-| macos | 115 | 306 | 239.7 | 17 | 102 | 90% |
+| windows | 91 | 299 | 244.5 | 15 | 96 | 92% |
+| macos | 115 | 307 | 240.2 | 17 | 102 | 90% |
 | linux | 80 | 256 | 213.2 | 14 | 92 | 88% |
 
 ## Runtime Results
@@ -45,11 +45,11 @@ pass/fail/skip counts.
 | os-integration | 7 specs / 30 tests / 25.5 pts | 14 specs / 27 tests / 16.0 pts | 2 specs / 13 tests / 9.4 pts |
 | performance | 2 specs / 44 tests / 44.0 pts | 4 specs / 34 tests / 30.5 pts | 1 specs / 29 tests / 29.0 pts |
 | pipes | 6 specs / 19 tests / 19.0 pts | 8 specs / 25 tests / 25.0 pts | 6 specs / 19 tests / 19.0 pts |
-| real-ui-e2e | 65 specs / 199 tests / 164.7 pts | 78 specs / 203 tests / 166.9 pts | 60 specs / 175 tests / 150.5 pts |
+| real-ui-e2e | 65 specs / 200 tests / 165.1 pts | 78 specs / 204 tests / 167.3 pts | 60 specs / 175 tests / 150.5 pts |
 | settings | 14 specs / 40 tests / 37.0 pts | 16 specs / 34 tests / 29.7 pts | 13 specs / 31 tests / 28.0 pts |
 | storage-privacy | 9 specs / 42 tests / 33.3 pts | 9 specs / 27 tests / 26.1 pts | 6 specs / 20 tests / 19.1 pts |
-| tauri-command | 19 specs / 51 tests / 39.6 pts | 27 specs / 62 tests / 47.1 pts | 18 specs / 52 tests / 40.2 pts |
-| window-lifecycle | 19 specs / 65 tests / 54.5 pts | 19 specs / 45 tests / 31.9 pts | 13 specs / 39 tests / 29.9 pts |
+| tauri-command | 19 specs / 52 tests / 40.1 pts | 27 specs / 63 tests / 47.6 pts | 18 specs / 52 tests / 40.2 pts |
+| window-lifecycle | 19 specs / 66 tests / 55.0 pts | 19 specs / 46 tests / 32.4 pts | 13 specs / 39 tests / 29.9 pts |
 
 ## Critical Feature Matrix
 
@@ -158,7 +158,7 @@ pass/fail/skip counts.
 | focus-server.spec.ts | windows, macos, linux | local-api, window-lifecycle, tauri-command | window-lifecycle, focus-server, deeplink | medium | partial | api | 2 | Focus server opens windows and forwards deeplink args. |
 | hd-recording-pipeline.spec.ts | macos | capture-ocr, local-api, performance | capture-ocr, hd-recording, timeline | high | conditional | api | 1 | Opt-in macOS HD capture and OCR indexing. |
 | help-discord-link.spec.ts | windows, macos, linux | real-ui-e2e | help | low | smoke | real-user-flow | 2 | Help section Discord invite link. |
-| history-swipe-navigation.spec.ts | windows, macos | real-ui-e2e, window-lifecycle, tauri-command | home-navigation, window-lifecycle | medium | partial | real-user-flow | 1 | Reads back the real WKWebView/WebView2 history-swipe setting, verifies top-level UI sections are browser-history entries, proves Back to app consumes Settings so the next back action restores the prior Home state, and captures each visible state in the journey. Physical OS trackpad animation remains manual. |
+| history-swipe-navigation.spec.ts | windows, macos | real-ui-e2e, window-lifecycle, tauri-command | home-navigation, window-lifecycle | medium | partial | real-user-flow | 2 | Reads back the real WKWebView/WebView2 history-swipe setting, verifies top-level UI sections are browser-history entries, proves Back to app consumes Settings so the next back action restores the prior Home state, and captures every destination plus the production back/forward gesture-arrow design. Physical OS trackpad input remains manual. |
 | home-window.spec.ts | windows, macos, linux | real-ui-e2e, window-lifecycle | app-launch, home-navigation, timeline, settings-recording, pipes | high | strong | real-user-flow | 1 | Clicks through Home, Pipes, Timeline, Help, and Settings. |
 | html-artifact-render.spec.ts | windows, macos, linux | real-ui-e2e | brain, artifacts, html-sandbox | high | strong | real-user-flow | 1 | Registers an HTML artifact, opens it in Brain, and asserts it renders inside a sandboxed allow-scripts iframe (CSP default-src 'none') whose global <style> never leaks into the host app DOM (regression: rehype-raw repainting the whole window). |
 | live-view-item-actions.spec.ts | windows, macos, linux | real-ui-e2e, local-api, pipes | brain-overview, live-view-item-actions, artifacts, pipes | high | strong | real-user-flow | 1 | Installs the generic Commitments and Accounting Live View kits, shows Done, Later, and Not right without hover, persists snooze, correction, resolve, dismiss, and reopen decisions through the local API, verifies receipts survive reload, and captures real product screenshots. |

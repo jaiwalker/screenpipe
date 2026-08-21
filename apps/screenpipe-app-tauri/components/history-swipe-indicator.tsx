@@ -16,6 +16,8 @@ interface NativeScrollPayload {
   deltaY: number;
   ctrlKey: boolean;
   metaKey: boolean;
+  e2ePreview?: boolean;
+  e2ePreviewDismiss?: boolean;
   phase?: number;
   momentumPhase?: number;
 }
@@ -56,10 +58,20 @@ export function HistorySwipeIndicator({ enabled }: { enabled: boolean }) {
     };
 
     void listen<NativeScrollPayload>("native-scroll", ({ payload }) => {
+      const isE2ePreview =
+        process.env.NEXT_PUBLIC_SCREENPIPE_E2E === "true" &&
+        payload.e2ePreview === true;
+      if (isE2ePreview && payload.e2ePreviewDismiss) {
+        stopDismissTimer();
+        setIndicator(null);
+        accumulatedDeltaRef.current = 0;
+        directionRef.current = null;
+        return;
+      }
       if (
         disposed ||
-        document.visibilityState === "hidden" ||
-        !document.hasFocus() ||
+        (!isE2ePreview &&
+          (document.visibilityState === "hidden" || !document.hasFocus())) ||
         payload.ctrlKey ||
         payload.metaKey ||
         Math.abs(payload.deltaX) < MIN_HORIZONTAL_DELTA ||
@@ -95,7 +107,7 @@ export function HistorySwipeIndicator({ enabled }: { enabled: boolean }) {
           accumulatedDeltaRef.current = 0;
           directionRef.current = null;
         },
-        gestureFinished ? 90 : 180,
+        isE2ePreview ? 10_000 : gestureFinished ? 90 : 180,
       );
     }).then((stopListening) => {
       if (disposed) {
