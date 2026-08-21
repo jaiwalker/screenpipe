@@ -204,9 +204,11 @@ fn format_status_report(snapshot: &StatusSnapshot, now: DateTime<Utc>) -> String
     let health = snapshot.health.as_ref();
     let health_status = health.and_then(|value| string_field(value, "status"));
     let capture_disabled = health.is_some_and(all_capture_disabled);
+    let capture_active = health.is_some_and(any_capture_active);
     let (state_icon, state_label) = match health_status {
         Some("healthy") if capture_disabled => ("●", "serving normally"),
-        Some("healthy") => ("●", "recording normally"),
+        Some("healthy") if capture_active => ("●", "recording normally"),
+        Some("healthy") => ("○", "not capturing"),
         Some("degraded") | Some("unhealthy") => ("▲", "needs attention"),
         Some(other) => ("▲", other),
         None => ("○", "not running"),
@@ -285,6 +287,11 @@ fn format_status_report(snapshot: &StatusSnapshot, now: DateTime<Utc>) -> String
 fn all_capture_disabled(health: &Value) -> bool {
     string_field(health, "frame_status") == Some("disabled")
         && string_field(health, "audio_status") == Some("disabled")
+}
+
+fn any_capture_active(health: &Value) -> bool {
+    string_field(health, "frame_status") == Some("ok")
+        || string_field(health, "audio_status") == Some("ok")
 }
 
 fn screen_summary(snapshot: &StatusSnapshot, health: &Value, now: DateTime<Utc>) -> String {
@@ -612,6 +619,24 @@ mod tests {
         assert_eq!(stats.last_frame.as_deref(), Some("2026-08-21T16:59:57Z"));
         assert_eq!(stats.last_audio.as_deref(), Some("2026-08-21T16:59:28Z"));
         assert!(stats.error.is_none());
+    }
+
+    #[test]
+    fn healthy_without_capture_devices_does_not_claim_to_be_recording() {
+        let health = json!({
+            "status": "healthy",
+            "version": "2.6.72",
+            "frame_status": "disabled",
+            "vision_reason": "no_displays_expected",
+            "audio_status": "no_input_device",
+            "audio_capture_mode": "always"
+        });
+
+        let report = format_status_report(&snapshot(Some(health)), now());
+        assert!(report.contains("screenpipe  ○ not capturing"));
+        assert!(!report.contains("recording normally"));
+        assert!(report.contains("screen      off"));
+        assert!(report.contains("audio       no input device"));
     }
 
     #[test]
