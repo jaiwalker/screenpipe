@@ -128,36 +128,34 @@ export function HistorySwipeIndicator({ enabled }: { enabled: boolean }) {
 
   const isBack = indicator.direction === "back";
   const Arrow = isBack ? ArrowLeft : ArrowRight;
-  const entryOffset = (1 - indicator.progress) * (isBack ? -12 : 12);
+  const hiddenPercent = (1 - indicator.progress) * (isBack ? -100 : 100);
 
   return (
     <div
       aria-hidden="true"
       className={cn(
-        "pointer-events-none fixed top-1/2 z-[120] -translate-y-1/2",
-        isBack ? "left-3" : "right-3",
+        "pointer-events-none fixed top-1/2 z-[120] flex h-[6.5rem] w-10 items-center justify-center bg-[#7DADF9] text-white",
+        "shadow-[0_6px_20px_rgba(37,99,235,0.18)] will-change-transform",
+        "motion-safe:transition-[transform,opacity] motion-safe:duration-75 motion-safe:ease-out",
+        "motion-reduce:transition-none",
+        isBack ? "rounded-r-2xl" : "rounded-l-2xl",
       )}
       data-direction={indicator.direction}
+      data-edge={isBack ? "left" : "right"}
       data-progress={indicator.progress.toFixed(2)}
       data-testid="history-swipe-indicator"
+      style={{
+        left: isBack ? "var(--app-sidebar-width, 0px)" : undefined,
+        right: isBack ? undefined : 0,
+        opacity: 0.72 + indicator.progress * 0.28,
+        transform: `translate3d(${hiddenPercent}%, -50%, 0)`,
+      }}
     >
-      <div
-        className={cn(
-          "flex h-12 w-12 items-center justify-center rounded-full border border-border/80 bg-background/95 shadow-xl backdrop-blur",
-          "animate-in fade-in duration-100 motion-reduce:animate-none",
-          "transition-[opacity,transform] ease-out motion-reduce:transition-none",
-        )}
-        style={{
-          opacity: 0.6 + indicator.progress * 0.4,
-          transform: `translateX(${entryOffset}px) scale(${0.88 + indicator.progress * 0.12})`,
-        }}
-      >
-        <Arrow
-          className="h-5 w-5 text-foreground"
-          data-testid={`history-swipe-arrow-${indicator.direction}`}
-          strokeWidth={2.25}
-        />
-      </div>
+      <Arrow
+        className="h-8 w-8 text-white"
+        data-testid={`history-swipe-arrow-${indicator.direction}`}
+        strokeWidth={2.5}
+      />
     </div>
   );
 }

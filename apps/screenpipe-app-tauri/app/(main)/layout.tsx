@@ -30,8 +30,10 @@ export default function MainLayout({
 
   return (
     <SidebarProvider>
-      <AppSidebarLayout>{children}</AppSidebarLayout>
-      <HistorySwipeIndicator enabled={historySwipeIndicatorEnabled} />
+      <AppSidebarLayout>
+        {children}
+        <HistorySwipeIndicator enabled={historySwipeIndicatorEnabled} />
+      </AppSidebarLayout>
       {/*
         Mounted here, not at "/" — the root route is a deliberate no-op so no
         window executes another window's code. This layout is the main window

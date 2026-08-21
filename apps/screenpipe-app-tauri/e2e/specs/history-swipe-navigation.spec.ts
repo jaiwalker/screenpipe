@@ -47,14 +47,9 @@ async function captureSwipePreview(
     );
     if (!element) return;
     element.style.position = "absolute";
-    element.style.top = `${window.scrollY + window.innerHeight / 2 - 24}px`;
+    element.style.top = `${window.scrollY + window.innerHeight / 2 - element.offsetHeight / 2}px`;
     element.style.transform = "none";
-    const surface = element.firstElementChild as HTMLElement | null;
-    if (surface) {
-      surface.style.animation = "none";
-      surface.style.transition = "none";
-      surface.style.transform = "none";
-    }
+    element.style.transition = "none";
   });
   await saveScreenshot(screenshotName);
   await invokeOrThrow("plugin:e2e|preview_history_swipe", {

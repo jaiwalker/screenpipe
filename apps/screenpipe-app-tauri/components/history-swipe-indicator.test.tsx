@@ -82,12 +82,27 @@ describe("HistorySwipeIndicator", () => {
       "data-progress",
       "0.33",
     );
-    expect(screen.getByTestId("history-swipe-arrow-back")).toBeInTheDocument();
+    const backIndicator = screen.getByTestId("history-swipe-indicator");
+    expect(backIndicator).toHaveAttribute("data-edge", "left");
+    expect(backIndicator).toHaveClass("h-[6.5rem]", "w-10", "bg-[#7DADF9]");
+    expect(backIndicator.style.left).toBe("var(--app-sidebar-width, 0px)");
+    expect(backIndicator.style.transform).toContain("-66.666");
+    expect(screen.getByTestId("history-swipe-arrow-back")).toHaveClass(
+      "h-8",
+      "w-8",
+      "text-white",
+    );
 
     emitNativeScroll({ deltaX: -30, deltaY: 2, phase: 1 });
-    expect(screen.getByTestId("history-swipe-indicator")).toHaveAttribute(
+    const forwardIndicator = screen.getByTestId("history-swipe-indicator");
+    expect(forwardIndicator).toHaveAttribute(
       "data-direction",
       "forward",
+    );
+    expect(forwardIndicator).toHaveAttribute("data-edge", "right");
+    expect(forwardIndicator.style.right).toBe("0px");
+    expect(forwardIndicator.style.transform).toBe(
+      "translate3d(75%, -50%, 0)",
     );
     expect(
       screen.getByTestId("history-swipe-arrow-forward"),
