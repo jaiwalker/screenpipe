@@ -679,6 +679,17 @@ fn sync_queue_state_from_event(
             }
             queue_state.signal_done_if_idle();
         }
+        Some("acp_native_steer_resolved") => {
+            // ACP-native steering injects into the already-open assistant
+            // message, so there is no second message_start to clear the
+            // immediate-command guard. This private runtime acknowledgement
+            // closes that gap without changing raw Pi's steer lifecycle.
+            if event.get("accepted").and_then(Value::as_bool) == Some(true) {
+                queue_state.mark_agent_active();
+            }
+            queue_state.clear_steer_in_flight();
+            queue_state.signal_done_if_idle();
+        }
         Some("response") => {
             // Correlate lifecycle replies by request id, not a shared wakeup.
             if let Some(id) = event.get("id").and_then(|id| id.as_str()) {
@@ -3540,7 +3551,11 @@ pub async fn pi_start_inner(
 
                     if matches!(
                         event_type.as_deref(),
-                        Some("acp_process_started" | "acp_process_stopped")
+                        Some(
+                            "acp_process_started"
+                                | "acp_process_stopped"
+                                | "acp_native_steer_resolved"
+                        )
                     ) {
                         // Internal process-supervision events are consumed by
                         // this reader and are not part of the webview contract.
@@ -5932,6 +5947,31 @@ mod tests {
             &json!({ "type": "auto_retry_end", "success": false }),
         );
         assert!(!state.is_agent_active());
+    }
+
+    #[test]
+    fn native_acp_steer_resolution_clears_only_its_immediate_guard() {
+        let accepted = crate::pi_command_queue::PiQueueState::new();
+        accepted.set_steer_in_flight();
+        super::sync_queue_state_from_event(
+            &accepted,
+            &json!({ "type": "acp_native_steer_resolved", "accepted": true }),
+        );
+        assert!(!accepted.is_steer_in_flight());
+        assert!(accepted.is_agent_active());
+
+        let rejected = crate::pi_command_queue::PiQueueState::new();
+        rejected.mark_agent_active();
+        rejected.set_steer_in_flight();
+        super::sync_queue_state_from_event(
+            &rejected,
+            &json!({ "type": "acp_native_steer_resolved", "accepted": false }),
+        );
+        assert!(!rejected.is_steer_in_flight());
+        assert!(
+            rejected.is_agent_active(),
+            "a failed steer must not make the original turn look idle"
+        );
     }
 
     #[test]

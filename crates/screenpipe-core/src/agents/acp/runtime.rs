@@ -13,6 +13,9 @@ use super::extensions::AcpExtensionMiddleware;
 use super::schedule_extension::{
     advertised_capability, ScheduleMutationRequest, ScheduleOperation,
 };
+use super::steering_extension::{
+    advertised as steering_advertised, SteeringOutcome, SteeringRequest, SteeringResponse,
+};
 use agent_client_protocol::schema::v1::{
     AuthCapabilities, AuthMethod, AuthenticateRequest, BooleanConfigOptionCapabilities,
     CancelNotification, ClientCapabilities, ClientSessionCapabilities, CloseSessionRequest,
@@ -3549,30 +3552,17 @@ struct PromptDispatch<'a> {
     completed: &'a mpsc::UnboundedSender<(String, String, Result<StopReason, Error>)>,
 }
 
-fn start_prompt(dispatch: &PromptDispatch<'_>, command: Value) -> Result<(), String> {
-    let &PromptDispatch {
-        connection,
-        state,
-        session_id,
-        image_supported,
-        completed,
-    } = dispatch;
-    let command_type = command
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("prompt")
-        .to_owned();
-    let command_id = command
-        .get("id")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+fn prompt_content(
+    command: &Value,
+    image_supported: bool,
+    system_context: Option<String>,
+) -> Vec<ContentBlock> {
     let mut message = command
         .get("message")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
-    if let Some(context) = state.take_system_context() {
+    if let Some(context) = system_context {
         message = format!(
             "<screenpipe-system-context>\n{context}\n</screenpipe-system-context>\n\n{message}"
         );
@@ -3607,6 +3597,28 @@ fn start_prompt(dispatch: &PromptDispatch<'_>, command: Value) -> Result<(), Str
             }
         }
     }
+    content
+}
+
+fn start_prompt(dispatch: &PromptDispatch<'_>, command: Value) -> Result<(), String> {
+    let &PromptDispatch {
+        connection,
+        state,
+        session_id,
+        image_supported,
+        completed,
+    } = dispatch;
+    let command_type = command
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("prompt")
+        .to_owned();
+    let command_id = command
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let content = prompt_content(&command, image_supported, state.take_system_context());
     state.begin_prompt(command.get("displayPreview").and_then(Value::as_str));
     let connection = connection.clone();
     let session_id = session_id.clone();
@@ -3623,6 +3635,48 @@ fn start_prompt(dispatch: &PromptDispatch<'_>, command: Value) -> Result<(), Str
             Ok(())
         })
         .map_err(|error| error.to_string())
+}
+
+/// Dispatch a capability-negotiated steer without disturbing the active
+/// `session/prompt` request. The adapter response is routed back through the
+/// runtime loop so raced-idle responses can fall back to a client-owned prompt.
+fn start_native_steer(
+    connection: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    image_supported: bool,
+    completed: &mpsc::UnboundedSender<(Value, Result<SteeringResponse, Error>)>,
+    command: Value,
+) -> Result<(), String> {
+    let request = SteeringRequest::new(
+        session_id.clone(),
+        prompt_content(&command, image_supported, None),
+    );
+    let connection = connection.clone();
+    let completed = completed.clone();
+    connection
+        .clone()
+        .spawn(async move {
+            let result = connection.send_request(request).block_task().await;
+            let _ = completed.send((command, result));
+            Ok(())
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn native_steer_resolved(output: &ParentOutput, accepted: bool) {
+    // The desktop command queue sets a short-lived steer guard before writing
+    // to this runtime. Native ACP injection does not open another assistant
+    // message, so it needs a private acknowledgement to clear that guard.
+    output.send(json!({
+        "type": "acp_native_steer_resolved",
+        "accepted": accepted,
+    }));
+}
+
+fn native_steer_failed(output: &ParentOutput, command_id: &str, message: &str) {
+    native_steer_resolved(output, false);
+    command_error(output, message);
+    parent_response(output, "steer", command_id, Some(message));
 }
 
 async fn parent_commands(state: Arc<RuntimeState>, tx: mpsc::UnboundedSender<Value>) {
@@ -3982,7 +4036,9 @@ async fn run_protocol(
 
             let image_supported = init.agent_capabilities.prompt_capabilities.image;
             let close_supported = init.agent_capabilities.session_capabilities.close.is_some();
+            let native_steering = steering_advertised(&init);
             let (completed_tx, mut completed_rx) = mpsc::unbounded_channel();
+            let (native_steer_tx, mut native_steer_rx) = mpsc::unbounded_channel();
             let mut active = false;
             let mut cancel_requested = false;
             let mut pending_aborts: Vec<String> = Vec::new();
@@ -4023,6 +4079,25 @@ async fn run_protocol(
                                 let message = "ACP agent is already processing a prompt";
                                 command_error(&state.output, message);
                                 parent_response(&state.output, "prompt", &id, Some(message));
+                            }
+                            "steer" if active && native_steering && !cancel_requested => {
+                                if !pending_aborts.is_empty() {
+                                    let message = "ACP abort is already in progress";
+                                    parent_response(&state.output, "steer", &id, Some(message));
+                                    continue;
+                                }
+                                // Steering supersedes a permission card just as the
+                                // legacy cancel-and-reprompt path did. The adapter's
+                                // native request then redirects the same live turn.
+                                state.cancel_permission_selections();
+                                start_native_steer(
+                                    &connection,
+                                    &session.session_id,
+                                    image_supported,
+                                    &native_steer_tx,
+                                    command,
+                                )
+                                .map_err(acp_invalid_params)?;
                             }
                             "steer" if active => {
                                 if !pending_aborts.is_empty() {
@@ -4335,6 +4410,79 @@ async fn run_protocol(
                                 parent_response(&state.output, "reauthenticate", &id, None);
                             }
                             _ => parent_response(&state.output, command_type, &id, None),
+                        }
+                    }
+                    native_steer = native_steer_rx.recv() => {
+                        let Some((steer, result)) = native_steer else {
+                            return Err(Error::internal_error().data(json!("ACP native steering channel closed")));
+                        };
+                        let steer_id = steer
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        if cancel_requested || !pending_aborts.is_empty() {
+                            native_steer_resolved(&state.output, false);
+                            parent_response(
+                                &state.output,
+                                "steer",
+                                &steer_id,
+                                Some("steer cancelled by abort"),
+                            );
+                            continue;
+                        }
+                        match result {
+                            Ok(response) => match response.outcome {
+                                SteeringOutcome::Injected | SteeringOutcome::StartedNewTurn => {
+                                    native_steer_resolved(&state.output, true);
+                                    parent_response(&state.output, "steer", &steer_id, None);
+                                }
+                                SteeringOutcome::PromptRequired => {
+                                    // Claude can notice that the active turn ended
+                                    // between the host's check and its extension
+                                    // request. Keep the content client-owned and
+                                    // submit it normally once our completion arrives.
+                                    if active {
+                                        if let Some(previous) = pending_steer.replace(steer) {
+                                            let previous_id = previous
+                                                .get("id")
+                                                .and_then(Value::as_str)
+                                                .unwrap_or_default();
+                                            parent_response(
+                                                &state.output,
+                                                "steer",
+                                                previous_id,
+                                                Some("superseded by a newer steer command"),
+                                            );
+                                        }
+                                    } else {
+                                        start_prompt(
+                                            &PromptDispatch {
+                                                connection: &connection,
+                                                state: &state,
+                                                session_id: &session.session_id,
+                                                image_supported,
+                                                completed: &completed_tx,
+                                            },
+                                            steer,
+                                        )
+                                        .map_err(acp_invalid_params)?;
+                                        active = true;
+                                        cancel_requested = false;
+                                    }
+                                }
+                                SteeringOutcome::Failed => {
+                                    let message = response
+                                        .reason
+                                        .as_deref()
+                                        .unwrap_or("ACP adapter could not apply the steer");
+                                    native_steer_failed(&state.output, &steer_id, message);
+                                }
+                            },
+                            Err(error) => {
+                                let message = format!("ACP native steering failed: {error}");
+                                native_steer_failed(&state.output, &steer_id, &message);
+                            }
                         }
                     }
                     completed = completed_rx.recv(), if active => {
