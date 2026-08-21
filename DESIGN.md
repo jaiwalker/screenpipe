@@ -11,8 +11,9 @@ precise, recursive, slightly uncanny, and still controlled by the person whose
 work created it.
 
 Black and warm bone are the substrate. Muted moss is the everyday signal;
-phosphor is the live intelligence signal. Moss can guide ordinary actions and
-selection without washing the interface green. Bright phosphor appears only
+phosphor is the live intelligence signal. Neutral contrast carries ordinary
+hierarchy. Moss marks a compact action, selection, or ready state without
+washing the interface green. Bright phosphor appears only
 while captured work is actively becoming model context or an agent is executing
 an explicit action. Sharp corners, clean typography, and Escher-inspired
 mathematical abstractions remain the core identity.
@@ -83,7 +84,8 @@ interface, not legal footnotes.
 
 The default ratio is roughly 75 percent ink/bone, 20 percent trace neutrals,
 up to 5 percent muted moss, and one small phosphor focal point when work is
-actively executing. Existing app and website surfaces can adopt this
+actively executing. In other words, 90–95 percent of any ordinary screen should
+remain neutral. Existing app and website surfaces can adopt this
 incrementally. Do not perform a global color sweep without checking every state
 in light and dark mode.
 
@@ -101,8 +103,8 @@ in light and dark mode.
 
 | Signal | Use | Examples |
 | --- | --- | --- |
-| Neutral ink/trace | Structure and ordinary focus | input borders, keyboard focus ring, secondary buttons |
-| Muted moss | Ready, actionable, or selected | primary CTA, active navigation rail, caret, selected card |
+| Neutral ink/trace | Structure, ordinary actions, and focus | large marketing CTAs, ordinary buttons, input borders, keyboard focus ring |
+| Muted moss | Ready, compact action, or selected | active navigation rail, caret, selected card, one compact ready action |
 | Bright phosphor | Active transformation or execution | streaming agent step, capture becoming memory, active pipeline node |
 
 ### Where phosphor belongs
@@ -116,7 +118,7 @@ ordinary focus states return to moss or neutral ink/trace.
 
 ### Where moss belongs
 
-- A user-triggered primary action
+- One compact product action when moss communicates a ready or selected state
 - The active navigation rail or selected row
 - A text caret or small ready-state marker
 - A restrained chart hover or focus mark when no transformation is running
@@ -157,6 +159,23 @@ dialogs) off the background. Keep them soft, low-opacity, and mostly vertical;
 avoid hard offset shadows as a default. Never round corners to sell the lift —
 corners stay sharp.
 
+Product elevation should stay within a quiet scale: a hairline plus roughly a
+1–8px vertical offset and no more than 24px blur at low opacity. Larger shadows
+belong only to genuinely floating dialogs, popovers, or marketing compositions.
+
+## Reference calibration
+
+Reference-product audits are snapshots, not tokens to copy. A source-level
+review of Claude Desktop and the ChatGPT/Codex desktop renderer found the same
+distribution despite different hues: Claude uses warm neutrals with a restrained
+terracotta identity; ChatGPT uses cooler greys with blue for interaction and
+state. Both let neutral contrast carry nearly every large surface and ordinary
+CTA. Screenpipe should copy that restraint, not either product's hue.
+
+When evaluating a reference, compare its neutral-to-accent ratio, semantic color
+roles, and elevation scale. Keep screenpipe's own ink, bone, trace, moss, and
+phosphor meanings.
+
 ---
 
 ## Components
@@ -169,7 +188,8 @@ corners stay sharp.
 - Corners: Sharp (0px radius)
 - Transition: 150ms
 - Hover: Color inversion
-- Moss fill: the default colored treatment for one primary action
+- Neutral ink/white fill: the default treatment for ordinary and large CTAs
+- Moss fill: optional for one compact action when it communicates ready state
 - Phosphor fill: reserved for an action that is executing a capture-to-model or
   model-to-agent transformation now
 ```
@@ -251,7 +271,8 @@ When creating new UI components:
 - [ ] Flat by default; subtle shadows OK only to lift floating/elevated surfaces
 - [ ] 0px border radius (sharp corners) — always, even on shadowed surfaces
 - [ ] Composition remains mostly ink, bone, and trace grey
-- [ ] Moss is limited to the primary action, selection, caret, or active rail
+- [ ] Ordinary large CTAs remain neutral ink/white
+- [ ] Moss is limited to one compact action, selection, caret, or active rail
 - [ ] Every phosphor use marks transformation or execution happening now
 - [ ] Phosphor disappears when execution stops
 - [ ] Bright phosphor uses ink foreground
