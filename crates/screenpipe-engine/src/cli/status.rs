@@ -180,6 +180,7 @@ fn snapshot_json(snapshot: &StatusSnapshot) -> Value {
         "data_size_bytes": snapshot.media_size_bytes,
         "data_size": format_bytes(snapshot.media_size_bytes),
         "data_dir": snapshot.data_dir.to_string_lossy(),
+        "database_path": snapshot.data_dir.join("db.sqlite").to_string_lossy(),
         // New, explicit fields distinguish live health and complete storage.
         "last_audio_capture": last_audio,
         "database_size_bytes": snapshot.database_size_bytes,
@@ -195,7 +196,9 @@ fn format_status_report(snapshot: &StatusSnapshot, now: DateTime<Utc>) -> String
     let mut output = String::new();
     let health = snapshot.health.as_ref();
     let health_status = health.and_then(|value| string_field(value, "status"));
+    let capture_disabled = health.is_some_and(all_capture_disabled);
     let (state_icon, state_label) = match health_status {
+        Some("healthy") if capture_disabled => ("●", "serving normally"),
         Some("healthy") => ("●", "recording normally"),
         Some("degraded") | Some("unhealthy") => ("▲", "needs attention"),
         Some(other) => ("▲", other),
@@ -265,8 +268,16 @@ fn format_status_report(snapshot: &StatusSnapshot, now: DateTime<Utc>) -> String
         output.push_str(&status_line("action", action));
     }
 
-    output.push_str(&status_line("data", &snapshot.data_dir.to_string_lossy()));
+    output.push_str(&status_line(
+        "database",
+        &snapshot.data_dir.join("db.sqlite").to_string_lossy(),
+    ));
     output
+}
+
+fn all_capture_disabled(health: &Value) -> bool {
+    string_field(health, "frame_status") == Some("disabled")
+        && string_field(health, "audio_status") == Some("disabled")
 }
 
 fn screen_summary(snapshot: &StatusSnapshot, health: &Value, now: DateTime<Utc>) -> String {
@@ -537,6 +548,24 @@ mod tests {
     }
 
     #[test]
+    fn healthy_server_report_does_not_claim_to_be_recording() {
+        let health = json!({
+            "status": "healthy",
+            "version": "2.6.72",
+            "frame_status": "disabled",
+            "vision_reason": "disabled_by_setting",
+            "audio_status": "disabled",
+            "audio_capture_mode": "disabled"
+        });
+
+        let report = format_status_report(&snapshot(Some(health)), now());
+        assert!(report.contains("screenpipe  ● serving normally"));
+        assert!(!report.contains("recording normally"));
+        assert!(report.contains("screen      off"));
+        assert!(report.contains("audio       off · disabled mode"));
+    }
+
+    #[test]
     fn stopped_report_keeps_local_history_visible() {
         let report = format_status_report(&snapshot(None), now());
         assert!(report.contains("screenpipe  ○ not running"));
@@ -562,6 +591,10 @@ mod tests {
         assert_eq!(payload["frames"], 842_019);
         assert_eq!(payload["last_capture"], "2026-08-21T16:59:57Z");
         assert_eq!(payload["last_audio_capture"], "2026-08-21T16:59:28Z");
+        assert_eq!(
+            payload["database_path"],
+            "/Users/test/.screenpipe/db.sqlite"
+        );
         assert_eq!(payload["health"]["status"], "healthy");
     }
 
