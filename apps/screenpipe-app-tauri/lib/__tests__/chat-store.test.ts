@@ -246,6 +246,32 @@ describe("chat-store: getOrCreateEmptyChatId (no spam on +new)", () => {
     });
   });
 
+  it("never overwrites a canonical session restored before panel seeding", () => {
+    const restored = baseRecord({
+      id: "initial-panel",
+      title: "restored chat",
+      messageCount: 4,
+      messages: undefined,
+      draft: false,
+    });
+    useChatStore.getState().actions.upsert(restored);
+
+    const result = ensureBlankChatSession(
+      useChatStore.getState(),
+      "initial-panel",
+      3_000,
+    );
+
+    expect(result).toBe(useChatStore.getState().sessions["initial-panel"]);
+    expect(result).toMatchObject({
+      title: "restored chat",
+      messageCount: 4,
+      draft: false,
+      messages: undefined,
+      createdAt: 1_000,
+    });
+  });
+
   it("reuses the panel's current chat if it has no user message", () => {
     useChatStore.setState({
       sessions: {
@@ -976,6 +1002,32 @@ describe("chat-store: applyChatSessionActivity", () => {
     expect(s.title).toBe("hello");
     expect(s.preview).toBe("hi there");
     expect(s.status).toBe("streaming");
+  });
+
+  it("patches later activity after canonical content materializes the session", () => {
+    applyChatSessionActivity(useChatStore.getState(), {
+      id: "A",
+      status: "thinking",
+      updatedAt: 1_500,
+    });
+    expect(useChatStore.getState().sessions["A"]).toBeUndefined();
+
+    useChatStore.getState().actions.upsert(
+      baseRecord({ id: "A", title: "Day Recap", updatedAt: 2_000 }),
+    );
+    applyChatSessionActivity(useChatStore.getState(), {
+      id: "A",
+      status: "streaming",
+      preview: "today's progress",
+      updatedAt: 2_500,
+    });
+
+    expect(useChatStore.getState().sessions["A"]).toMatchObject({
+      title: "Day Recap",
+      status: "streaming",
+      preview: "today's progress",
+      updatedAt: 2_500,
+    });
   });
 
   it("ignores undefined payloads and those missing id or updatedAt", () => {
