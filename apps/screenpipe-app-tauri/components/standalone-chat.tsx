@@ -1987,7 +1987,9 @@ export function StandaloneChat({
         isMac={isMac}
         isFullscreen={isFullscreen}
         hideInlineHistory={hideInlineHistory}
-        hasRightActions={inspectorHasContent || sidePanelHasContent}
+        hasRightActions={
+          inspectorHasContent || inspectorOpen || sidePanelHasContent
+        }
         showHistory={showHistory}
         settings={settings}
         reloadStore={reloadStore}
@@ -2031,17 +2033,15 @@ export function StandaloneChat({
 
       <div className="flex-1 flex min-h-0" data-browser-panel-host>
       <div className="relative flex-1 flex flex-col min-w-0" data-firstrun-target="messages">
-      {inspectorHasContent ? (
-        <div className="absolute -top-8 right-2 z-30">
-          <ChatInspectorPopover
-            open={inspectorOpen}
-            onOpenChange={setInspectorOpen}
-            outputs={inspectorOutputs}
-            sources={inspectorSources}
-            onOpenFile={openFilePreview}
-          />
-        </div>
-      ) : null}
+      <div className="absolute -top-8 right-2 z-30">
+        <ChatInspectorPopover
+          open={inspectorOpen}
+          onOpenChange={setInspectorOpen}
+          outputs={inspectorOutputs}
+          sources={inspectorSources}
+          onOpenFile={openFilePreview}
+        />
+      </div>
       <ChatMainPane
         firstRunLearningEnabled={firstRunLearningEnabled}
         firstRunAiPreset={firstRunAiPreset}
