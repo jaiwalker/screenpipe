@@ -141,7 +141,7 @@ describe("AiToolsCard", () => {
 
     render(<AiToolsCard />);
 
-    expect(await screen.findByText("2 AI apps found. Connect them in one click.")).toBeTruthy();
+    expect(await screen.findByText("2 found. Connect them in one click.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /connect all/i }));
 
     expect(await screen.findByText("Claude")).toBeTruthy();

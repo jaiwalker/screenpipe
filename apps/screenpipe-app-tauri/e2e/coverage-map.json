@@ -1994,14 +1994,14 @@
         "settings"
       ],
       "features": [
+        "ai-tools",
         "connections",
-        "pi-extensions",
-        "extra-ai-tools"
+        "pi-extensions"
       ],
       "criticality": "medium",
       "confidence": "strong",
       "ux": "real-user-flow",
-      "notes": "Opens Home -> Connections, expands the AI setup disclosure, opens Extra AI tools, verifies plain-language built-ins and compatibility labels, filters the package search, and captures a screenshot. Read-only smoke: does not install packages."
+      "notes": "Opens Home -> Connections, verifies the common AI tool toggles are directly visible, opens More tools, verifies plain-language built-ins and compatibility labels, filters the package search, and captures a screenshot. Read-only smoke: does not install packages."
     },
     {
       "spec": "pipe-continuous-chat.spec.ts",

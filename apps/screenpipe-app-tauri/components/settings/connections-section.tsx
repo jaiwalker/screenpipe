@@ -762,7 +762,7 @@ type ConnectionTile = ConnectionSuggestionTile & { icon: string };
 type ConnectionSort = "suggested" | "alphabetical";
 
 const ALL_CONNECTION_CATEGORIES = "All";
-const AI_SETUP_CONNECTION_IDS = new Set(["custom-mcp", "skills", "pi-extensions"]);
+const SETTINGS_CONNECTION_IDS = new Set(["custom-mcp", "skills", "pi-extensions"]);
 
 
 // Per-connection quickstart prompts shown when "Try in Chat" is clicked.
@@ -945,7 +945,7 @@ function SkillsSpotlight({
   onClick: () => void;
 }) {
   const summary =
-    count === 0 ? "None added" : `${count} added`;
+    count === 0 ? "No skills yet" : `${count} skill${count === 1 ? "" : "s"} imported`;
 
   return (
     <div
@@ -966,7 +966,7 @@ function SkillsSpotlight({
           />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-sm font-medium text-foreground">AI instructions</h3>
+              <h3 className="text-sm font-medium text-foreground">Skills</h3>
               {count > 0 && <span className="h-2 w-2 rounded-full bg-foreground" />}
             </div>
             <p className="text-xs text-muted-foreground">{summary}</p>
@@ -980,54 +980,7 @@ function SkillsSpotlight({
           className="h-8 gap-1.5 text-xs normal-case font-sans tracking-normal"
         >
           <Plus className="h-3.5 w-3.5" />
-          {count === 0 ? "Add" : "Manage"}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function PiExtensionsSpotlight({
-  selected,
-  onClick,
-}: {
-  selected: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <div
-      className={`
-        border bg-card p-3 transition-colors
-        ${selected ? "border-foreground bg-accent" : "border-border"}
-      `}
-    >
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={onClick}
-          className="flex min-w-0 flex-1 items-center gap-3 text-left"
-        >
-          <IntegrationIcon
-            icon="pi-extensions"
-            className="flex h-10 w-10 items-center justify-center border border-border bg-muted"
-          />
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-medium text-foreground">Extra AI tools</h3>
-              <span className="h-2 w-2 rounded-full bg-foreground" />
-            </div>
-            <p className="text-xs text-muted-foreground">Add web browsing and more</p>
-          </div>
-        </button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={onClick}
-          className="h-8 gap-1.5 text-xs normal-case font-sans tracking-normal"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Browse
+          {count === 0 ? "Connect skills" : "Manage"}
         </Button>
       </div>
     </div>
@@ -4013,8 +3966,8 @@ export function ConnectionsSection({
       { id: "plaud", name: "Plaud", icon: "plaud", connected: plaudConnected },
       { id: "excalidraw", name: "Excalidraw", icon: "excalidraw", connected: excalidrawConnected },
       { id: "custom-mcp", name: "Advanced connections", icon: "custom-mcp", connected: false, detected: customMcpServerCount > 0 },
-      { id: "skills", name: "AI instructions", icon: "skills", connected: importedSkillsCount > 0, category: "Agent" },
-      { id: "pi-extensions", name: "Extra AI tools", icon: "pi-extensions", connected: true, category: "Agent" },
+      { id: "skills", name: "Skills", icon: "skills", connected: importedSkillsCount > 0, category: "Agent" },
+      { id: "pi-extensions", name: "AI tools", icon: "pi-extensions", connected: true, category: "Agent" },
     ];
     // Merge API tiles, skipping duplicates already in hardcoded.
     // owned-default is hidden from settings — the agent drives it via the
@@ -4089,7 +4042,7 @@ export function ConnectionsSection({
   const connectedTiles = useMemo(() => {
     if (!isDefaultView) return [];
     return allTiles
-      .filter((tile) => tile.connected && !AI_SETUP_CONNECTION_IDS.has(tile.id))
+      .filter((tile) => tile.connected && !SETTINGS_CONNECTION_IDS.has(tile.id))
       .sort(compareConnectionTiles);
   }, [allTiles, isDefaultView]);
 
@@ -4121,7 +4074,7 @@ export function ConnectionsSection({
       (tile) =>
         !suggestedIds.has(tile.id) &&
         !connectedIds.has(tile.id) &&
-        !AI_SETUP_CONNECTION_IDS.has(tile.id),
+        !SETTINGS_CONNECTION_IDS.has(tile.id),
     );
     const groups = new Map<string, ConnectionTile[]>();
     for (const tile of remaining) {
@@ -4436,6 +4389,30 @@ export function ConnectionsSection({
 
       {isDefaultView ? (
         <>
+          <div className="space-y-3">
+            <PiExtensionsCard
+              variant="quick"
+              onBrowse={() => setSelected("pi-extensions")}
+            />
+            <AiToolsCard
+              onChanged={() => {
+                refreshStatus();
+                notifyConnectionsUpdated();
+              }}
+            />
+            <SkillsSpotlight
+              count={importedSkillsCount}
+              selected={selected === "skills"}
+              onClick={() => setSelected(selected === "skills" ? null : "skills")}
+            />
+            <McpSpotlight
+              enabledCount={customMcpEnabledCount}
+              totalCount={customMcpServerCount}
+              selected={selected === "custom-mcp"}
+              onClick={() => setSelected(selected === "custom-mcp" ? null : "custom-mcp")}
+            />
+          </div>
+
           {connectedTiles.length > 0 && (
             <div className="space-y-2">
               <h3 className="text-xs font-medium text-muted-foreground">Connected</h3>
@@ -4508,38 +4485,6 @@ export function ConnectionsSection({
             </div>
           </details>
 
-          <details className="group border-y border-border py-4">
-            <summary className="flex cursor-pointer list-none items-center gap-3 select-none">
-              <div className="min-w-0 flex-1">
-                <h3 className="text-sm font-medium text-foreground">Use screenpipe with AI</h3>
-                <p className="text-xs text-muted-foreground">Connect AI apps and add tools</p>
-              </div>
-              <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="mt-4 space-y-3">
-              <AiToolsCard
-                onChanged={() => {
-                  refreshStatus();
-                  notifyConnectionsUpdated();
-                }}
-              />
-              <PiExtensionsSpotlight
-                selected={selected === "pi-extensions"}
-                onClick={() => setSelected(selected === "pi-extensions" ? null : "pi-extensions")}
-              />
-              <SkillsSpotlight
-                count={importedSkillsCount}
-                selected={selected === "skills"}
-                onClick={() => setSelected(selected === "skills" ? null : "skills")}
-              />
-              <McpSpotlight
-                enabledCount={customMcpEnabledCount}
-                totalCount={customMcpServerCount}
-                selected={selected === "custom-mcp"}
-                onClick={() => setSelected(selected === "custom-mcp" ? null : "custom-mcp")}
-              />
-            </div>
-          </details>
         </>
       ) : !integrationsLoaded ? (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">

@@ -143,10 +143,17 @@ describe("browser development runtime", () => {
     expect(tasks[2].executionScope).toBe("session");
   });
 
-  it("provides an empty extension list for browser design review", () => {
+  it("supports toggling extensions during browser design review", () => {
     const invoke = createBrowserIpcMock({ mode: "mock", apiPort: 3030 });
 
     expect(invoke("pi_list_extension_packages")).toEqual([]);
+    expect(invoke("pi_install_extension_package", { source: "npm:@demo/tool" })).toEqual([
+      expect.objectContaining({ source: "npm:@demo/tool", installed: true }),
+    ]);
+    expect(invoke("pi_list_extension_packages")).toEqual([
+      expect.objectContaining({ source: "npm:@demo/tool", installed: true }),
+    ]);
+    expect(invoke("pi_remove_extension_package", { source: "npm:@demo/tool" })).toEqual([]);
   });
 
   it("returns useful empty engine responses", async () => {

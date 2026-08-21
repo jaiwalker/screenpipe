@@ -81,6 +81,21 @@ describe("PiExtensionsCard", () => {
     expect(commandMocks.piListExtensionPackages).toHaveBeenCalledTimes(1);
   });
 
+  it("shows the common AI tools as direct settings before the full catalog", async () => {
+    const onBrowse = vi.fn();
+    render(<PiExtensionsCard variant="quick" onBrowse={onBrowse} />);
+
+    expect(await screen.findByText("AI tools")).toBeInTheDocument();
+    expect(screen.getByText("Turn on the tools your AI can use.")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Subagents always enabled" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "Enable Web agent" })).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable Ask user" })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Search tools...")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "More tools" }));
+    expect(onBrowse).toHaveBeenCalledTimes(1);
+  });
+
   it("shows included tools without protocol or package details", async () => {
     render(<PiExtensionsCard />);
 

@@ -4,9 +4,9 @@
 
 "use client";
 
-// "AI apps" block inside the progressive AI setup disclosure in Connections.
-// It keeps protocol and config details out of the default surface while still
-// offering one-click setup, per-app removal, and a two-step disconnect-all.
+// "AI apps" keeps detected apps ready to connect in one click. Protocol and
+// config details stay out of the default surface while per-app removal and the
+// two-step disconnect-all remain available.
 // First-run setup runs in native Rust; this card remains the visible repair,
 // explicit connect, and explicit removal surface.
 
@@ -277,9 +277,9 @@ export function AiToolsCard({ onChanged }: { onChanged?: () => void }) {
   if (detected.length === 0) return null;
 
   const summary = noneConnected
-    ? `${rows.length} AI app${rows.length === 1 ? "" : "s"} found. Connect ${rows.length === 1 ? "it" : "them"} in one click.`
+    ? `${rows.length} found. Connect ${rows.length === 1 ? "it" : "them"} in one click.`
     : allConnected
-    ? `All ${rows.length} apps connected`
+    ? `All ${rows.length} connected`
     : `${connectedCount} of ${rows.length} connected`;
 
   return (
