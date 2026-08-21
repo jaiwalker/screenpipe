@@ -169,9 +169,8 @@
        scrollbar/controls in dark mode (most visible on Windows). (#3746) */
     color-scheme: dark;
 
-    /* Base colors - Slightly lifted black */
-    /* Brand: phosphor reads brighter on ink, so the strong variant is only
-       needed on bone. On ink, phosphor itself is the small-text colour. */
+    /* Phosphor stays constant across themes. Neutral signal carries ordinary
+       focus and small-state contrast on both bone and ink. */
     --phosphor: 77 100% 62%;
     --phosphor-ink: 0 0% 2%;
     --trace: 60 4% 56%;
