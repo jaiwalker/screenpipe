@@ -26,7 +26,10 @@ pub enum ServiceMode {
 impl ServiceMode {
     fn default_record_args(self) -> &'static str {
         match self {
-            Self::Recorder => "",
+            // These explicit selectors clear disable_audio/disable_vision
+            // values persisted by an earlier server-mode run. The user's
+            // command stays no-flag while recorder mode reliably means capture.
+            Self::Recorder => "--use-all-monitors --use-system-default-audio",
             Self::Server => "--disable-vision --disable-audio",
         }
     }
@@ -312,11 +315,17 @@ mod tests {
     }
 
     #[test]
-    fn recorder_mode_captures_without_hidden_empty_args() {
-        assert_eq!(ServiceMode::Recorder.default_record_args(), "");
+    fn recorder_mode_explicitly_clears_persisted_capture_disables() {
         assert_eq!(
-            record_command("/usr/local/bin/screenpipe", ""),
-            "/usr/local/bin/screenpipe record"
+            ServiceMode::Recorder.default_record_args(),
+            "--use-all-monitors --use-system-default-audio"
+        );
+        assert_eq!(
+            record_command(
+                "/usr/local/bin/screenpipe",
+                ServiceMode::Recorder.default_record_args()
+            ),
+            "/usr/local/bin/screenpipe record --use-all-monitors --use-system-default-audio"
         );
     }
 
