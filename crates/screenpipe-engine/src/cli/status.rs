@@ -5,6 +5,8 @@
 use chrono::{DateTime, Utc};
 use screenpipe_core::paths;
 use serde_json::{json, Value};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::ConnectOptions;
 use sqlx::Row;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -110,31 +112,36 @@ async fn read_database_stats(db_path: &Path) -> DatabaseStats {
         return DatabaseStats::default();
     }
 
-    let db =
-        match screenpipe_db::DatabaseManager::new(&db_path.to_string_lossy(), Default::default())
-            .await
-        {
-            Ok(db) => db,
-            Err(error) => {
-                return DatabaseStats {
-                    error: Some(format!("could not read database: {error}")),
-                    ..Default::default()
-                }
+    let connect_options = SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true)
+        .disable_statement_logging();
+    let pool = match SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(connect_options)
+        .await
+    {
+        Ok(pool) => pool,
+        Err(error) => {
+            return DatabaseStats {
+                error: Some(format!("could not read database: {error}")),
+                ..Default::default()
             }
-        };
+        }
+    };
 
     let frames = sqlx::query("SELECT COUNT(*) as cnt FROM frames")
-        .fetch_one(&db.pool)
+        .fetch_one(&pool)
         .await
         .map(|row| row.get::<i64, _>("cnt"))
         .unwrap_or(0);
     let audio_transcriptions = sqlx::query("SELECT COUNT(*) as cnt FROM audio_transcriptions")
-        .fetch_one(&db.pool)
+        .fetch_one(&pool)
         .await
         .map(|row| row.get::<i64, _>("cnt"))
         .unwrap_or(0);
-    let last_frame = latest_timestamp(&db.pool, "frames").await;
-    let last_audio = latest_timestamp(&db.pool, "audio_transcriptions").await;
+    let last_frame = latest_timestamp(&pool, "frames").await;
+    let last_audio = latest_timestamp(&pool, "audio_transcriptions").await;
 
     DatabaseStats {
         frames,
@@ -563,6 +570,48 @@ mod tests {
         assert!(!report.contains("recording normally"));
         assert!(report.contains("screen      off"));
         assert!(report.contains("audio       off · disabled mode"));
+    }
+
+    #[tokio::test]
+    async fn reads_live_wal_database_through_a_read_only_connection() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("db.sqlite");
+        let writer_options = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
+        let writer = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(writer_options)
+            .await
+            .unwrap();
+
+        sqlx::query("PRAGMA journal_mode = WAL")
+            .execute(&writer)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE frames (timestamp TEXT NOT NULL)")
+            .execute(&writer)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE audio_transcriptions (timestamp TEXT NOT NULL)")
+            .execute(&writer)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO frames (timestamp) VALUES ('2026-08-21T16:59:57Z')")
+            .execute(&writer)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO audio_transcriptions (timestamp) VALUES ('2026-08-21T16:59:28Z')")
+            .execute(&writer)
+            .await
+            .unwrap();
+
+        let stats = read_database_stats(&db_path).await;
+        assert_eq!(stats.frames, 1);
+        assert_eq!(stats.audio_transcriptions, 1);
+        assert_eq!(stats.last_frame.as_deref(), Some("2026-08-21T16:59:57Z"));
+        assert_eq!(stats.last_audio.as_deref(), Some("2026-08-21T16:59:28Z"));
+        assert!(stats.error.is_none());
     }
 
     #[test]
