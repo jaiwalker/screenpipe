@@ -129,7 +129,9 @@ describe("ChatResponseFeedback", () => {
     await waitFor(() => expect(goodButton).not.toBeDisabled());
     fireEvent.click(goodButton);
     fireEvent.click(badButton);
-    expect(await screen.findByText("saved locally")).toBeInTheDocument();
+    expect(
+      await screen.findByText("local by default · no chat text in telemetry"),
+    ).toBeInTheDocument();
 
     expect(captureMock).toHaveBeenCalledTimes(2);
     expect(captureMock).toHaveBeenLastCalledWith(
@@ -178,7 +180,9 @@ describe("ChatResponseFeedback", () => {
         "missing_tool_use",
       ),
     );
-    expect(await screen.findByText("saved for future responses")).toBeInTheDocument();
+    expect(
+      await screen.findByText("local by default · no chat text in telemetry"),
+    ).toBeInTheDocument();
     expect(captureMock).toHaveBeenCalledWith(
       "chat_response_feedback_reason_selected",
       {
@@ -227,11 +231,13 @@ describe("ChatResponseFeedback", () => {
     await waitFor(() => expect(reasonButton).not.toBeDisabled());
     fireEvent.click(reasonButton);
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "could not save — choose a reason to retry",
+      "local save failed · choose a reason to retry",
     );
 
     fireEvent.click(reasonButton);
-    expect(await screen.findByText("saved for future responses")).toBeInTheDocument();
+    expect(
+      await screen.findByText("local by default · no chat text in telemetry"),
+    ).toBeInTheDocument();
     expect(submitFeedbackMock).toHaveBeenCalledTimes(3);
     consoleError.mockRestore();
   });

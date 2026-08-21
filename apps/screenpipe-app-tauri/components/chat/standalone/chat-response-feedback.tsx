@@ -132,7 +132,7 @@ export function ChatResponseFeedback({
           align="end"
           side="top"
         >
-          <p className="mb-2 text-xs font-medium lowercase">what went wrong?</p>
+          <p className="mb-2 text-xs font-medium">what went wrong?</p>
           <div className="grid grid-cols-2 gap-1.5">
             {CHAT_RESPONSE_FEEDBACK_REASONS.map((option) => (
               <button
@@ -142,7 +142,7 @@ export function ChatResponseFeedback({
                 disabled={saveState === "saving"}
                 aria-pressed={reason === option.value}
                 className={cn(
-                  "ph-no-capture min-h-8 rounded-none border border-border px-2 py-1 text-left font-mono text-[10px] uppercase tracking-wide transition-colors hover:bg-foreground hover:text-background",
+                  "ph-no-capture min-h-8 rounded-none border border-border px-2 py-1 text-left text-[11px] transition-colors hover:bg-foreground hover:text-background",
                   reason === option.value && "bg-foreground text-background",
                 )}
               >
@@ -155,9 +155,10 @@ export function ChatResponseFeedback({
             role={saveState === "error" ? "alert" : "status"}
           >
             {saveState === "saving" && "saving locally…"}
-            {saveState === "saved" &&
-              (reason ? "saved for future responses" : "saved locally")}
-            {saveState === "error" && "could not save — choose a reason to retry"}
+            {(saveState === "idle" || saveState === "saved") &&
+              "local by default · no chat text in telemetry"}
+            {saveState === "error" &&
+              "local save failed · choose a reason to retry"}
           </p>
         </PopoverContent>
       </Popover>
