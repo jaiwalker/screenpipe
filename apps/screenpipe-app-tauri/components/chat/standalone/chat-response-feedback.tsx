@@ -156,7 +156,7 @@ export function ChatResponseFeedback({
           >
             {saveState === "saving" && "saving locally…"}
             {(saveState === "idle" || saveState === "saved") &&
-              "local by default · no chat text in telemetry"}
+              "local by default · no chat text shared"}
             {saveState === "error" &&
               "local save failed · choose a reason to retry"}
           </p>

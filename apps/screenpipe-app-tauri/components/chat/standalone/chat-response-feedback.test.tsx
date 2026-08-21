@@ -130,7 +130,7 @@ describe("ChatResponseFeedback", () => {
     fireEvent.click(goodButton);
     fireEvent.click(badButton);
     expect(
-      await screen.findByText("local by default · no chat text in telemetry"),
+      await screen.findByText("local by default · no chat text shared"),
     ).toBeInTheDocument();
 
     expect(captureMock).toHaveBeenCalledTimes(2);
@@ -181,7 +181,7 @@ describe("ChatResponseFeedback", () => {
       ),
     );
     expect(
-      await screen.findByText("local by default · no chat text in telemetry"),
+      await screen.findByText("local by default · no chat text shared"),
     ).toBeInTheDocument();
     expect(captureMock).toHaveBeenCalledWith(
       "chat_response_feedback_reason_selected",
@@ -236,7 +236,7 @@ describe("ChatResponseFeedback", () => {
 
     fireEvent.click(reasonButton);
     expect(
-      await screen.findByText("local by default · no chat text in telemetry"),
+      await screen.findByText("local by default · no chat text shared"),
     ).toBeInTheDocument();
     expect(submitFeedbackMock).toHaveBeenCalledTimes(3);
     consoleError.mockRestore();
