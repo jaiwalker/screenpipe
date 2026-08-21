@@ -10,7 +10,8 @@ a pointer.
 
 - `VISION.md` — before product, feature, or UX decisions. Stability over
   features, activation over new capabilities, no feature creep.
-- `DESIGN.md` — before design decisions.
+- `DESIGN.md` and skill `screenpipe-design` — before implementing or reviewing
+  product or website UI.
 - `TESTING.md` — before touching window management, tray/dock, monitors, or
   audio. Regression checklist with commit references.
 - `docs/human-only-app-publication.md` — before anything release-related.

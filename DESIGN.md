@@ -3,15 +3,17 @@
 
 ## Philosophy
 
-**"Escher monochrome with phosphor intelligence"**
+**"Escher monochrome with controlled phosphor intelligence"**
 
 Screenpipe turns the trace of human work into memory, models, and agents. The
 visual system should feel like a mathematical print becoming executable:
 precise, recursive, slightly uncanny, and still controlled by the person whose
 work created it.
 
-Black and warm bone are the substrate. Phosphor is the learned signal. It
-appears only where captured work becomes useful model context or an agent takes
+Black and warm bone are the substrate. Muted moss is the everyday signal;
+phosphor is the live intelligence signal. Moss can guide ordinary actions and
+selection without washing the interface green. Bright phosphor appears only
+while captured work is actively becoming model context or an agent is executing
 an explicit action. Sharp corners, clean typography, and Escher-inspired
 mathematical abstractions remain the core identity.
 
@@ -56,7 +58,8 @@ mathematical abstractions remain the core identity.
 | --- | --- |
 | Bone | Human experience and source material |
 | Trace grey | Captured evidence and intermediate structure |
-| Phosphor | Learned or executable intelligence |
+| Moss | A calm actionable, selected, or ready state |
+| Phosphor | Intelligence actively transforming or executing |
 | Ink | The local system, recursion, and durable infrastructure |
 
 The public story is preserving, multiplying, and executing human intelligence.
@@ -73,30 +76,50 @@ interface, not legal footnotes.
 | Ink | `#050505` | Foreground, structure, dark background |
 | Bone | `#F2EFE6` | Main light background and human/source state |
 | Trace | `#78786F` | Secondary evidence and inactive structure |
-| Phosphor | `#C7FF3E` | Active transformation and primary action |
-| Phosphor strong | `#4A6B00` | Small phosphor text and borders on bone |
+| Moss | `hsl(72 34% 34%)` | Primary action, selection, caret, and active rail on light surfaces |
+| Moss dark | `hsl(72 34% 50%)` | The same signal on dark surfaces |
+| Phosphor | `#C7FF3E` | A transformation or execution that is active now |
+| Phosphor strong | `#4A6B00` | Small live-transformation text and borders on bone |
 
-The default ratio is roughly 70 percent ink/bone, 20 percent trace neutrals,
-and no more than 10 percent phosphor. Existing app surfaces can adopt this
+The default ratio is roughly 75 percent ink/bone, 20 percent trace neutrals,
+up to 5 percent muted moss, and one small phosphor focal point when work is
+actively executing. Existing app and website surfaces can adopt this
 incrementally. Do not perform a global color sweep without checking every state
 in light and dark mode.
 
 ### Accessibility
 
 - Use ink text on phosphor fills.
+- Use white on light-mode moss fills and ink on dark-mode moss fills.
 - Do not use bright phosphor for small text on bone. Use phosphor strong.
 - Pair color with a label, icon, shape, or state change. Meaning must never rely
   on color alone.
 - Keep error, warning, success, privacy, and billing states explicit in text.
   Phosphor is not a generic success color.
 
+### Signal hierarchy
+
+| Signal | Use | Examples |
+| --- | --- | --- |
+| Neutral ink/trace | Structure and ordinary focus | input borders, keyboard focus ring, secondary buttons |
+| Muted moss | Ready, actionable, or selected | primary CTA, active navigation rail, caret, selected card |
+| Bright phosphor | Active transformation or execution | streaming agent step, capture becoming memory, active pipeline node |
+
 ### Where phosphor belongs
 
 - The boundary where capture becomes memory or model context
 - The active step in an agent or automation pipeline
-- A user-triggered primary action that starts that transformation
-- A cursor, selection, or focus state inside an otherwise monochrome system
 - A single focal point in a recursive or tessellated composition
+
+Phosphor must go out when the work stops. Ready, completed, selected, and
+ordinary focus states return to moss or neutral ink/trace.
+
+### Where moss belongs
+
+- A user-triggered primary action
+- The active navigation rail or selected row
+- A text caret or small ready-state marker
+- A restrained chart hover or focus mark when no transformation is running
 
 ### Where phosphor does not belong
 
@@ -104,6 +127,7 @@ in light and dark mode.
 - Large decorative backgrounds
 - Generic badges or marketing emphasis
 - Status decoration without a meaningful transformation
+- Ordinary selection, focus, or completed states
 - Rainbow, aurora, or generic AI gradients
 
 ---
@@ -127,7 +151,11 @@ in light and dark mode.
 
 ### Shadows
 
-**Flat by default — use 1px borders for separation.** Subtle shadows are allowed to lift floating / elevated surfaces (chat input, overlays, popovers, dialogs) off the background. Keep them soft and low-opacity (e.g. `shadow-lg shadow-black/5`); never round corners to sell the lift — corners stay sharp.
+**Flat by default — use 1px borders for separation.** Subtle shadows are
+allowed to lift floating / elevated surfaces (chat input, overlays, popovers,
+dialogs) off the background. Keep them soft, low-opacity, and mostly vertical;
+avoid hard offset shadows as a default. Never round corners to sell the lift —
+corners stay sharp.
 
 ---
 
@@ -141,8 +169,9 @@ in light and dark mode.
 - Corners: Sharp (0px radius)
 - Transition: 150ms
 - Hover: Color inversion
-- Phosphor fill: reserved for a primary action that starts capture-to-model or
-  model-to-agent transformation
+- Moss fill: the default colored treatment for one primary action
+- Phosphor fill: reserved for an action that is executing a capture-to-model or
+  model-to-agent transformation now
 ```
 
 ### Cards
@@ -222,7 +251,9 @@ When creating new UI components:
 - [ ] Flat by default; subtle shadows OK only to lift floating/elevated surfaces
 - [ ] 0px border radius (sharp corners) — always, even on shadowed surfaces
 - [ ] Composition remains mostly ink, bone, and trace grey
-- [ ] Every phosphor use marks transformation, execution, or focus
+- [ ] Moss is limited to the primary action, selection, caret, or active rail
+- [ ] Every phosphor use marks transformation or execution happening now
+- [ ] Phosphor disappears when execution stops
 - [ ] Bright phosphor uses ink foreground
 - [ ] Small colored text on bone uses phosphor strong
 - [ ] State is understandable without color
@@ -242,5 +273,6 @@ When creating new UI components:
 | Tailwind config | `apps/screenpipe-app-tauri/tailwind.config.ts` |
 | Color constants | `apps/screenpipe-app-tauri/lib/constants/colors.ts` |
 | UI components | `apps/screenpipe-app-tauri/components/ui/*.tsx` |
+| Website tokens | website repo: `app/globals.css` and `tailwind.config.ts` |
 
 ---
