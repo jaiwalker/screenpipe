@@ -39,6 +39,7 @@ const CONNECT_ALL_TOOL_IDS = [
   "codex",
   "cursor",
   "gemini",
+  "grok-build",
   "openclaw",
   "hermes",
   "runner",
@@ -52,6 +53,7 @@ export const CONNECT_ALL_TOOL_NAMES: Record<ConnectAllToolId, string> = {
   codex: "Codex",
   cursor: "Cursor",
   gemini: "Gemini CLI",
+  "grok-build": "Grok Build",
   openclaw: "OpenClaw",
   hermes: "Hermes",
   runner: "Runner",
@@ -63,9 +65,7 @@ export const CONNECT_ALL_TOOL_NAMES: Record<ConnectAllToolId, string> = {
 
 // Skills support per tool lives in the disconnect-all component's
 // SKILLS_TARGET map: claude/codex/cursor/gemini/openclaw/hermes read
-// SKILL.md skills; runner and windsurf are MCP-only. Grok is intentionally
-// not in this matrix: it isn't part of connect-all and its settings panel has
-// its own disconnect.
+// SKILL.md skills; Grok Build, runner, and windsurf are MCP-only.
 
 export async function detectAiTools(): Promise<ConnectAllToolId[]> {
   const home = await homeDir();
@@ -82,6 +82,10 @@ export async function detectAiTools(): Promise<ConnectAllToolId[]> {
     ["codex", async () => exists(await join(home, ".codex"))],
     ["cursor", async () => exists(await join(home, ".cursor"))],
     ["gemini", async () => exists(await join(home, ".gemini"))],
+    // xAI's installer always creates ~/.grok/config.toml. Require the file,
+    // not only ~/.grok, because the unrelated community Grok CLI also uses
+    // that directory with a different user-settings.json format.
+    ["grok-build", async () => exists(await join(home, ".grok", "config.toml"))],
     // Locally installed remote-capable agents. Remote setups keep using the
     // settings remote agent card.
     ["openclaw", async () => exists(await join(home, ".openclaw"))],
@@ -402,6 +406,44 @@ export async function uninstallCodexMcp(): Promise<void> {
   await replaceConfig(configPath, next ? `${next}\n` : "");
 }
 
+// ─── Grok Build ──────────────────────────────────────────────────────────────
+// xAI's official local coding agent reads user-scoped MCP servers from
+// ~/.grok/config.toml. This is separate from cloud-run Grok Bot connectors,
+// which require a public HTTPS MCP endpoint, and from the community Grok CLI's
+// ~/.grok/user-settings.json format handled by its legacy connection tile.
+
+export async function getGrokBuildMcpConfigPath(): Promise<string> {
+  const home = await homeDir();
+  return join(home, ".grok", "config.toml");
+}
+
+export async function isGrokBuildMcpInstalled(): Promise<boolean> {
+  try {
+    const content = await readTextFile(await getGrokBuildMcpConfigPath());
+    return /(?:^|\n)\[mcp_servers\.(?:screenpipe|"screenpipe")\]\s*(?:\n|$)/.test(content);
+  } catch {
+    return false;
+  }
+}
+
+export async function installGrokBuildMcp(): Promise<McpCommand> {
+  const configPath = await getGrokBuildMcpConfigPath();
+  const existing = (await readConfigText(configPath)) ?? "";
+  const config = await buildMcpConfig({ client: "grok-build" });
+  const withoutScreenpipe = removeCodexMcpConfig(existing);
+  const next = `${withoutScreenpipe}${withoutScreenpipe ? "\n\n" : ""}${buildCodexMcpToml(config)}\n`;
+  await replaceConfig(configPath, next);
+  return config;
+}
+
+export async function uninstallGrokBuildMcp(): Promise<void> {
+  const configPath = await getGrokBuildMcpConfigPath();
+  const existing = await readConfigText(configPath);
+  if (existing === null) return;
+  const next = removeCodexMcpConfig(existing);
+  await replaceConfig(configPath, next ? `${next}\n` : "");
+}
+
 // ─── OpenClaw ─────────────────────────────────────────────────────────────────
 // MCP servers live under mcpServers in ~/.openclaw/openclaw.json (stdio
 // transport); skills under ~/.openclaw/skills. Verified against a live install.
@@ -623,11 +665,9 @@ export async function uninstallGeminiMcp(): Promise<void> {
 
 // ─── Transactional Settings connect / disconnect orchestrators (#5291) ──────
 
-// Tools whose agent reads global SKILL.md skills. Runner has no global skills
-// contract, and Windsurf (Devin Desktop) only discovers skills per-project
-// (docs.devin.ai/product-guides/skills), so both stay MCP-only. Grok is not in
-// the matrix: it isn't part of connect-all and its settings panel has its own
-// disconnect.
+// Tools whose agent reads global SKILL.md skills. Grok Build deliberately uses
+// MCP only here; Runner has no global skills contract, and Windsurf (Devin
+// Desktop) only discovers skills per-project (docs.devin.ai/product-guides/skills).
 export const SKILLS_TARGET: Partial<Record<ConnectAllToolId, ExternalAgentWithSkills>> = {
   claude: "claude",
   "claude-code": "claude",
@@ -644,6 +684,7 @@ const INSTALL_MCP: Record<ConnectAllToolId, () => Promise<McpCommand>> = {
   codex: installCodexMcp,
   cursor: installCursorMcp,
   gemini: installGeminiMcp,
+  "grok-build": installGrokBuildMcp,
   openclaw: installOpenclawMcp,
   hermes: installHermesMcp,
   runner: installRunnerMcp,
@@ -656,6 +697,7 @@ const UNINSTALL_MCP: Record<ConnectAllToolId, () => Promise<void>> = {
   codex: uninstallCodexMcp,
   cursor: uninstallCursorMcp,
   gemini: uninstallGeminiMcp,
+  "grok-build": uninstallGrokBuildMcp,
   openclaw: uninstallOpenclawMcp,
   hermes: uninstallHermesMcp,
   runner: uninstallRunnerMcp,
@@ -854,6 +896,11 @@ export async function isToolConfigHealthy(id: ConnectAllToolId): Promise<boolean
         return true;
       case "gemini":
         await readJsonConfigStrict(await getGeminiMcpConfigPath());
+        return true;
+      case "grok-build":
+        // TOML writes preserve unrelated content and replace only screenpipe's
+        // two tables; unreadable files are still refused.
+        await readConfigText(await getGrokBuildMcpConfigPath());
         return true;
       case "openclaw":
         await readJsonConfigStrict(await getOpenclawMcpConfigPath());

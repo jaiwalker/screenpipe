@@ -31,6 +31,7 @@ import {
   isOpenclawMcpInstalled,
   isHermesMcpInstalled,
   isGeminiMcpInstalled,
+  isGrokBuildMcpInstalled,
   isRunnerMcpInstalled,
   isWindsurfMcpInstalled,
 } from "@/lib/ai-tools-mcp";
@@ -100,6 +101,8 @@ async function isToolConnected(id: ConnectAllToolId): Promise<boolean> {
       return (await isCursorMcpInstalled()) && (await areExternalAgentSkillsInstalled("cursor"));
     case "gemini":
       return (await isGeminiMcpInstalled()) && (await areExternalAgentSkillsInstalled("gemini"));
+    case "grok-build":
+      return isGrokBuildMcpInstalled();
     case "openclaw":
       return (await isOpenclawMcpInstalled()) && (await areExternalAgentSkillsInstalled("openclaw"));
     case "hermes":
@@ -126,6 +129,8 @@ function ToolIcon({ id }: { id: ConnectAllToolId }) {
       return <CursorLogo className={img} />;
     case "gemini":
       return <img src="/images/gemini.svg" alt="" className={img} />;
+    case "grok-build":
+      return <Bot className={img} />;
     case "openclaw":
       return <img src="/images/openclaw.png" alt="" className={`${img} rounded`} />;
     case "hermes":
@@ -173,6 +178,7 @@ export function AiToolsCard({ onChanged }: { onChanged?: () => void }) {
   const allConnected = rows.length > 0 && connectedCount === rows.length;
   const hasAnyConnection = rows.some((row) => hasRowConnection(row, connected));
   const noneConnected = !hasAnyConnection;
+  const includesSkills = detected.some((id) => Boolean(SKILLS_TARGET[id]));
 
   const connectTool = useCallback(
     async (row: ToolRow) => {
@@ -337,9 +343,11 @@ export function AiToolsCard({ onChanged }: { onChanged?: () => void }) {
       {expanded && (
         <div className="mt-3 border-t border-border">
           <p className="text-xs text-muted-foreground pt-3 pb-1">
-            screenpipe adds its MCP server{" "}
-            <span className="text-muted-foreground/70">+ skills</span> to each tool&apos;s own
-            config — remove any time.
+            screenpipe adds its MCP server
+            {includesSkills && (
+              <span className="text-muted-foreground/70"> + supported skills</span>
+            )}{" "}
+            to each tool&apos;s own config — remove any time.
           </p>
           <div>
             {rows.map((row) => {

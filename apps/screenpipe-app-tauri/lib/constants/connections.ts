@@ -176,7 +176,7 @@ export const CONNECTION_HARDCODED_DESCRIPTIONS: Record<string, string> = {
   "claude": "Give Claude Desktop and Code access to your screen & audio",
   "cursor": "Give Cursor AI access to your screen history via MCP",
   "codex": "Give Codex access to your screen & audio via MCP",
-  "grok": "Give Grok CLI access to your screen & audio via MCP",
+  "grok": "Give the community Grok CLI access to your screen & audio via MCP",
   "claude-code": "Add screen memory to the Claude Code CLI",
   "warp": "Search screen history from Warp terminal via MCP",
   "chatgpt": "Search your screen history from ChatGPT",

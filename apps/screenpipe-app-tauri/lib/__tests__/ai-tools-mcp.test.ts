@@ -90,6 +90,9 @@ import {
   uninstallRunnerMcp,
   installGeminiMcp,
   uninstallGeminiMcp,
+  installGrokBuildMcp,
+  uninstallGrokBuildMcp,
+  isGrokBuildMcpInstalled,
   detectAiTools,
   connectAiTool,
   connectAiToolTargets,
@@ -104,6 +107,7 @@ const CLAUDE_CODE = "/Users/test/.claude.json";
 const HERMES = "/Users/test/.hermes/config.yaml";
 const RUNNER = "/Users/test/.runner/mcp.json";
 const GEMINI = "/Users/test/.gemini/settings.json";
+const GROK_BUILD = "/Users/test/.grok/config.toml";
 
 const backupsOf = (path: string) =>
   Array.from(fsMock.files.keys()).filter((p) => p.startsWith(`${path}.screenpipe-backup-`));
@@ -334,6 +338,50 @@ describe("gemini CLI MCP", () => {
   });
 });
 
+describe("Grok Build MCP", () => {
+  it("detects only the official config, not the community CLI settings", async () => {
+    fsMock.files.set("/Users/test/.grok/user-settings.json", "{}");
+    await expect(detectAiTools()).resolves.not.toContain("grok-build");
+
+    fsMock.files.set(GROK_BUILD, "[cli]\ninstaller = \"internal\"\n");
+    await expect(detectAiTools()).resolves.toContain("grok-build");
+  });
+
+  it("preserves unrelated TOML and removes only screenpipe's MCP tables", async () => {
+    const seeded = '[cli]\ninstaller = "internal"\n\n[mcp_servers.other]\ncommand = "other"\n';
+    fsMock.files.set(GROK_BUILD, seeded);
+
+    await installGrokBuildMcp();
+
+    const connected = fsMock.files.get(GROK_BUILD)!;
+    expect(connected).toContain('[cli]\ninstaller = "internal"');
+    expect(connected).toContain('[mcp_servers.other]\ncommand = "other"');
+    expect(connected).toContain("[mcp_servers.screenpipe]");
+    expect(connected).toContain('SCREENPIPE_MCP_CLIENT = "grok-build"');
+    expect(await isGrokBuildMcpInstalled()).toBe(true);
+    expect(backupsOf(GROK_BUILD)).toHaveLength(1);
+
+    await uninstallGrokBuildMcp();
+    const removed = fsMock.files.get(GROK_BUILD)!;
+    expect(removed).toContain('[mcp_servers.other]\ncommand = "other"');
+    expect(removed).not.toContain("mcp_servers.screenpipe");
+  });
+
+  it("repairs a quoted screenpipe table without duplicating it", async () => {
+    fsMock.files.set(
+      GROK_BUILD,
+      '[mcp_servers."screenpipe"]\ncommand = "stale"\n\n[mcp_servers."screenpipe".env]\nOLD = "1"\n',
+    );
+
+    await installGrokBuildMcp();
+
+    const connected = fsMock.files.get(GROK_BUILD)!;
+    expect(connected).not.toContain('mcp_servers."screenpipe"');
+    expect(connected.match(/\[mcp_servers\.screenpipe\]/g)).toHaveLength(1);
+    expect(connected).not.toContain('command = "stale"');
+  });
+});
+
 describe("friendlyToolError", () => {
   it("keeps the absolute path for the open-file action but displays it tildified", () => {
     const err = friendlyToolError(
@@ -396,7 +444,7 @@ describe("transactional connect / disconnect", () => {
     expect(skillsMock.removeExternalAgentSkills).toHaveBeenCalledWith("cursor");
   });
 
-  it.each(["runner", "windsurf"] as const)("%s is MCP-only: no skills calls either way", async (tool) => {
+  it.each(["grok-build", "runner", "windsurf"] as const)("%s is MCP-only: no skills calls either way", async (tool) => {
     await connectAiTool(tool);
     await disconnectAiTool(tool);
 

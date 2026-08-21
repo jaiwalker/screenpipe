@@ -34,7 +34,7 @@ pub enum AgentCommand {
     Setup {
         /// Which agent to wire up. Omit when using --all.
         #[arg(
-            value_parser = ["openclaw", "hermes", "claude-code", "claude-desktop", "codex", "cursor", "gemini", "runner", "windsurf"],
+            value_parser = ["openclaw", "hermes", "claude-code", "claude-desktop", "codex", "cursor", "gemini", "grok-build", "runner", "windsurf"],
             required_unless_present = "all",
             conflicts_with = "all"
         )]
@@ -54,7 +54,7 @@ pub enum AgentCommand {
     /// agent's own config or other skills.
     Remove {
         /// Which agent to unwire.
-        #[arg(value_parser = ["openclaw", "hermes", "claude-code", "claude-desktop", "codex", "cursor", "gemini", "runner", "windsurf"])]
+        #[arg(value_parser = ["openclaw", "hermes", "claude-code", "claude-desktop", "codex", "cursor", "gemini", "grok-build", "runner", "windsurf"])]
         target: String,
     },
 }
@@ -221,6 +221,9 @@ fn detected_agents_in(home: &Path) -> Vec<DetectedAgent> {
         ("codex", "Codex", ".codex"),
         ("cursor", "Cursor", ".cursor"),
         ("gemini", "Gemini CLI", ".gemini"),
+        // The official installer creates this file. Using it instead of only
+        // ~/.grok avoids detecting the unrelated community Grok CLI.
+        ("grok-build", "Grok Build", ".grok/config.toml"),
         ("openclaw", "OpenClaw", ".openclaw"),
         ("hermes", "Hermes", ".hermes"),
         ("runner", "Runner", ".runner"),
@@ -417,6 +420,13 @@ fn detected_desktop_agents_in(home: &Path) -> Vec<DesktopDetectedAgent> {
         ("codex", "Codex", "codex", ".codex", true),
         ("cursor", "Cursor", "cursor", ".cursor", true),
         ("gemini", "Gemini CLI", "gemini", ".gemini", true),
+        (
+            "grok-build",
+            "Grok Build",
+            "grok-build",
+            ".grok/config.toml",
+            false,
+        ),
         ("openclaw", "OpenClaw", "openclaw", ".openclaw", true),
         ("hermes", "Hermes", "hermes", ".hermes", true),
         ("runner", "Runner", "runner", ".runner", false),
@@ -734,6 +744,15 @@ fn layout_in(target: &str, h: &Path) -> Result<AgentLayout> {
             mcp_path: h.join(".gemini/settings.json"),
             mcp_format: McpFormat::Json,
         },
+        // https://docs.x.ai/build/features/mcp-servers
+        // Grok Build is the local xAI coding agent. Cloud-run Grok Bot uses
+        // remote connectors and cannot consume this localhost stdio entry.
+        "grok-build" => AgentLayout {
+            name: "Grok Build",
+            skills_dir: None,
+            mcp_path: h.join(".grok/config.toml"),
+            mcp_format: McpFormat::Toml,
+        },
         // Cursor loads global skills from ~/.cursor/skills (also ~/.agents/skills
         // and, for compat, ~/.claude/skills + ~/.codex/skills) — see
         // https://cursor.com/docs/skills
@@ -759,7 +778,7 @@ fn layout_in(target: &str, h: &Path) -> Result<AgentLayout> {
             mcp_format: McpFormat::Json,
         },
         other => anyhow::bail!(
-            "unknown agent target '{other}' (use: openclaw, hermes, claude-code, claude-desktop, codex, cursor, gemini, runner, windsurf)"
+            "unknown agent target '{other}' (use: openclaw, hermes, claude-code, claude-desktop, codex, cursor, gemini, grok-build, runner, windsurf)"
         ),
     })
 }
@@ -1497,6 +1516,10 @@ mod tests {
             .as_deref()
             .is_some_and(|path| path.ends_with(".gemini/skills")));
         assert!(gemini.mcp_path.ends_with(".gemini/settings.json"));
+
+        let grok = layout("grok-build").unwrap();
+        assert!(grok.skills_dir.is_none());
+        assert!(grok.mcp_path.ends_with(".grok/config.toml"));
     }
 
     #[test]
@@ -1874,6 +1897,12 @@ mod tests {
         ] {
             std::fs::create_dir_all(home.join(relative)).unwrap();
         }
+        std::fs::create_dir_all(home.join(".grok")).unwrap();
+        std::fs::write(
+            home.join(".grok/config.toml"),
+            "[cli]\ninstaller = \"internal\"\n",
+        )
+        .unwrap();
         std::fs::write(home.join(".claude.json"), "{}\n").unwrap();
         #[cfg(target_os = "macos")]
         std::fs::create_dir_all(home.join("Library/Application Support/Claude")).unwrap();
@@ -1891,6 +1920,7 @@ mod tests {
                 "codex",
                 "cursor",
                 "gemini",
+                "grok-build",
                 "openclaw",
                 "hermes",
                 "runner",
@@ -1905,6 +1935,7 @@ mod tests {
                 "codex",
                 "cursor",
                 "gemini",
+                "grok-build",
                 "openclaw",
                 "hermes",
                 "runner",
@@ -2003,6 +2034,13 @@ mod tests {
         )
         .unwrap();
 
+        std::fs::create_dir_all(home.join(".grok")).unwrap();
+        std::fs::write(
+            home.join(".grok/config.toml"),
+            "[cli]\ninstaller = \"internal\"\n\n[mcp_servers.existing]\ncommand = \"grok-existing\"\n",
+        )
+        .unwrap();
+
         std::fs::create_dir_all(home.join(".openclaw")).unwrap();
         std::fs::write(
             home.join(".openclaw/openclaw.json"),
@@ -2037,8 +2075,8 @@ mod tests {
         assert_eq!(
             report,
             DesktopAgentSetupReport {
-                detected: 7,
-                connected: 7,
+                detected: 8,
+                connected: 8,
                 already_connected: 0,
                 opted_out: 0,
                 failures: Vec::new(),
@@ -2094,6 +2132,14 @@ mod tests {
             .join(".gemini/skills/screenpipe-cli/SKILL.md")
             .is_file());
 
+        let grok = std::fs::read_to_string(home.join(".grok/config.toml")).unwrap();
+        assert!(grok.contains("[cli]\ninstaller = \"internal\""));
+        assert!(grok.contains("[mcp_servers.existing]"));
+        assert!(grok.contains("command = \"grok-existing\""));
+        assert!(grok.contains("[mcp_servers.screenpipe]"));
+        assert!(grok.contains("SCREENPIPE_MCP_CLIENT = \"grok-build\""));
+        assert!(!home.join(".grok/skills/screenpipe-api/SKILL.md").exists());
+
         let openclaw: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(home.join(".openclaw/openclaw.json")).unwrap(),
         )
@@ -2127,9 +2173,9 @@ mod tests {
             Some("sp-test-key"),
             "http://localhost:31337",
         );
-        assert_eq!(second.detected, 7);
+        assert_eq!(second.detected, 8);
         assert_eq!(second.connected, 0);
-        assert_eq!(second.already_connected, 7);
+        assert_eq!(second.already_connected, 8);
         assert!(second.failures.is_empty());
         assert_eq!(
             std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(),
@@ -2152,7 +2198,7 @@ mod tests {
             "http://localhost:31337",
         );
         assert_eq!(restored.connected, 1);
-        assert_eq!(restored.already_connected, 6);
+        assert_eq!(restored.already_connected, 7);
         assert!(restored.failures.is_empty());
         let restored_codex = std::fs::read_to_string(home.join(".codex/config.toml")).unwrap();
         assert!(restored_codex.contains("model = \"gpt-5\""));

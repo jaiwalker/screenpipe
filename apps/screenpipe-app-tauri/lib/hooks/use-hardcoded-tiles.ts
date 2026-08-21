@@ -245,7 +245,7 @@ export function useHardcodedTiles(): HardcodedTile[] {
     { id: "claude", name: "Claude Desktop", icon: "claude", connected: claudeInstalled },
     { id: "cursor", name: "Cursor", icon: "cursor", connected: cursorInstalled },
     { id: "codex", name: "Codex", icon: "codex", connected: codexInstalled },
-    { id: "grok", name: "Grok CLI", icon: "grok", connected: grokInstalled },
+    { id: "grok", name: "Grok CLI (community)", icon: "grok", connected: grokInstalled },
     { id: "claude-code", name: "Claude Code", icon: "claude-code", connected: false },
     { id: "warp", name: "Warp", icon: "warp", connected: false },
     { id: "chatgpt", name: "ChatGPT", icon: "chatgpt", connected: chatgptConnected },

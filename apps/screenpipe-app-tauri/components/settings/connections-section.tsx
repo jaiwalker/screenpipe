@@ -1409,7 +1409,7 @@ function CodexPanel({ onConnected, onDisconnected }: { onConnected?: () => void;
   );
 }
 
-function GrokPanel({ onConnected, onDisconnected }: { onConnected?: () => void; onDisconnected?: () => void }) {
+function GrokCliPanel({ onConnected, onDisconnected }: { onConnected?: () => void; onDisconnected?: () => void }) {
   const [state, setState] = useState<"idle" | "installing" | "installed">("idle");
   const [connectError, setConnectError] = useState<FriendlyToolError | null>(null);
   useEffect(() => { isGrokMcpInstalled().then(ok => { if (ok) { setState("installed"); onConnected?.(); } }); }, []);
@@ -1441,7 +1441,7 @@ function GrokPanel({ onConnected, onDisconnected }: { onConnected?: () => void; 
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-muted-foreground">Give Grok CLI access to your screen &amp; audio history via MCP.</p>
+      <p className="text-xs text-muted-foreground">Give the community Grok CLI access to your screen &amp; audio history via MCP.</p>
       <div className="flex flex-wrap gap-2">
         {state === "installed" ? (
           <Button onClick={handleDisconnect} variant="outline" size="sm" className="gap-1.5 h-7 text-xs normal-case font-sans tracking-normal">
@@ -3997,7 +3997,7 @@ export function ConnectionsSection({
       { id: "claude", name: "Claude", icon: "claude", connected: claudeInstalled, detected: detectedConnectionIds.has("claude") || detectedConnectionIds.has("claude-code") },
       { id: "cursor", name: "Cursor", icon: "cursor", connected: cursorInstalled, detected: detectedConnectionIds.has("cursor") },
       { id: "codex", name: "Codex", icon: "codex", connected: codexInstalled, detected: detectedConnectionIds.has("codex") },
-      { id: "grok", name: "Grok CLI", icon: "grok", connected: grokInstalled, detected: detectedConnectionIds.has("grok") },
+      { id: "grok", name: "Grok CLI (community)", icon: "grok", connected: grokInstalled, detected: detectedConnectionIds.has("grok") },
       { id: "warp", name: "Warp", icon: "warp", connected: false, detected: detectedConnectionIds.has("warp") },
       { id: "chatgpt", name: "ChatGPT", icon: "chatgpt", connected: chatgptConnected, detected: detectedConnectionIds.has("chatgpt") },
       ...(os === "macos" ? [
@@ -4212,7 +4212,7 @@ export function ConnectionsSection({
         onConnected={() => setCodexInstalled(true)}
         onDisconnected={() => setCodexInstalled(false)}
       />;
-      case "grok": return <GrokPanel
+      case "grok": return <GrokCliPanel
         onConnected={() => setGrokInstalled(true)}
         onDisconnected={() => setGrokInstalled(false)}
       />;

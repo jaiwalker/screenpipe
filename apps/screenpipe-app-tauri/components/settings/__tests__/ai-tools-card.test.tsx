@@ -20,6 +20,7 @@ const libMocks = vi.hoisted(() => ({
   isOpenclawMcpInstalled: vi.fn(async () => false),
   isHermesMcpInstalled: vi.fn(async () => false),
   isGeminiMcpInstalled: vi.fn(async () => false),
+  isGrokBuildMcpInstalled: vi.fn(async () => false),
   isRunnerMcpInstalled: vi.fn(async () => false),
   isWindsurfMcpInstalled: vi.fn(async () => false),
 }));
@@ -46,6 +47,7 @@ vi.mock("@/lib/ai-tools-mcp", () => ({
     codex: "Codex",
     cursor: "Cursor",
     gemini: "Gemini CLI",
+    "grok-build": "Grok Build",
     openclaw: "OpenClaw",
     hermes: "Hermes",
     runner: "Runner",
@@ -202,5 +204,19 @@ describe("AiToolsCard", () => {
     expect(await screen.findByText("Gemini CLI")).toBeTruthy();
     expect(screen.getByText("MCP + skills")).toBeTruthy();
     await waitFor(() => expect(libMocks.connectAiToolTargets).toHaveBeenCalledWith(["gemini"]));
+  });
+
+  it("connects detected Grok Build through the MCP-only connect-all path", async () => {
+    libMocks.detectAiTools.mockResolvedValue(["grok-build"]);
+
+    render(<AiToolsCard />);
+    fireEvent.click(await screen.findByRole("button", { name: /connect all/i }));
+
+    expect(await screen.findByText("Grok Build")).toBeTruthy();
+    expect(screen.getByText("MCP")).toBeTruthy();
+    expect(screen.queryByText(/supported skills/i)).toBeNull();
+    await waitFor(() =>
+      expect(libMocks.connectAiToolTargets).toHaveBeenCalledWith(["grok-build"])
+    );
   });
 });
