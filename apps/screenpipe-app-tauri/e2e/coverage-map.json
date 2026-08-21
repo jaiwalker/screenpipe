@@ -671,12 +671,13 @@
       ],
       "features": [
         "chat",
-        "chat-sidebar-dedupe"
+        "chat-sidebar-dedupe",
+        "chat-session-activity"
       ],
       "criticality": "medium",
       "confidence": "partial",
       "ux": "real-user-flow",
-      "notes": "Home automation card clicks must create exactly one persisted conversation per card, guarding the #4719 duplicate-row path."
+      "notes": "The Day Recap automation card must create exactly one persisted conversation and one sidebar row; status-only activity for an unknown session must not create an empty untitled sibling."
     },
     {
       "spec": "chat-composer-isolation.spec.ts",
@@ -1570,12 +1571,13 @@
       ],
       "features": [
         "brain-overview",
-        "live-view-canvas-pinch-zoom"
+        "live-view-canvas-pinch-zoom",
+        "live-view-canvas-click-stability"
       ],
       "criticality": "medium",
       "confidence": "strong",
       "ux": "real-user-flow",
-      "notes": "Drives the Live View canvas with the same native-magnify payload the macOS magnification gesture recognizer emits. Asserts the recognizer takes ownership so WebKit's duplicate ctrl+wheel stops zooming while plain scroll still pans, that an app-wide pinch is ignored by an unfocused canvas, and that canvas zoom stays anchored, clamped at 25%, and persisted through load_brain_view_canvas. The focused per-frame zoom arithmetic is asserted in the component tests because WKWebView under WebDriver does not reliably receive OS-level focus."
+      "notes": "Drives the Live View canvas with the same window-scoped native-magnify payload the macOS magnification gesture recognizer emits. Asserts pinch works even when WKWebView lacks DOM focus, the recognizer takes ownership so WebKit's duplicate ctrl+wheel stops zooming while plain scroll still pans, ordinary pane, Block, and double clicks do not change the viewport, and canvas zoom stays anchored, clamped at 25%, and persisted through load_brain_view_canvas."
     },
     {
       "spec": "macos-ui-performance.spec.ts",
@@ -1995,14 +1997,14 @@
         "settings"
       ],
       "features": [
+        "ai-tools",
         "connections",
-        "pi-extensions",
-        "agent-extensions"
+        "pi-extensions"
       ],
       "criticality": "medium",
       "confidence": "strong",
       "ux": "real-user-flow",
-      "notes": "Opens Home -> Connections, opens Agent extensions, verifies provider-neutral built-ins and compatibility labels, filters the Pi package search, and captures a screenshot. Read-only smoke: does not install packages."
+      "notes": "Opens Home -> Connections, opens the first AI tools setting, verifies the common tool toggles are first and directly visible in the modal, checks plain-language built-ins and compatibility labels, filters the package search, and captures a screenshot. Read-only smoke: does not install packages."
     },
     {
       "spec": "pipe-continuous-chat.spec.ts",
