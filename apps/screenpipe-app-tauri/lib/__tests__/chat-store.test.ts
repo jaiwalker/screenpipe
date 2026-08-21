@@ -19,6 +19,7 @@ import {
   sessionRecordFromMeta,
   selectDisplayedChatId,
   applyChatSessionActivity,
+  ensureBlankChatSession,
   type SessionRecord,
   type ChatSessionActivityPayload,
 } from "../stores/chat-store";
@@ -218,6 +219,31 @@ describe("chat-store: getOrCreateEmptyChatId (no spam on +new)", () => {
     const { id, isNew } = getOrCreateEmptyChatId();
     expect(isNew).toBe(true);
     expect(id).toMatch(/-/); // looks like a uuid
+  });
+
+  it("seeds the panel's initial id as one reusable hidden draft", () => {
+    const store = useChatStore.getState();
+
+    const first = ensureBlankChatSession(store, "initial-panel", 2_000);
+    const second = ensureBlankChatSession(
+      useChatStore.getState(),
+      "initial-panel",
+      3_000,
+    );
+    useChatStore.getState().actions.setPanelSession("initial-panel");
+
+    expect(second).toBe(first);
+    expect(useChatStore.getState().sessions["initial-panel"]).toMatchObject({
+      draft: true,
+      messages: [],
+      messageCount: 0,
+      createdAt: 2_000,
+      updatedAt: 2_000,
+    });
+    expect(getOrCreateEmptyChatId()).toEqual({
+      id: "initial-panel",
+      isNew: false,
+    });
   });
 
   it("reuses the panel's current chat if it has no user message", () => {
@@ -904,30 +930,41 @@ describe("chat-store: cross-window duplicate row collapsing", () => {
 
 /**
  * applyChatSessionActivity — characterization tests for the `chat-session-activity`
- * merge logic extracted from app/home/page.tsx. These lock in the exact
- * upsert-vs-patch, staleness, title/preview/status merge, lastError, and
- * unread-hint behavior so the useEffect→useTauriEvent refactor (#4791) is
- * provably behavior-preserving. `now` is injected for determinism.
+ * merge logic extracted from app/home/page.tsx. These lock in the canonical
+ * session boundary, staleness, title/preview/status merge, lastError, and
+ * unread-hint behavior. `now` is injected for determinism.
  */
 describe("chat-store: applyChatSessionActivity", () => {
   beforeEach(reset);
 
   const NOW = 9_999;
 
-  it("creates a new session with defaults when none exists", () => {
-    applyChatSessionActivity(useChatStore.getState(), { id: "A", updatedAt: 2_000 });
-    const s = useChatStore.getState().sessions["A"];
-    expect(s).toBeDefined();
-    expect(s.title).toBe("untitled");
-    expect(s.preview).toBe("");
-    expect(s.status).toBe("idle");
-    expect(s.createdAt).toBe(2_000);
-    expect(s.updatedAt).toBe(2_000);
-    expect(s.messageCount).toBe(0);
-    expect(s.pinned).toBe(false);
-  });
+  it.each([
+    { status: "idle" as const },
+    {
+      status: "streaming" as const,
+      preview: "assistant delta",
+      unreadHint: true,
+    },
+    { status: "error" as const, lastError: "provider failed" },
+    { status: "idle" as const, title: "generated title" },
+  ])(
+    "does not materialize an unknown session from activity alone: %j",
+    (activity) => {
+      applyChatSessionActivity(useChatStore.getState(), {
+        id: "A",
+        updatedAt: 2_000,
+        ...activity,
+      });
 
-  it("carries title/preview/status through on create and trims the title", () => {
+      expect(useChatStore.getState().sessions["A"]).toBeUndefined();
+    },
+  );
+
+  it("carries title/preview/status through for an existing canonical session", () => {
+    useChatStore.getState().actions.upsert(
+      baseRecord({ id: "A", updatedAt: 1_000 }),
+    );
     applyChatSessionActivity(useChatStore.getState(), {
       id: "A",
       title: "  hello  ",
