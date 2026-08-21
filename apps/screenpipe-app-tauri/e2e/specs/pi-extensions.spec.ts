@@ -89,7 +89,7 @@ async function openHomeForAgentExtensionsCatalog(): Promise<void> {
   }
 }
 
-describe('Agent tools catalog', function () {
+describe('Extra AI tools catalog', function () {
   this.timeout(t(180_000));
 
   before(async () => {
@@ -105,16 +105,32 @@ describe('Agent tools catalog', function () {
     await browser.waitUntil(
       async () => {
         const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
-        return body.includes('connections') && body.includes('agent tools');
+        return body.includes('connections') && body.includes('use screenpipe with ai');
       },
-      { timeout: t(12_000), timeoutMsg: 'Connections did not render Agent tools entry' },
+      { timeout: t(12_000), timeoutMsg: 'Connections did not render the AI setup disclosure' },
+    );
+
+    await browser.execute(() => {
+      const summaries = Array.from(document.querySelectorAll('summary'));
+      const aiSetup = summaries.find((summary) =>
+        summary.textContent?.toLowerCase().includes('use screenpipe with ai'),
+      );
+      aiSetup?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    });
+
+    await browser.waitUntil(
+      async () => {
+        const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
+        return body.includes('extra ai tools');
+      },
+      { timeout: t(8_000), timeoutMsg: 'Connections did not reveal Extra AI tools' },
     );
 
     await browser.execute(() => {
       const buttons = Array.from(document.querySelectorAll('button'));
       const target = buttons.find((button) =>
-        button.textContent?.toLowerCase().includes('agent tools'),
-      ) ?? buttons.find((button) => button.textContent?.toLowerCase().includes('manage'));
+        button.textContent?.toLowerCase().includes('extra ai tools'),
+      );
       target?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
@@ -124,12 +140,12 @@ describe('Agent tools catalog', function () {
         return body.includes('community tools can run code') &&
           body.includes('screen history') &&
           body.includes('ready in every agent') &&
-          body.includes('pi only') &&
+          body.includes('screenpipe only') &&
           body.includes('subagents') &&
           body.includes('web agent') &&
           body.includes('ask user');
       },
-      { timeout: t(12_000), timeoutMsg: 'Agent tools catalog did not open' },
+      { timeout: t(12_000), timeoutMsg: 'Extra AI tools catalog did not open' },
     );
 
     const search = await $('input[placeholder="Search tools..."]');
@@ -143,7 +159,7 @@ describe('Agent tools catalog', function () {
           body.includes('@demigodmode/pi-web-agent') &&
           !body.includes('delegate work to focused child agents');
       },
-      { timeout: t(8_000), timeoutMsg: 'Agent tools catalog search did not filter to web agent' },
+      { timeout: t(8_000), timeoutMsg: 'Extra AI tools catalog search did not filter to web agent' },
     );
 
     const filepath = await saveScreenshot('connections-agent-extensions');

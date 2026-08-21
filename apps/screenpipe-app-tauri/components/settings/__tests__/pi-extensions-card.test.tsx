@@ -70,6 +70,8 @@ describe("PiExtensionsCard", () => {
       "aria-checked",
       "true",
     );
+    expect(screen.getAllByText("screenpipe only").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Pi only")).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Subagents always enabled" })).toBeDisabled();
     expect(screen.getByText("required")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Enable Web agent" })).toHaveAttribute(

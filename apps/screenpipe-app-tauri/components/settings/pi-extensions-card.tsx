@@ -44,7 +44,7 @@ const COMPATIBILITY_CLASS = {
 } as const;
 
 function compatibilityLabel(item: PiExtensionCatalogItem): string {
-  if (item.compatibility === "pi-only") return "Pi only";
+  if (item.compatibility === "pi-only") return "screenpipe only";
   return item.compatibilityVerified
     ? "works with every agent"
     : "may work with other agents";
@@ -693,7 +693,7 @@ export function PiExtensionsCard({ onChanged }: { onChanged?: () => void }) {
                         ? "repair needed"
                         : pkg.acpCompatible
                           ? "works with every agent"
-                          : "Pi only"}
+                          : "screenpipe only"}
                   </span>
                   {busySource === pkg.source ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
