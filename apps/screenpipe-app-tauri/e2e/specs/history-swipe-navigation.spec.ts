@@ -19,7 +19,7 @@ const supportsNativeHistorySwipe = ["darwin", "win32"].includes(
       await openHomeWindow();
     });
 
-    it("keeps the gesture off by default, then enables it for an opted-in Home", async () => {
+    it("enables the opted-in gesture and restores the previous UI state", async () => {
       expect(
         await invokeOrThrow<boolean>(
           "plugin:e2e|history_swipe_navigation_enabled",
@@ -37,6 +37,36 @@ const supportsNativeHistorySwipe = ["darwin", "win32"].includes(
         ),
       ).toBe(true);
 
+      // Build an explicit Home -> Help -> Settings stack. Top-level Home
+      // sections must be push entries so the native edge preview has the real
+      // previous UI state to animate toward.
+      const help = await $('[data-testid="nav-help"]');
+      await help.waitForExist({ timeout: t(10_000) });
+      await help.click();
+      await $('[data-testid="section-help"]').waitForExist({
+        timeout: t(10_000),
+      });
+
+      const home = await $('[data-testid="nav-home"]');
+      await home.waitForExist({ timeout: t(10_000) });
+      await home.click();
+      await $('[data-testid="section-home"]').waitForExist({
+        timeout: t(15_000),
+      });
+
+      const helpAgain = await $('[data-testid="nav-help"]');
+      await helpAgain.waitForExist({ timeout: t(10_000) });
+      await helpAgain.click();
+      await browser.waitUntil(
+        async () =>
+          new URL(await browser.getUrl()).searchParams.get("section") ===
+          "help",
+        {
+          timeout: t(10_000),
+          timeoutMsg: "Help did not become a browser-history entry",
+        },
+      );
+
       const settings = await $('[data-testid="nav-settings"]');
       await settings.waitForExist({ timeout: t(10_000) });
       await settings.click();
@@ -45,14 +75,35 @@ const supportsNativeHistorySwipe = ["darwin", "win32"].includes(
       expect(new URL(await browser.getUrl()).pathname).toBe("/settings");
 
       await browser.back();
-      const homeRoot = await $('[data-testid="home-page"]');
-      await homeRoot.waitForExist({ timeout: t(15_000) });
+      const helpAfterBack = await $('[data-testid="section-help"]');
+      await helpAfterBack.waitForExist({ timeout: t(15_000) });
       expect(new URL(await browser.getUrl()).pathname).toBe("/home");
+      expect(new URL(await browser.getUrl()).searchParams.get("section")).toBe(
+        "help",
+      );
 
       await browser.forward();
       const settingsRootAgain = await $('[data-testid="settings-back-to-app"]');
       await settingsRootAgain.waitForExist({ timeout: t(15_000) });
       expect(new URL(await browser.getUrl()).pathname).toBe("/settings");
+
+      // The visible Back to app control must consume Settings rather than push
+      // another Home entry. Otherwise the very next back swipe returns to
+      // Settings, which was the reported regression.
+      await settingsRootAgain.click();
+      const helpAfterButton = await $('[data-testid="section-help"]');
+      await helpAfterButton.waitForExist({ timeout: t(15_000) });
+      expect(new URL(await browser.getUrl()).searchParams.get("section")).toBe(
+        "help",
+      );
+
+      await browser.back();
+      const homeAfterBack = await $('[data-testid="section-home"]');
+      await homeAfterBack.waitForExist({ timeout: t(15_000) });
+      expect(new URL(await browser.getUrl()).pathname).toBe("/home");
+      expect(
+        new URL(await browser.getUrl()).searchParams.get("section"),
+      ).toBeNull();
     });
   },
 );
