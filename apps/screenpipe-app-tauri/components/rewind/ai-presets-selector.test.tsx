@@ -102,6 +102,15 @@ vi.mock("@/lib/http/tauri-fetch", () => ({
 vi.mock("@/lib/utils/tauri", () => ({
   commands: {
     piCheck: vi.fn(async () => ({ status: "ok", data: { available: false } })),
+    piAcpAgentInstallStatus: vi.fn(async () => ({
+      requiresInstall: false,
+      installed: true,
+    })),
+    piAcpAgentDownloadPending: vi.fn(async () => false),
+    piAcpProbeAgent: vi.fn(async () => ({
+      status: "error",
+      error: "model and mode choices unavailable",
+    })),
     chatgptOauthStatus: vi.fn(async () => ({ status: "ok", data: { logged_in: false } })),
     chatgptOauthGetToken: vi.fn(async () => ({ status: "error" })),
   },
@@ -215,6 +224,9 @@ describe("AIPresetsSelector controlled preset creation", () => {
       "GitHub Copilot",
       "Pi",
     ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+    expect(screen.queryByText("how this works")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "screenpipe" }));
     const nameInput = screen.getByLabelText("name");
@@ -358,5 +370,23 @@ describe("AIPresetsSelector controlled preset creation", () => {
     expect(screen.getByTestId("ai-preset-popover-footer")).toHaveTextContent(
       "effort control",
     );
+  });
+
+  it("keeps recommendation copy out of the native model trigger", () => {
+    mocks.settings.current = {
+      aiPresets: [
+        {
+          ...originalPreset,
+          model: "screenpipe/Auto (recommended)",
+        },
+      ],
+      user: { token: "test-token" },
+    };
+
+    render(<AIPresetsSelector compact showModelOnly />);
+
+    const trigger = screen.getByRole("combobox");
+    expect(trigger).toHaveTextContent("screenpipe/Auto");
+    expect(trigger).not.toHaveTextContent("recommended");
   });
 });

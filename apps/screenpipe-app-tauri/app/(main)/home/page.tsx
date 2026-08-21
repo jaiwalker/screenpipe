@@ -16,7 +16,6 @@ import {
   Search,
   Plug,
   CalendarClock,
-  Keyboard,
   ListTree,
   ArrowLeft,
 } from "lucide-react";
@@ -1081,7 +1080,7 @@ function HomeContent() {
     timeline: { label: "Timeline", icon: <MonitorPlay className="h-3.5 w-3.5" /> },
     activity: { label: "Activity", icon: <ListTree className="h-3.5 w-3.5" /> },
     brain: { label: "Library", icon: <Brain className="h-3.5 w-3.5" /> },
-    pipes: { label: "Scheduled", icon: <TimerReset className="h-3.5 w-3.5" /> },
+    pipes: { label: "Automations", icon: <TimerReset className="h-3.5 w-3.5" /> },
     connections: { label: "Connections", icon: <Plug className="h-3.5 w-3.5" /> },
   };
 
@@ -1333,39 +1332,6 @@ function HomeContent() {
                       {formatShortcutDisplay(settings.searchShortcut, isMac)}
                     </ShortcutKeycap>
                     ) : null}
-                  </span>
-                </TooltipContent>
-              </Tooltip>
-            )}
-
-            {!sidebarCollapsed && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={() => setShortcutGuideOpen(true)}
-                    aria-label="keyboard shortcuts"
-                    data-testid="shortcut-guide-button"
-                    className={cn(
-                      "rounded-md p-1 transition-colors",
-                      isTranslucent
-                        ? "vibrant-nav-item"
-                        : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                    )}
-                  >
-                    <Keyboard className="h-3.5 w-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="bottom"
-                  className="text-xs"
-                  data-testid="shortcut-guide-button-tooltip"
-                >
-                  <span className="flex items-center gap-2">
-                    keyboard shortcuts
-                    <ShortcutKeycap>
-                      {inAppShortcutLabel("shortcut_guide", isMac)}
-                    </ShortcutKeycap>
                   </span>
                 </TooltipContent>
               </Tooltip>
