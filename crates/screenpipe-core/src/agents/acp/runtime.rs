@@ -53,7 +53,8 @@ pub const SCREENPIPE_MCP_PKG: &str = "screenpipe-mcp@latest";
 /// runtime alone and must never be inherited by any child it spawns — neither
 /// the agent adapter nor a client-requested terminal. These blobs hold resolved
 /// provider API keys (`SCREENPIPE_ACP_ENV_JSON`), third-party MCP secret headers
-/// (`SCREENPIPE_ACP_USER_MCP_JSON`), the system prompt, and session config.
+/// (`SCREENPIPE_ACP_USER_MCP_JSON`), the system prompt, session config, and
+/// the private chat-control broker capability.
 /// Children receive what they legitimately need through CLI args, the resolved
 /// per-process `env`, and the structured ACP protocol — never as raw inherited
 /// env. A single list keeps the two spawn sites from drifting (a terminal that
@@ -72,6 +73,8 @@ const RUNTIME_ONLY_ENV: &[&str] = &[
     "SCREENPIPE_ACP_ID",
     "SCREENPIPE_ACP_RESUME_SESSION_ID",
     "SCREENPIPE_ACP_UNATTENDED",
+    super::super::chat_control::CHAT_CONTROL_ADDR_ENV,
+    super::super::chat_control::CHAT_CONTROL_TOKEN_ENV,
 ];
 
 /// Strip every [`RUNTIME_ONLY_ENV`] var from a child command's inherited
@@ -349,7 +352,7 @@ You are running inside screenpipe. Prefer its MCP tools over shell/curl (this is
   - `search-content` for specific lookups; filter by content_type, app_name, window_name, and a time range.
   - `update-memory` (and search with content_type=memory) to persist and recall facts across sessions.
 - `user_profile` and `skill_manage` provide self-improvement capabilities; follow their tool descriptions and the shared session guidance.
-- `search_chats` finds exact existing screenpipe, Codex, Claude, and Cursor chat targets. `send_to_chat` delivers to one returned source + id only after the user explicitly authorizes that exact send.
+- `search_chats` finds exact existing screenpipe, Codex, Claude, and Cursor chat targets. `send_to_chat` delivers to one returned source + id only after the user explicitly authorizes that exact send. Read `.pi/skills/screenpipe-chats/SKILL.md` for the search, disambiguation, and delivery workflow.
 - `list_connections` shows the user's connected apps; `screenpipe_connect_app` connects one and waits for the user when a task needs it.
 - for a connection returned with mcp=true (Linear, Notion, Stripe, Sentry, Jira, Gmail, Zoom, Drive), use `sp_mcp_list_tools` then `sp_mcp_call` (with its `mcp_server_id`) to actually use it — not the connection proxy.
 - `sp_web_search` searches the public web; `save_artifact` saves a finished, user-facing deliverable (text or, with encoding=base64, an image) to the Artifacts library.
@@ -2822,6 +2825,18 @@ fn mcp_servers(config: &RuntimeConfig) -> Vec<McpServer> {
             if let Some(chat_id) = env_nonempty("SCREENPIPE_CHAT_SESSION_ID") {
                 tools_env.push(EnvVariable::new("SCREENPIPE_CHAT_SESSION_ID", chat_id));
             }
+            if let Some(addr) = env_nonempty(super::super::chat_control::CHAT_CONTROL_ADDR_ENV) {
+                tools_env.push(EnvVariable::new(
+                    super::super::chat_control::CHAT_CONTROL_ADDR_ENV,
+                    addr,
+                ));
+            }
+            if let Some(token) = env_nonempty(super::super::chat_control::CHAT_CONTROL_TOKEN_ENV) {
+                tools_env.push(EnvVariable::new(
+                    super::super::chat_control::CHAT_CONTROL_TOKEN_ENV,
+                    token,
+                ));
+            }
             if config.unattended {
                 tools_env.push(EnvVariable::new("SCREENPIPE_CHAT_CONTROL_DISABLED", "1"));
             }
@@ -2933,6 +2948,12 @@ fn spawn_http_mcp_servers(config: &RuntimeConfig) -> Vec<std::process::Child> {
         }
         if let Some(chat_id) = env_nonempty("SCREENPIPE_CHAT_SESSION_ID") {
             cmd.env("SCREENPIPE_CHAT_SESSION_ID", chat_id);
+        }
+        if let Some(addr) = env_nonempty(super::super::chat_control::CHAT_CONTROL_ADDR_ENV) {
+            cmd.env(super::super::chat_control::CHAT_CONTROL_ADDR_ENV, addr);
+        }
+        if let Some(token) = env_nonempty(super::super::chat_control::CHAT_CONTROL_TOKEN_ENV) {
+            cmd.env(super::super::chat_control::CHAT_CONTROL_TOKEN_ENV, token);
         }
         match cmd.spawn() {
             Ok(child) => {
@@ -5192,6 +5213,7 @@ mod tests {
         assert!(none.contains("skill_manage"));
         assert!(none.contains("search_chats"));
         assert!(none.contains("send_to_chat"));
+        assert!(none.contains(".pi/skills/screenpipe-chats/SKILL.md"));
         assert!(none.contains(".pi/skills/*/SKILL.md"));
         assert!(
             none.contains("today\" is the user's local calendar day starting at local midnight")

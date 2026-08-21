@@ -3239,6 +3239,23 @@ pub async fn pi_start_inner(
     // Chat session ID for per-session artifact isolation
     cmd.env("SCREENPIPE_CHAT_SESSION_ID", &sid);
 
+    // Chat-to-chat control uses a core-owned, ephemeral authenticated broker.
+    // Pass its capability only to this agent process; there is no fixed app
+    // route or public control-server surface.
+    match crate::chat_control::ensure_broker(&app).await {
+        Ok(endpoint) => {
+            cmd.env(
+                screenpipe_core::agents::chat_control::CHAT_CONTROL_ADDR_ENV,
+                endpoint.addr,
+            );
+            cmd.env(
+                screenpipe_core::agents::chat_control::CHAT_CONTROL_TOKEN_ENV,
+                endpoint.token,
+            );
+        }
+        Err(error) => warn!("chat-control broker unavailable: {error}"),
+    }
+
     // Auto-auth the agent's `curl localhost:3030/...` calls via a bash
     // shim sourced from $BASH_ENV on every subshell. See bash_env.rs in
     // screenpipe-core.
@@ -4063,9 +4080,9 @@ pub async fn pi_queue_prompt(
     pi_queue_prompt_inner(&app, state.inner(), &sid, message, images, display_preview).await
 }
 
-/// Queue a follow-up from a non-Tauri caller such as the loopback chat-control
-/// API. This keeps agent-to-agent sends on the same synchronized queue as the
-/// visible composer.
+/// Queue a follow-up from a non-Tauri caller such as the core chat-control
+/// broker. This keeps agent-to-agent sends on the same synchronized queue as
+/// the visible composer.
 pub(crate) async fn pi_queue_prompt_inner(
     app: &AppHandle,
     state: &PiState,

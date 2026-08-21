@@ -781,6 +781,10 @@ impl PiExecutor {
                 include_str!("../../assets/skills/screenpipe-cli/SKILL.md"),
             ),
             (
+                "screenpipe-chats",
+                include_str!("../../assets/skills/screenpipe-chats/SKILL.md"),
+            ),
+            (
                 "render-html-report",
                 include_str!("../../assets/skills/render-html-report/SKILL.md"),
             ),
@@ -849,9 +853,10 @@ impl PiExecutor {
     /// [`Self::USER_SKILL_MARKER`], be deleted by a later sync. The desktop
     /// importer already rejects these names; this guards any folder that reaches
     /// the store another way.
-    const BASELINE_SKILL_NAMES: [&'static str; 4] = [
+    const BASELINE_SKILL_NAMES: [&'static str; 5] = [
         "screenpipe-api",
         "screenpipe-cli",
+        "screenpipe-chats",
         "screenpipe-team",
         "render-html-report",
     ];
@@ -989,6 +994,11 @@ impl PiExecutor {
                 "screenpipe-cli",
                 include_str!("../../assets/skills/screenpipe-cli/SKILL.md"),
                 Box::new(|_| true), // always installed — pipe & connection management
+            ),
+            (
+                "screenpipe-chats",
+                include_str!("../../assets/skills/screenpipe-chats/SKILL.md"),
+                Box::new(|_| true), // search is read-only; unattended delivery is tool-gated
             ),
             (
                 "render-html-report",
@@ -4221,6 +4231,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         PiExecutor::ensure_chat_control_extension(dir.path())
             .expect("install chat-control extension");
+        PiExecutor::ensure_screenpipe_skill(dir.path()).expect("install screenpipe skills");
 
         let content = std::fs::read_to_string(
             dir.path()
@@ -4232,6 +4243,19 @@ mod tests {
         assert!(content.contains("name: \"search_chats\""));
         assert!(content.contains("name: \"send_to_chat\""));
         assert!(content.contains("confirmed=true"));
+        assert!(content.contains("SCREENPIPE_CHAT_CONTROL_ADDR"));
+        assert!(!content.contains("/agent/chats/"));
+
+        let skill = std::fs::read_to_string(
+            dir.path()
+                .join(".pi")
+                .join("skills")
+                .join("screenpipe-chats")
+                .join("SKILL.md"),
+        )
+        .expect("read screenpipe-chats skill");
+        assert!(skill.contains("Call `search_chats`"));
+        assert!(skill.contains("explicit user authorization"));
     }
 
     #[cfg(windows)]

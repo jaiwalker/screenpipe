@@ -22,6 +22,7 @@ import { tmpdir } from "node:os";
 import { join, extname, basename } from "node:path";
 import { Buffer } from "node:buffer";
 import { createServer } from "node:http";
+import { createConnection } from "node:net";
 
 const PROTOCOL_VERSION = "2025-06-18";
 const SERVER_INFO = { name: "screenpipe-tools", version: "0.1.0" };
@@ -41,13 +42,6 @@ function authHeaders() {
   const headers = { "Content-Type": "application/json" };
   if (key) headers["Authorization"] = `Bearer ${key}`;
   return headers;
-}
-
-function appApiBase() {
-  const url =
-    process.env.SCREENPIPE_APP_API_URL ||
-    `http://localhost:${process.env.SCREENPIPE_FOCUS_PORT || "11435"}`;
-  return url.replace(/\/+$/, "");
 }
 
 // The local engine (apiBase) serves /mcp-servers, /search, /raw_sql — it is
@@ -78,6 +72,56 @@ function sanitizeFilename(raw) {
 // in the originating chat. Equals the frontend conversationId.
 function chatSessionId() {
   return process.env.SCREENPIPE_CHAT_SESSION_ID || "chat";
+}
+
+async function chatControlRequest(action, payload) {
+  const addr = process.env.SCREENPIPE_CHAT_CONTROL_ADDR || "";
+  const token = process.env.SCREENPIPE_CHAT_CONTROL_TOKEN || "";
+  const separator = addr.lastIndexOf(":");
+  const host = addr.slice(0, separator);
+  const port = Number(addr.slice(separator + 1));
+  if (!token || !host || !Number.isInteger(port)) {
+    throw new Error("chat control is unavailable in this agent session");
+  }
+  return await new Promise((resolve, reject) => {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const socket = createConnection({ host, port });
+    let body = "";
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      error ? reject(error) : resolve(value);
+    };
+    const timer = setTimeout(
+      () => finish(new Error("chat control timed out")),
+      20_000,
+    );
+    socket.setEncoding("utf8");
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({ id, token, action, payload })}\n`);
+    });
+    socket.on("data", (chunk) => {
+      body += chunk;
+      const newline = body.indexOf("\n");
+      if (newline < 0) return;
+      try {
+        const response = JSON.parse(body.slice(0, newline));
+        if (response.id !== id || response.ok !== true) {
+          throw new Error(response.error || "chat control failed");
+        }
+        finish(undefined, response.data);
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+    socket.on("error", (error) => finish(error));
+    socket.on("end", () => {
+      if (!settled) finish(new Error("chat control closed without a response"));
+    });
+  });
 }
 
 // Like authHeaders, but also carries the session tag the engine's per-session
@@ -286,10 +330,6 @@ async function agentJson(res) {
   return body;
 }
 
-async function appJson(res) {
-  return agentJson(res);
-}
-
 function requireViewId(viewId) {
   if (typeof viewId !== "string" || !viewId.trim()) {
     throw new Error("viewId is required for this action");
@@ -391,16 +431,12 @@ const TOOLS = [
       additionalProperties: false,
     },
     async run(args) {
-      const res = await fetch(`${appApiBase()}/agent/chats/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const result = await chatControlRequest("search", {
           query: typeof args?.query === "string" ? args.query : "",
           sources: Array.isArray(args?.sources) ? args.sources : [],
           limit: args?.limit,
-        }),
       });
-      return JSON.stringify(await appJson(res), null, 2);
+      return JSON.stringify(result, null, 2);
     },
   },
   {
@@ -430,19 +466,15 @@ const TOOLS = [
       if (args?.confirmed !== true) {
         throw new Error("send_to_chat requires explicit user authorization and confirmed=true");
       }
-      const res = await fetch(`${appApiBase()}/agent/chats/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const result = await chatControlRequest("send", {
           source: args?.source,
           id: args?.id,
           message: args?.message,
           mode: args?.mode || "queue",
           confirmed: true,
           origin_session_id: chatSessionId(),
-        }),
       });
-      return JSON.stringify(await appJson(res), null, 2);
+      return JSON.stringify(result, null, 2);
     },
   },
   {

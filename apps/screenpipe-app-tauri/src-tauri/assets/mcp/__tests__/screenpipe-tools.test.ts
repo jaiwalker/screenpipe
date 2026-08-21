@@ -9,6 +9,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
+import { createServer as createNetServer } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -172,6 +173,51 @@ describe("screenpipe-tools MCP server", () => {
     );
     expect(names).toContain("search_chats");
     expect(names).not.toContain("send_to_chat");
+  });
+
+  it("routes chat search through the authenticated core broker", async () => {
+    let brokerRequest: Record<string, unknown> | undefined;
+    const broker = createNetServer((socket) => {
+      socket.setEncoding("utf8");
+      let body = "";
+      socket.on("data", (chunk) => {
+        body += chunk;
+        const newline = body.indexOf("\n");
+        if (newline < 0) return;
+        brokerRequest = JSON.parse(body.slice(0, newline));
+        socket.end(
+          `${JSON.stringify({
+            id: brokerRequest?.id,
+            ok: true,
+            data: { results: [{ source: "codex", id: "thread-1" }], warnings: [] },
+          })}\n`,
+        );
+      });
+    });
+    broker.listen(0, "127.0.0.1");
+    await once(broker, "listening");
+    const address = broker.address();
+    if (!address || typeof address === "string") throw new Error("missing broker port");
+
+    try {
+      server = new Server({
+        SCREENPIPE_CHAT_CONTROL_ADDR: `127.0.0.1:${address.port}`,
+        SCREENPIPE_CHAT_CONTROL_TOKEN: "test-token",
+      });
+      const response = await server.request(1, "tools/call", {
+        name: "search_chats",
+        arguments: { query: "export", sources: ["codex"] },
+      });
+      expect(brokerRequest).toMatchObject({
+        token: "test-token",
+        action: "search",
+        payload: { query: "export", sources: ["codex"] },
+      });
+      expect(JSON.stringify(response)).toContain("thread-1");
+    } finally {
+      broker.close();
+      await once(broker, "close");
+    }
   });
 
   it("normalizes calendar ranges from the ACP runtime's local day", async () => {
