@@ -934,6 +934,49 @@ function McpSpotlight({
   );
 }
 
+function AiToolsSpotlight({
+  selected,
+  onClick,
+}: {
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <div
+      className={`
+        rounded-xl border bg-card p-3 transition-colors
+        ${selected ? "border-foreground bg-accent" : "border-border"}
+      `}
+    >
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onClick}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
+          <IntegrationIcon
+            icon="pi-extensions"
+            className="flex h-10 w-10 items-center justify-center rounded-lg bg-muted"
+          />
+          <div className="min-w-0">
+            <h3 className="text-sm font-medium text-foreground">AI tools</h3>
+            <p className="text-xs text-muted-foreground">Choose what your AI can use</p>
+          </div>
+        </button>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          onClick={onClick}
+          className="h-8 text-xs normal-case font-sans tracking-normal"
+        >
+          Manage
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 // Skills spotlight — mirrors McpSpotlight. Opens the skills importer dialog.
 function SkillsSpotlight({
   count,
@@ -4390,9 +4433,9 @@ export function ConnectionsSection({
       {isDefaultView ? (
         <>
           <div className="space-y-3">
-            <PiExtensionsCard
-              variant="quick"
-              onBrowse={() => setSelected("pi-extensions")}
+            <AiToolsSpotlight
+              selected={selected === "pi-extensions"}
+              onClick={() => setSelected(selected === "pi-extensions" ? null : "pi-extensions")}
             />
             <AiToolsCard
               onChanged={() => {

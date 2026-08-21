@@ -81,19 +81,17 @@ describe("PiExtensionsCard", () => {
     expect(commandMocks.piListExtensionPackages).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the common AI tools as direct settings before the full catalog", async () => {
-    const onBrowse = vi.fn();
-    render(<PiExtensionsCard variant="quick" onBrowse={onBrowse} />);
+  it("shows the common tool switches first in the modal content", async () => {
+    render(<PiExtensionsCard />);
 
-    expect(await screen.findByText("AI tools")).toBeInTheDocument();
-    expect(screen.getByText("Turn on the tools your AI can use.")).toBeInTheDocument();
+    const recommended = await screen.findByText("Recommended");
+    const included = screen.getByText("Included");
     expect(screen.getByRole("switch", { name: "Subagents always enabled" })).toBeDisabled();
     expect(screen.getByRole("switch", { name: "Enable Web agent" })).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Enable Ask user" })).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText("Search tools...")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "More tools" }));
-    expect(onBrowse).toHaveBeenCalledTimes(1);
+    expect(
+      recommended.compareDocumentPosition(included) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("shows included tools without protocol or package details", async () => {
@@ -119,7 +117,7 @@ describe("PiExtensionsCard", () => {
     expect(commandMocks.piRemoveExtensionPackage).not.toHaveBeenCalled();
   });
 
-  it("filters the curated catalog without losing the warning copy", async () => {
+  it("keeps the common tools visible while searching the community catalog", async () => {
     render(<PiExtensionsCard />);
     await screen.findByText("Subagents");
 
@@ -128,7 +126,7 @@ describe("PiExtensionsCard", () => {
     });
 
     expect(screen.getByText("Web agent")).toBeInTheDocument();
-    expect(screen.queryByRole("switch", { name: "Subagents always enabled" })).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Subagents always enabled" })).toBeInTheDocument();
     expect(screen.getByText(/community tools can run code/i)).toBeInTheDocument();
   });
 

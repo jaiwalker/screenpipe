@@ -105,7 +105,9 @@ describe('AI tools catalog', function () {
     await browser.waitUntil(
       async () => {
         const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
-        return body.includes('connections') && body.includes('ai tools') && body.includes('more tools');
+        return body.includes('connections') &&
+          body.includes('ai tools') &&
+          body.includes('choose what your ai can use');
       },
       { timeout: t(12_000), timeoutMsg: 'Connections did not render the AI tools settings' },
     );
@@ -113,21 +115,37 @@ describe('AI tools catalog', function () {
     await browser.execute(() => {
       const buttons = Array.from(document.querySelectorAll('button'));
       const target = buttons.find((button) =>
-        button.textContent?.toLowerCase().includes('more tools'),
+        button.textContent?.trim().toLowerCase() === 'manage' &&
+        button.parentElement?.textContent?.toLowerCase().includes('ai tools'),
       );
       target?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
     await browser.waitUntil(
       async () => {
-        const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
-        return body.includes('community tools can run code') &&
-          body.includes('screen history') &&
-          body.includes('ready in every agent') &&
-          body.includes('screenpipe only') &&
-          body.includes('subagents') &&
-          body.includes('web agent') &&
-          body.includes('ask user');
+        const state = (await browser.execute(() => {
+          const headings = Array.from(document.querySelectorAll('h4'));
+          const recommended = headings.find((heading) =>
+            heading.textContent?.trim().toLowerCase() === 'recommended',
+          );
+          const included = headings.find((heading) =>
+            heading.textContent?.trim().toLowerCase() === 'included',
+          );
+          return {
+            body: document.body.innerText.toLowerCase(),
+            recommendedComesFirst: !!recommended && !!included && !!(
+              recommended.compareDocumentPosition(included) & Node.DOCUMENT_POSITION_FOLLOWING
+            ),
+          };
+        })) as { body: string; recommendedComesFirst: boolean };
+        return state.recommendedComesFirst &&
+          state.body.includes('community tools can run code') &&
+          state.body.includes('screen history') &&
+          state.body.includes('ready in every agent') &&
+          state.body.includes('screenpipe only') &&
+          state.body.includes('subagents') &&
+          state.body.includes('web agent') &&
+          state.body.includes('ask user');
       },
       { timeout: t(12_000), timeoutMsg: 'AI tools catalog did not open' },
     );
@@ -141,7 +159,7 @@ describe('AI tools catalog', function () {
         const body = (await browser.execute(() => document.body.innerText.toLowerCase())) as string;
         return body.includes('web agent') &&
           body.includes('@demigodmode/pi-web-agent') &&
-          !body.includes('delegate work to focused child agents');
+          body.includes('delegate work to focused child agents');
       },
       { timeout: t(8_000), timeoutMsg: 'AI tools catalog search did not filter to web agent' },
     );

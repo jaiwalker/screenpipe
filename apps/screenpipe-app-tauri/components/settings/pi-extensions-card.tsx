@@ -21,7 +21,6 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/components/ui/use-toast";
 import { commands, type PiExtensionPackage } from "@/lib/utils/tauri";
 import {
-  filterPiExtensionCatalog,
   installedPiPackageSourceSet,
   normalizePiPackageSource,
   PI_EXTENSION_CATALOG,
@@ -275,15 +274,7 @@ function PiExtensionRecentCard({
   );
 }
 
-export function PiExtensionsCard({
-  onChanged,
-  onBrowse,
-  variant = "catalog",
-}: {
-  onChanged?: () => void;
-  onBrowse?: () => void;
-  variant?: "catalog" | "quick";
-}) {
+export function PiExtensionsCard({ onChanged }: { onChanged?: () => void }) {
   const [packages, setPackages] = useState<PiExtensionPackage[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
@@ -316,8 +307,6 @@ export function PiExtensionsCard({
   }, [refresh]);
 
   useEffect(() => {
-    if (variant === "quick") return;
-
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       setRegistryLoading(true);
@@ -342,7 +331,7 @@ export function PiExtensionsCard({
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [query, variant]);
+  }, [query]);
 
   const configuredSources = useMemo(
     () => installedPiPackageSourceSet(packages.map((pkg) => pkg.source)),
@@ -377,7 +366,7 @@ export function PiExtensionsCard({
     [packages],
   );
 
-  const visibleItems = useMemo(() => filterPiExtensionCatalog(query), [query]);
+  const visibleItems = PI_EXTENSION_CATALOG;
   const changingPackage = busySource !== null;
   const visibleSources = useMemo(
     () => installedPiPackageSourceSet(visibleItems.map((item) => item.source)),
@@ -493,82 +482,6 @@ export function PiExtensionsCard({
     [onChanged, toast],
   );
 
-  if (variant === "quick") {
-    const quickItems = PI_EXTENSION_CATALOG.slice(0, 3);
-
-    return (
-      <section className="border border-border bg-card p-3 text-sm">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-medium text-foreground">AI tools</h3>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              Turn on the tools your AI can use.
-            </p>
-          </div>
-          {onBrowse && (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              onClick={onBrowse}
-              className="h-8 text-xs normal-case font-sans tracking-normal"
-            >
-              More tools
-            </Button>
-          )}
-        </div>
-
-        {error && (
-          <div className="mt-3 flex items-start gap-2 border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
-            <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span className="break-words">{error}</span>
-          </div>
-        )}
-
-        {!loaded ? (
-          <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            Loading tools
-          </div>
-        ) : (
-          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-            {quickItems.map((item) => {
-              const normalized = normalizePiPackageSource(item.source);
-              const enabled =
-                item.required ||
-                (configuredSources.has(normalized) && !missingSources.has(normalized));
-
-              return (
-                <div
-                  key={item.id}
-                  className="flex min-w-0 items-start justify-between gap-3 border border-border bg-background p-2.5"
-                >
-                  <div className="min-w-0">
-                    <h4 className="text-xs font-medium text-foreground">{item.name}</h4>
-                    <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
-                      {item.summary}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={enabled}
-                    disabled={item.required || changingPackage}
-                    onCheckedChange={(checked) => togglePackage(item, checked)}
-                    aria-label={
-                      item.required
-                        ? `${item.name} always enabled`
-                        : `${enabled ? "Disable" : "Enable"} ${item.name}`
-                    }
-                    className="shrink-0"
-                  />
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-    );
-  }
-
   return (
     <div className="space-y-4 text-sm">
       <div className="space-y-2">
@@ -587,6 +500,45 @@ export function PiExtensionsCard({
           </Button>
         </div>
       </div>
+
+      {!loaded ? (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          loading tools...
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h4 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                Recommended
+              </h4>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Turn tools on or off for new chats.
+              </p>
+            </div>
+            <span className="text-[11px] tabular-nums text-muted-foreground">
+              {visibleItems.length}
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {visibleItems.map((item) => {
+              const normalized = normalizePiPackageSource(item.source);
+              return (
+                <PiExtensionRow
+                  key={item.id}
+                  item={effectiveItem(item)}
+                  enabled={item.required || configuredSources.has(normalized)}
+                  stale={missingSources.has(normalized)}
+                  busy={busySource === item.source}
+                  disabled={changingPackage && busySource !== item.source}
+                  onToggle={(checked) => togglePackage(item, checked)}
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-3">
@@ -636,45 +588,8 @@ export function PiExtensionsCard({
         </div>
       )}
 
-      {!loaded ? (
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          loading tools...
-        </div>
-      ) : (
+      {loaded && (
         <div className="space-y-4">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <h4 className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                Recommended
-              </h4>
-              <span className="text-[11px] tabular-nums text-muted-foreground">
-                {visibleItems.length}
-              </span>
-            </div>
-            <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
-              {visibleItems.map((item) => {
-                const normalized = normalizePiPackageSource(item.source);
-                return (
-                  <PiExtensionRow
-                    key={item.id}
-                    item={effectiveItem(item)}
-                    enabled={item.required || configuredSources.has(normalized)}
-                    stale={missingSources.has(normalized)}
-                    busy={busySource === item.source}
-                    disabled={changingPackage && busySource !== item.source}
-                    onToggle={(checked) => togglePackage(item, checked)}
-                  />
-                );
-              })}
-            </div>
-            {visibleItems.length === 0 && (
-              <div className="border border-border bg-muted/25 p-3 text-xs text-muted-foreground">
-                No recommended tools match this search.
-              </div>
-            )}
-          </div>
-
           {recentRegistryItems.length > 0 && (
             <div className="space-y-2">
               <div className="flex items-center justify-between gap-3">
@@ -751,7 +666,7 @@ export function PiExtensionsCard({
             )}
           </div>
 
-          {visibleItems.length === 0 && visibleRegistryItems.length === 0 && registryError && (
+          {visibleRegistryItems.length === 0 && registryError && (
             <div className="border border-border bg-muted/25 p-3 text-xs text-muted-foreground">
               Try another search or refresh the catalog.
             </div>
