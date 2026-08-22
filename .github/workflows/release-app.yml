@@ -169,6 +169,12 @@ jobs:
             tauri-args: "--target x86_64-pc-windows-msvc --features official-build,directml,redact-onnx-directml"
             target: x86_64-pc-windows-msvc
             os_type: "windows"
+          - platform: windows-11-arm
+            args: "--target aarch64-pc-windows-msvc"
+            pre-build-args: ""
+            tauri-args: "--target aarch64-pc-windows-msvc --features official-build,directml,redact-onnx-directml"
+            target: aarch64-pc-windows-msvc
+            os_type: "windows"
 
     runs-on: ${{ matrix.platform == 'windows-desktop-test' && fromJSON('["self-hosted", "windows-desktop-test"]') || matrix.platform }}
     timeout-minutes: 120
