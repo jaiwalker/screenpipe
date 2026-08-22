@@ -201,9 +201,16 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
+      - name: Fetch pre-merge Windows cache action
+        if: runner.environment == 'self-hosted' && matrix.os_type == 'windows'
+        uses: actions/checkout@v4
+        with:
+          ref: codex/azure-windows-release-runner-test
+          path: _runner-test-config
+
       - name: Attach persistent Azure Windows cache
         if: runner.environment == 'self-hosted' && matrix.os_type == 'windows'
-        uses: ./.github/actions/setup-persistent-windows-cache
+        uses: ./_runner-test-config/.github/actions/setup-persistent-windows-cache
         with:
           target: ${{ matrix.target }}
 
