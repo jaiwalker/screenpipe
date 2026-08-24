@@ -1902,6 +1902,101 @@ fn list_available_preset_ids(pipes_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Return raw-Pi-compatible presets in fallback order: the user's default
+/// first, then every other configured preset in settings order.
+///
+/// Meeting summaries are generated in the background, so an ACP preset cannot
+/// be used as an automatic fallback: it may require an interactive agent
+/// session and a different permission boundary. Enterprise-managed pipes also
+/// stay on their single organization-controlled preset (see callers).
+fn list_pipe_compatible_preset_ids(pipes_dir: &Path) -> Vec<String> {
+    let Some(parent) = pipes_dir.parent() else {
+        return Vec::new();
+    };
+    let Some(store) = read_store_bin(&parent.join("store.bin")) else {
+        return Vec::new();
+    };
+    let Some(presets) = store
+        .get("settings")
+        .and_then(|settings| settings.get("aiPresets"))
+        .and_then(|presets| presets.as_array())
+    else {
+        return Vec::new();
+    };
+
+    let compatible = presets
+        .iter()
+        .filter(|preset| preset.get("provider").and_then(|value| value.as_str()) != Some("acp"))
+        .collect::<Vec<_>>();
+    let preferred = compatible
+        .iter()
+        .position(|preset| {
+            preset
+                .get("defaultPreset")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .or_else(|| {
+            compatible.iter().position(|preset| {
+                preset.get("id").and_then(|value| value.as_str()) == Some("pipes")
+            })
+        })
+        .unwrap_or(0);
+
+    let preset_id = |preset: &serde_json::Value| {
+        preset
+            .get("id")
+            .and_then(|value| value.as_str())
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string)
+    };
+    let mut ordered = Vec::new();
+    if let Some(id) = compatible
+        .get(preferred)
+        .and_then(|preset| preset_id(preset))
+    {
+        ordered.push(id);
+    }
+    for (index, preset) in compatible.into_iter().enumerate() {
+        if index == preferred {
+            continue;
+        }
+        if let Some(id) = preset_id(preset) {
+            ordered.push(id);
+        }
+    }
+    ordered
+}
+
+fn is_meeting_summary_pipe(config: &PipeConfig) -> bool {
+    config
+        .trigger
+        .as_ref()
+        .is_some_and(|trigger| trigger.events.iter().any(|event| event == "meeting_ended"))
+}
+
+/// Meeting summaries should survive one provider/model becoming unavailable
+/// without requiring the user to discover the failure and manually rerun it.
+/// Preserve the explicitly selected chain first, then append the user's other
+/// configured raw presets up to the same global four-attempt bound used by all
+/// Pipe fallback execution.
+fn effective_preset_ids(pipes_dir: &Path, config: &PipeConfig) -> Vec<String> {
+    let mut preset_ids = config.preset.clone();
+    if is_enterprise_managed(config) || !is_meeting_summary_pipe(config) {
+        return preset_ids;
+    }
+
+    for preset_id in list_pipe_compatible_preset_ids(pipes_dir) {
+        if preset_ids.len() >= preset_fallback::MAX_FALLBACK_DEPTH {
+            break;
+        }
+        if !preset_ids.iter().any(|existing| existing == &preset_id) {
+            preset_ids.push(preset_id);
+        }
+    }
+    preset_ids
+}
+
 /// Resolve the first usable configured preset at or after `floor`.
 ///
 /// Preset IDs can outlive the settings entry they referenced (for example,
@@ -2326,11 +2421,15 @@ fn has_safety_refusal_token(text: &str) -> bool {
         || text.contains("flagged for possible cybersecurity risk")
 }
 
-fn should_try_fallback_preset(error_type: Option<&str>) -> bool {
-    !matches!(
-        error_type,
-        Some("auth_failed" | "daily_limit" | "model_not_allowed" | "safety_refusal")
-    )
+fn should_try_fallback_preset(error_type: Option<&str>, recover_meeting_summary: bool) -> bool {
+    if error_type == Some("safety_refusal") {
+        return false;
+    }
+    recover_meeting_summary
+        || !matches!(
+            error_type,
+            Some("auth_failed" | "daily_limit" | "model_not_allowed")
+        )
 }
 
 // ---------------------------------------------------------------------------
@@ -4129,6 +4228,8 @@ impl PipeManager {
                     None => return Err(self.pipe_not_found_error(name)),
                 }
             };
+            let recover_meeting_summary = is_meeting_summary_pipe(&config);
+            let preset_ids = effective_preset_ids(&self.pipes_dir, &config);
 
             let shared_pid = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
             let handle = ExecutionHandle::new(shared_pid.clone());
@@ -4206,14 +4307,13 @@ impl PipeManager {
                     "cloud-agent".to_string(),
                     Some(cloud.executor_config),
                 )
-            } else if !config.preset.is_empty() {
+            } else if !preset_ids.is_empty() {
                 // Pick the best available preset using the circuit breaker, but
                 // start at `retry_depth` so an in-run fallback retry advances to
                 // the next preset even when the failed one's breaker never
                 // tripped (timeouts/crashes don't trip it) — see #3914.
                 let choice = if is_enterprise_managed(&config) {
-                    let preset_id = config
-                        .preset
+                    let preset_id = preset_ids
                         .get(retry_depth)
                         .ok_or_else(|| anyhow!("pipe '{}': no presets configured", name))?;
                     resolve_preset(&self.pipes_dir, preset_id).map(|preset| ResolvedPresetChoice {
@@ -4225,7 +4325,7 @@ impl PipeManager {
                     resolve_configured_preset(
                         &self.pipes_dir,
                         &self.fallback_registry,
-                        &config.preset,
+                        &preset_ids,
                         retry_depth,
                     )
                 };
@@ -4718,17 +4818,17 @@ impl PipeManager {
             let max_attempts = if is_enterprise_managed(&config) {
                 1
             } else {
-                config.preset.len().min(preset_fallback::MAX_FALLBACK_DEPTH)
+                preset_ids.len().min(preset_fallback::MAX_FALLBACK_DEPTH)
             };
             if let (false, Some(cur_idx), false, true) = (
                 log.success,
                 active_preset_idx,
                 cancelled_for_retry,
-                should_try_fallback_preset(retry_error_type.as_deref()),
+                should_try_fallback_preset(retry_error_type.as_deref(), recover_meeting_summary),
             ) {
                 let next_idx = cur_idx + 1;
                 if next_idx < max_attempts {
-                    if let Some(next_preset_id) = config.preset.get(next_idx) {
+                    if let Some(next_preset_id) = preset_ids.get(next_idx) {
                         info!(
                             "pipe '{}': preset '{}' failed, immediately retrying with fallback preset '{}' (attempt {}/{})",
                             name,
@@ -5888,6 +5988,8 @@ impl PipeManager {
                     }
 
                     // Resolve runner configuration using the same path as manual runs.
+                    let recover_meeting_summary = is_meeting_summary_pipe(config);
+                    let preset_ids = effective_preset_ids(&pipes_dir, config);
                     let (
                         model,
                         provider,
@@ -5919,9 +6021,9 @@ impl PipeManager {
                             None,
                             None,
                         )
-                    } else if !config.preset.is_empty() {
+                    } else if !preset_ids.is_empty() {
                         let choice = if is_enterprise_managed(config) {
-                            let preset_id = &config.preset[0];
+                            let preset_id = &preset_ids[0];
                             resolve_preset(&pipes_dir, preset_id).map(|preset| {
                                 ResolvedPresetChoice {
                                     id: preset_id.clone(),
@@ -5933,7 +6035,7 @@ impl PipeManager {
                             resolve_configured_preset(
                                 &pipes_dir,
                                 &fallback_registry,
-                                &config.preset,
+                                &preset_ids,
                                 0,
                             )
                         };
@@ -5962,7 +6064,7 @@ impl PipeManager {
                                 let message = if is_enterprise_managed(config) {
                                     format!(
                                         "configured preset '{}' is unavailable; refusing to fall back to another AI provider",
-                                        config.preset[0]
+                                        preset_ids[0]
                                     )
                                 } else {
                                     let available = list_available_preset_ids(&pipes_dir);
@@ -6205,7 +6307,7 @@ impl PipeManager {
                     let max_fallback_attempts = if is_enterprise_managed(config) {
                         1
                     } else {
-                        config.preset.len().min(preset_fallback::MAX_FALLBACK_DEPTH)
+                        preset_ids.len().min(preset_fallback::MAX_FALLBACK_DEPTH)
                     };
 
                     tokio::spawn(async move {
@@ -6576,7 +6678,10 @@ impl PipeManager {
                             log.success,
                             active_preset_idx,
                             was_cancelled(),
-                            should_try_fallback_preset(cb_error_type.as_deref()),
+                            should_try_fallback_preset(
+                                cb_error_type.as_deref(),
+                                recover_meeting_summary,
+                            ),
                         ) {
                             let next_idx = current_idx + 1;
                             if next_idx < max_attempts {
@@ -9478,6 +9583,52 @@ mod tests {
     }
 
     #[test]
+    fn meeting_summary_appends_other_raw_presets_in_default_first_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let pipes_dir = temp.path().join("pipes");
+        std::fs::create_dir_all(&pipes_dir).unwrap();
+        std::fs::write(
+            temp.path().join("store.bin"),
+            serde_json::to_vec(&serde_json::json!({
+                "settings": {
+                    "aiPresets": [
+                        { "id": "coding-agent", "provider": "acp", "defaultPreset": true },
+                        { "id": "selected", "provider": "anthropic", "model": "primary" },
+                        { "id": "pipes", "provider": "screenpipe-cloud", "model": "auto" },
+                        { "id": "local", "provider": "native-ollama", "model": "qwen" },
+                        { "id": "byok", "provider": "openai", "model": "gpt" }
+                    ]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let (config, _) = parse_frontmatter(
+            "---\nschedule: manual\npreset: selected\ntrigger:\n  events:\n    - meeting_ended\n---\n\nSummarize it.",
+        )
+        .unwrap();
+        assert_eq!(
+            effective_preset_ids(&pipes_dir, &config),
+            vec!["selected", "pipes", "local", "byok"]
+        );
+
+        let (ordinary, _) =
+            parse_frontmatter("---\nschedule: manual\npreset: selected\n---\n\nDo ordinary work.")
+                .unwrap();
+        assert_eq!(
+            effective_preset_ids(&pipes_dir, &ordinary),
+            vec!["selected"]
+        );
+
+        let (managed, _) = parse_frontmatter(
+            "---\nschedule: manual\npreset: selected\nenterprise_managed: true\ntrigger:\n  events:\n    - meeting_ended\n---\n\nSummarize it.",
+        )
+        .unwrap();
+        assert_eq!(effective_preset_ids(&pipes_dir, &managed), vec!["selected"]);
+    }
+
+    #[test]
     fn cron_fires_relative_to_scheduled_time() {
         use chrono::TimeZone;
         // Evaluated in the timezone of `now` (production passes Local::now()).
@@ -9505,7 +9656,8 @@ mod tests {
             msg.as_deref(),
             Some("AI provider declined this Pipe under its safety policy")
         );
-        assert!(!should_try_fallback_preset(etype.as_deref()));
+        assert!(!should_try_fallback_preset(etype.as_deref(), false));
+        assert!(!should_try_fallback_preset(etype.as_deref(), true));
 
         let (json_type, _) = parse_error_type(r#"{"choices":[{"finish_reason":"refusal"}]}"#);
         assert_eq!(json_type.as_deref(), Some("safety_refusal"));
@@ -9603,11 +9755,103 @@ mod tests {
 
     #[test]
     fn test_only_user_daily_limit_blocks_provider_fallback() {
-        assert!(!should_try_fallback_preset(Some("daily_limit")));
-        assert!(should_try_fallback_preset(Some("credits_exhausted")));
-        assert!(should_try_fallback_preset(Some("quota_exhausted")));
-        assert!(should_try_fallback_preset(Some("rate_limited")));
-        assert!(should_try_fallback_preset(Some("timeout")));
+        assert!(!should_try_fallback_preset(Some("daily_limit"), false));
+        assert!(should_try_fallback_preset(Some("credits_exhausted"), false));
+        assert!(should_try_fallback_preset(Some("quota_exhausted"), false));
+        assert!(should_try_fallback_preset(Some("rate_limited"), false));
+        assert!(should_try_fallback_preset(Some("timeout"), false));
+    }
+
+    #[test]
+    fn meeting_summary_can_recover_with_another_preset() {
+        assert!(should_try_fallback_preset(Some("daily_limit"), true));
+        assert!(should_try_fallback_preset(Some("auth_failed"), true));
+        assert!(should_try_fallback_preset(Some("model_not_allowed"), true));
+        assert!(!should_try_fallback_preset(Some("safety_refusal"), true));
+    }
+
+    #[tokio::test]
+    async fn meeting_summary_automatically_falls_back_after_daily_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let pipes_dir = temp.path().join("pipes");
+        let pipe_dir = pipes_dir.join("custom-meeting-summary");
+        std::fs::create_dir_all(&pipe_dir).unwrap();
+        std::fs::write(
+            temp.path().join("store.bin"),
+            serde_json::to_vec(&serde_json::json!({
+                "settings": {
+                    "aiPresets": [
+                        {
+                            "id": "hosted-primary",
+                            "provider": "screenpipe-cloud",
+                            "model": "hosted-auto",
+                            "defaultPreset": true
+                        },
+                        {
+                            "id": "byok-fallback",
+                            "provider": "openai",
+                            "model": "fallback-model",
+                            "apiKey": "test-only"
+                        }
+                    ]
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            pipe_dir.join("pipe.md"),
+            r#"---
+schedule: manual
+enabled: true
+agent: mock
+preset:
+  - hosted-primary
+trigger:
+  events:
+    - meeting_ended
+---
+Summarize the meeting.
+"#,
+        )
+        .unwrap();
+
+        let executor = Arc::new(SequencedExecutor {
+            outputs: std::sync::Mutex::new(VecDeque::from([
+                AgentOutput {
+                    stdout: String::new(),
+                    stderr: "daily_limit_exceeded".to_string(),
+                    success: false,
+                    pid: None,
+                },
+                AgentOutput {
+                    stdout: "fallback completed".to_string(),
+                    stderr: String::new(),
+                    success: true,
+                    pid: None,
+                },
+            ])),
+            attempts: std::sync::Mutex::new(Vec::new()),
+        });
+        let mut executors: HashMap<String, Arc<dyn AgentExecutor>> = HashMap::new();
+        executors.insert("mock".to_string(), executor.clone());
+
+        let manager = PipeManager::new(pipes_dir, executors, None, 0);
+        manager.load_pipes().await.unwrap();
+        let log = manager
+            .run_pipe_with_trigger("custom-meeting-summary", "manual")
+            .await
+            .unwrap();
+
+        assert!(log.success);
+        assert_eq!(log.stdout, "fallback completed");
+        assert_eq!(
+            executor.attempts.lock().unwrap().as_slice(),
+            [
+                ("hosted-auto".to_string(), Some("screenpipe".to_string())),
+                ("fallback-model".to_string(), Some("openai".to_string())),
+            ]
+        );
     }
 
     #[tokio::test]
