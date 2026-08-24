@@ -2068,7 +2068,7 @@ export function NoteView({
     : visibleSummaryLifecycle.kind === "failed"
       ? "attention"
       : visibleSummaryLifecycle.kind === "completed" ||
-          Boolean(extractMeetingSummary(note))
+          extractMeetingSummary(note)
         ? "ready"
         : "idle";
 
@@ -2561,6 +2561,9 @@ export function NoteView({
       {chatOpen && (
         <MeetingChatPanel
           conditions={chatConditions}
+          meetingTitle={title}
+          meetingStart={meeting.meeting_start}
+          meetingEnd={meeting.meeting_end}
           turns={meetingChat.turns}
           draft={chatDraft}
           onDraftChange={setChatDraft}
