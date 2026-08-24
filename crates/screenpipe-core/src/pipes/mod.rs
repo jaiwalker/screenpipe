@@ -1902,14 +1902,11 @@ fn list_available_preset_ids(pipes_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Return raw-Pi-compatible presets in fallback order: the user's default
-/// first, then every other configured preset in settings order.
-///
-/// Meeting summaries are generated in the background, so an ACP preset cannot
-/// be used as an automatic fallback: it may require an interactive agent
-/// session and a different permission boundary. Enterprise-managed pipes also
-/// stay on their single organization-controlled preset (see callers).
-fn list_pipe_compatible_preset_ids(pipes_dir: &Path) -> Vec<String> {
+/// Return configured presets in fallback order: the user's default first,
+/// then every other preset in settings order. This includes ACP agents; when a
+/// meeting-summary run selects one, [`prepare_preset_for_run`] switches the
+/// unattended permission responder to Full access for that run.
+fn list_meeting_summary_preset_ids(pipes_dir: &Path) -> Vec<String> {
     let Some(parent) = pipes_dir.parent() else {
         return Vec::new();
     };
@@ -1924,11 +1921,7 @@ fn list_pipe_compatible_preset_ids(pipes_dir: &Path) -> Vec<String> {
         return Vec::new();
     };
 
-    let compatible = presets
-        .iter()
-        .filter(|preset| preset.get("provider").and_then(|value| value.as_str()) != Some("acp"))
-        .collect::<Vec<_>>();
-    let preferred = compatible
+    let preferred = presets
         .iter()
         .position(|preset| {
             preset
@@ -1937,7 +1930,7 @@ fn list_pipe_compatible_preset_ids(pipes_dir: &Path) -> Vec<String> {
                 .unwrap_or(false)
         })
         .or_else(|| {
-            compatible.iter().position(|preset| {
+            presets.iter().position(|preset| {
                 preset.get("id").and_then(|value| value.as_str()) == Some("pipes")
             })
         })
@@ -1951,13 +1944,10 @@ fn list_pipe_compatible_preset_ids(pipes_dir: &Path) -> Vec<String> {
             .map(str::to_string)
     };
     let mut ordered = Vec::new();
-    if let Some(id) = compatible
-        .get(preferred)
-        .and_then(|preset| preset_id(preset))
-    {
+    if let Some(id) = presets.get(preferred).and_then(preset_id) {
         ordered.push(id);
     }
-    for (index, preset) in compatible.into_iter().enumerate() {
+    for (index, preset) in presets.iter().enumerate() {
         if index == preferred {
             continue;
         }
@@ -1978,15 +1968,15 @@ fn is_meeting_summary_pipe(config: &PipeConfig) -> bool {
 /// Meeting summaries should survive one provider/model becoming unavailable
 /// without requiring the user to discover the failure and manually rerun it.
 /// Preserve the explicitly selected chain first, then append the user's other
-/// configured raw presets up to the same global four-attempt bound used by all
-/// Pipe fallback execution.
+/// configured model and agent presets up to the same global four-attempt bound
+/// used by all Pipe fallback execution.
 fn effective_preset_ids(pipes_dir: &Path, config: &PipeConfig) -> Vec<String> {
     let mut preset_ids = config.preset.clone();
     if is_enterprise_managed(config) || !is_meeting_summary_pipe(config) {
         return preset_ids;
     }
 
-    for preset_id in list_pipe_compatible_preset_ids(pipes_dir) {
+    for preset_id in list_meeting_summary_preset_ids(pipes_dir) {
         if preset_ids.len() >= preset_fallback::MAX_FALLBACK_DEPTH {
             break;
         }
@@ -1995,6 +1985,30 @@ fn effective_preset_ids(pipes_dir: &Path, config: &PipeConfig) -> Vec<String> {
         }
     }
     preset_ids
+}
+
+/// ACP Pipes run unattended, so an agent fallback cannot wait for a permission
+/// prompt that has no user attached to it. Meeting-note fallback agents run in
+/// Full access mode: apply Screenpipe's ACP auto-approval policy at execution
+/// time without mutating the saved preset or changing its adapter-owned
+/// model/mode configuration.
+fn prepare_preset_for_run(config: &PipeConfig, preset: &mut ResolvedPreset) {
+    if is_enterprise_managed(config)
+        || !is_meeting_summary_pipe(config)
+        || preset.executor.as_deref() != Some("acp")
+    {
+        return;
+    }
+    if let Some(agent) = preset
+        .executor_config
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        agent.insert(
+            "approvalMode".to_string(),
+            serde_json::Value::String("allow-all".to_string()),
+        );
+    }
 }
 
 /// Resolve the first usable configured preset at or after `floor`.
@@ -4335,8 +4349,9 @@ impl PipeManager {
                         let ResolvedPresetChoice {
                             id: preset_id,
                             index: idx,
-                            preset: resolved,
+                            preset: mut resolved,
                         } = choice;
+                        prepare_preset_for_run(&config, &mut resolved);
                         info!(
                             "pipe '{}': using preset '{}' → model={}, provider={:?}{}",
                             name,
@@ -6044,8 +6059,9 @@ impl PipeManager {
                                 let ResolvedPresetChoice {
                                     id: preset_id,
                                     index: preset_idx,
-                                    preset: resolved,
+                                    preset: mut resolved,
                                 } = choice;
+                                prepare_preset_for_run(config, &mut resolved);
                                 info!("scheduler: pipe '{}' using preset '{}' → model={}, provider={:?}",
                                         name, preset_id, resolved.model, resolved.provider);
                                 (
@@ -8483,6 +8499,7 @@ mod tests {
     struct SequencedExecutor {
         outputs: std::sync::Mutex<VecDeque<AgentOutput>>,
         attempts: std::sync::Mutex<Vec<(String, Option<String>)>>,
+        executor_configs: std::sync::Mutex<Vec<Option<serde_json::Value>>>,
     }
 
     #[async_trait::async_trait]
@@ -8507,6 +8524,45 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .ok_or_else(|| anyhow!("unexpected extra executor attempt"))
+        }
+
+        async fn run_streaming(
+            &self,
+            prompt: &str,
+            model: &str,
+            working_dir: &Path,
+            provider: Option<&str>,
+            provider_url: Option<&str>,
+            provider_api_key: Option<&str>,
+            shared_pid: Option<SharedPid>,
+            line_tx: tokio::sync::mpsc::UnboundedSender<String>,
+            continue_session: bool,
+            _thinking_level: Option<&str>,
+            _pipe_system_prompt: Option<&str>,
+            _mcp_server_allowlist: Option<&[String]>,
+            _session_owner: Option<&str>,
+            executor_config: Option<&serde_json::Value>,
+        ) -> Result<AgentOutput> {
+            self.executor_configs
+                .lock()
+                .unwrap()
+                .push(executor_config.cloned());
+            let output = self
+                .run(
+                    prompt,
+                    model,
+                    working_dir,
+                    provider,
+                    provider_url,
+                    provider_api_key,
+                    shared_pid,
+                    continue_session,
+                )
+                .await?;
+            for line in output.stdout.lines() {
+                let _ = line_tx.send(line.to_string());
+            }
+            Ok(output)
         }
 
         fn kill(&self, _handle: &ExecutionHandle) -> Result<()> {
@@ -9583,7 +9639,7 @@ mod tests {
     }
 
     #[test]
-    fn meeting_summary_appends_other_raw_presets_in_default_first_order() {
+    fn meeting_summary_appends_models_and_agents_in_default_first_order() {
         let temp = tempfile::tempdir().unwrap();
         let pipes_dir = temp.path().join("pipes");
         std::fs::create_dir_all(&pipes_dir).unwrap();
@@ -9592,7 +9648,16 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({
                 "settings": {
                     "aiPresets": [
-                        { "id": "coding-agent", "provider": "acp", "defaultPreset": true },
+                        {
+                            "id": "coding-agent",
+                            "provider": "acp",
+                            "model": "codex-acp",
+                            "defaultPreset": true,
+                            "acpAgent": {
+                                "id": "codex-acp",
+                                "approvalMode": "ask"
+                            }
+                        },
                         { "id": "selected", "provider": "anthropic", "model": "primary" },
                         { "id": "pipes", "provider": "screenpipe-cloud", "model": "auto" },
                         { "id": "local", "provider": "native-ollama", "model": "qwen" },
@@ -9610,7 +9675,14 @@ mod tests {
         .unwrap();
         assert_eq!(
             effective_preset_ids(&pipes_dir, &config),
-            vec!["selected", "pipes", "local", "byok"]
+            vec!["selected", "coding-agent", "pipes", "local"]
+        );
+
+        let mut agent = resolve_preset(&pipes_dir, "coding-agent").unwrap();
+        prepare_preset_for_run(&config, &mut agent);
+        assert_eq!(
+            agent.executor_config.as_ref().unwrap()["approvalMode"],
+            "allow-all"
         );
 
         let (ordinary, _) =
@@ -9620,12 +9692,24 @@ mod tests {
             effective_preset_ids(&pipes_dir, &ordinary),
             vec!["selected"]
         );
+        let mut ordinary_agent = resolve_preset(&pipes_dir, "coding-agent").unwrap();
+        prepare_preset_for_run(&ordinary, &mut ordinary_agent);
+        assert_eq!(
+            ordinary_agent.executor_config.as_ref().unwrap()["approvalMode"],
+            "ask"
+        );
 
         let (managed, _) = parse_frontmatter(
             "---\nschedule: manual\npreset: selected\nenterprise_managed: true\ntrigger:\n  events:\n    - meeting_ended\n---\n\nSummarize it.",
         )
         .unwrap();
         assert_eq!(effective_preset_ids(&pipes_dir, &managed), vec!["selected"]);
+        let mut managed_agent = resolve_preset(&pipes_dir, "coding-agent").unwrap();
+        prepare_preset_for_run(&managed, &mut managed_agent);
+        assert_eq!(
+            managed_agent.executor_config.as_ref().unwrap()["approvalMode"],
+            "ask"
+        );
     }
 
     #[test]
@@ -9771,7 +9855,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn meeting_summary_automatically_falls_back_after_daily_limit() {
+    async fn meeting_summary_falls_back_to_full_access_agent_after_daily_limit() {
         let temp = tempfile::tempdir().unwrap();
         let pipes_dir = temp.path().join("pipes");
         let pipe_dir = pipes_dir.join("custom-meeting-summary");
@@ -9788,10 +9872,13 @@ mod tests {
                             "defaultPreset": true
                         },
                         {
-                            "id": "byok-fallback",
-                            "provider": "openai",
-                            "model": "fallback-model",
-                            "apiKey": "test-only"
+                            "id": "coding-agent",
+                            "provider": "acp",
+                            "model": "codex-acp",
+                            "acpAgent": {
+                                "id": "codex-acp",
+                                "approvalMode": "ask"
+                            }
                         }
                     ]
                 }
@@ -9832,9 +9919,11 @@ Summarize the meeting.
                 },
             ])),
             attempts: std::sync::Mutex::new(Vec::new()),
+            executor_configs: std::sync::Mutex::new(Vec::new()),
         });
         let mut executors: HashMap<String, Arc<dyn AgentExecutor>> = HashMap::new();
         executors.insert("mock".to_string(), executor.clone());
+        executors.insert("acp".to_string(), executor.clone());
 
         let manager = PipeManager::new(pipes_dir, executors, None, 0);
         manager.load_pipes().await.unwrap();
@@ -9849,8 +9938,14 @@ Summarize the meeting.
             executor.attempts.lock().unwrap().as_slice(),
             [
                 ("hosted-auto".to_string(), Some("screenpipe".to_string())),
-                ("fallback-model".to_string(), Some("openai".to_string())),
+                ("codex-acp".to_string(), Some("acp".to_string())),
             ]
+        );
+        let executor_configs = executor.executor_configs.lock().unwrap();
+        assert!(executor_configs[0].is_none());
+        assert_eq!(
+            executor_configs[1].as_ref().unwrap()["approvalMode"],
+            "allow-all"
         );
     }
 
@@ -9913,6 +10008,7 @@ Run the scheduled task.
                 },
             ])),
             attempts: std::sync::Mutex::new(Vec::new()),
+            executor_configs: std::sync::Mutex::new(Vec::new()),
         });
         let mut executors: HashMap<String, Arc<dyn AgentExecutor>> = HashMap::new();
         executors.insert("mock".to_string(), executor.clone());
