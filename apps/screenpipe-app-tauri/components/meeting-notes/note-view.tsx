@@ -2042,10 +2042,11 @@ export function NoteView({
   }, [meeting.meeting_start, meeting.meeting_end]);
   const summarySurfaceState = summaryWorking
     ? "working"
-    : visibleSummaryLifecycle.kind === "completed"
-      ? "ready"
-      : visibleSummaryLifecycle.kind === "failed"
-        ? "attention"
+    : visibleSummaryLifecycle.kind === "failed"
+      ? "attention"
+      : visibleSummaryLifecycle.kind === "completed" ||
+          Boolean(extractMeetingSummary(note))
+        ? "ready"
         : "idle";
 
   // Every meeting action hangs off the single `⋯` menu on the tab rule.
@@ -2387,7 +2388,9 @@ export function NoteView({
               key={meeting.id}
               value={note}
               onChange={setNote}
-              placeholder={'write notes, or type "/" for blocks'}
+              placeholder={
+                'write what matters — it helps focus the summary · "/" for blocks'
+              }
               readOnly={summaryWorking}
               summaryRevealKey={summaryRevealKey}
               className={cn(
