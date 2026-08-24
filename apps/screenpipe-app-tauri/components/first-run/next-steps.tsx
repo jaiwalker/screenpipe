@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import posthog from "posthog-js";
 import {
+  AudioLines,
   BrainCircuit,
   CalendarDays,
   Check,
@@ -33,6 +34,7 @@ import { commands } from "@/lib/utils/tauri";
 
 const DAILY_EMAIL_PIPE = "daily-email-summary";
 const DIGITAL_CLONE_PIPE = "digital-clone";
+const SPEAKER_RECONCILIATION_PIPE = "speaker-reconciliation";
 const GMAIL_POLL_INTERVAL_MS = 2_000;
 const GMAIL_POLL_ATTEMPTS = 60;
 
@@ -43,6 +45,7 @@ export type FirstRunNextStepsSnapshot = {
   checked: boolean;
   dailyEmailState: PipeSetupState;
   digitalCloneState: PipeSetupState;
+  speakerReconciliationState: PipeSetupState;
   gmailConnected: SetupCheck;
   googleCalendarConnected: SetupCheck;
 };
@@ -51,6 +54,7 @@ const INITIAL_SNAPSHOT: FirstRunNextStepsSnapshot = {
   checked: false,
   dailyEmailState: null,
   digitalCloneState: null,
+  speakerReconciliationState: null,
   gmailConnected: null,
   googleCalendarConnected: null,
 };
@@ -112,6 +116,25 @@ async function installStorePipe(slug: string): Promise<void> {
   publishPipeInstalledReceipt({
     pipeName: body?.name || slug,
     connections: Array.isArray(body?.connections) ? body.connections : [],
+  });
+}
+
+async function installBundledPipe(slug: string): Promise<void> {
+  const response = await localFetch(
+    `/pipes/bundled/${encodeURIComponent(slug)}/install`,
+    { method: "POST" },
+  );
+  const body = (await response.json().catch(() => null)) as {
+    name?: string;
+    error?: string;
+  } | null;
+  if (!response.ok || body?.error) {
+    throw new Error(body?.error ?? "bundled task could not be installed");
+  }
+
+  publishPipeInstalledReceipt({
+    pipeName: body?.name || slug,
+    connections: [],
   });
 }
 
@@ -255,9 +278,11 @@ export function FirstRunNextStepsPanel({
   actionError,
   dailyEmailBusyLabel,
   digitalCloneBusyLabel,
+  speakerReconciliationBusyLabel,
   calendarBusyLabel,
   onSetupDailyEmail,
   onSetupDigitalClone,
+  onSetupSpeakerReconciliation,
   onConnectGoogleCalendar,
   onRetry,
 }: {
@@ -266,9 +291,11 @@ export function FirstRunNextStepsPanel({
   actionError?: string | null;
   dailyEmailBusyLabel?: string | null;
   digitalCloneBusyLabel?: string | null;
+  speakerReconciliationBusyLabel?: string | null;
   calendarBusyLabel?: string | null;
   onSetupDailyEmail: () => void;
   onSetupDigitalClone: () => void;
+  onSetupSpeakerReconciliation: () => void;
   onConnectGoogleCalendar: () => void;
   onRetry: () => void;
 }) {
@@ -287,23 +314,35 @@ export function FirstRunNextStepsPanel({
   const cloneReady = snapshot.digitalCloneState === "enabled";
   const cloneDisabled = snapshot.digitalCloneState === "disabled";
   const cloneUnknown = snapshot.checked && snapshot.digitalCloneState === null;
+  const speakerReady = snapshot.speakerReconciliationState === "enabled";
+  const speakerDisabled = snapshot.speakerReconciliationState === "disabled";
+  const speakerUnknown =
+    snapshot.checked && snapshot.speakerReconciliationState === null;
   const calendarReady = snapshot.googleCalendarConnected === true;
   const calendarUnknown =
     snapshot.checked && snapshot.googleCalendarConnected === null;
   const hasUnknown =
-    gmailUnknown || dailyUnknown || cloneUnknown || calendarUnknown;
-  const allReady = dailyReady && cloneReady && calendarReady;
+    gmailUnknown ||
+    dailyUnknown ||
+    cloneUnknown ||
+    speakerUnknown ||
+    calendarUnknown;
+  const allReady = dailyReady && cloneReady && speakerReady && calendarReady;
   const dailyBusy = checking || Boolean(dailyEmailBusyLabel);
   const cloneBusy = checking || Boolean(digitalCloneBusyLabel);
+  const speakerBusy = checking || Boolean(speakerReconciliationBusyLabel);
   const calendarBusy = checking || Boolean(calendarBusyLabel);
   const actionInProgress = Boolean(
-    dailyEmailBusyLabel || digitalCloneBusyLabel || calendarBusyLabel,
+    dailyEmailBusyLabel ||
+      digitalCloneBusyLabel ||
+      speakerReconciliationBusyLabel ||
+      calendarBusyLabel,
   );
 
   const announcement = checking
     ? "checking recommended setup status"
     : allReady
-      ? "daily setup ready. email summary and digital clone are enabled. google calendar is connected."
+      ? "daily setup ready. email summary, digital clone, and speaker reconciliation are enabled. google calendar is connected."
       : "recommended setup status updated";
 
   return (
@@ -351,8 +390,8 @@ export function FirstRunNextStepsPanel({
               daily setup ready
             </p>
             <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
-              email summary and digital clone are enabled. google calendar is
-              connected.
+              email summary and digital clone are enabled. speaker
+              reconciliation is in shadow mode. google calendar is connected.
             </p>
           </div>
         </div>
@@ -361,7 +400,7 @@ export function FirstRunNextStepsPanel({
           <NextStepRow
             icon={<Mail className="h-4 w-4" aria-hidden="true" />}
             title="daily email summary"
-            description="send one concise, source-backed recap to your own inbox every evening."
+            description="send one concise, evidence-backed recap to your own inbox every evening."
             status={
               checking
                 ? "checking"
@@ -447,6 +486,44 @@ export function FirstRunNextStepsPanel({
           />
 
           <NextStepRow
+            icon={<AudioLines className="h-4 w-4" aria-hidden="true" />}
+            title="identify meeting speakers"
+            description="reconcile diarized voices with time-aligned screen labels after each meeting. shadow mode saves no names."
+            status={
+              checking
+                ? "checking"
+                : speakerReconciliationBusyLabel
+                  ? speakerReconciliationBusyLabel
+                  : speakerReady
+                    ? "shadow mode"
+                    : speakerDisabled
+                      ? "installed, not active"
+                      : speakerUnknown
+                        ? "status unavailable"
+                        : "preview only"
+            }
+            action={speakerUnknown ? onRetry : onSetupSpeakerReconciliation}
+            actionLabel={
+              speakerReady
+                ? "shadow mode"
+                : speakerUnknown
+                  ? "retry"
+                  : speakerDisabled
+                    ? "enable"
+                    : "install & enable"
+            }
+            actionTestId="first-run-next-step-speaker-reconciliation"
+            complete={speakerReady}
+            busy={speakerBusy}
+            disabled={actionInProgress}
+            busyLabel={
+              checking
+                ? "checking"
+                : (speakerReconciliationBusyLabel ?? "working")
+            }
+          />
+
+          <NextStepRow
             icon={<CalendarDays className="h-4 w-4" aria-hidden="true" />}
             title="google calendar"
             description="add upcoming meeting context so calls are easier to prepare for."
@@ -513,7 +590,11 @@ export function FirstRunNextSteps({
   const [refreshing, setRefreshing] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<{
-    id: "daily-email" | "digital-clone" | "google-calendar";
+    id:
+      | "daily-email"
+      | "digital-clone"
+      | "speaker-reconciliation"
+      | "google-calendar";
     label: string;
   } | null>(null);
   const refreshIdRef = useRef(0);
@@ -524,10 +605,17 @@ export function FirstRunNextSteps({
     const refreshId = ++refreshIdRef.current;
     setRefreshing(true);
 
-    const [dailyEmail, digitalClone, gmail, googleCalendar] =
+    const [
+      dailyEmail,
+      digitalClone,
+      speakerReconciliation,
+      gmail,
+      googleCalendar,
+    ] =
       await Promise.allSettled([
         checkPipeState(DAILY_EMAIL_PIPE),
         checkPipeState(DIGITAL_CLONE_PIPE),
+        checkPipeState(SPEAKER_RECONCILIATION_PIPE),
         userToken
           ? fetchComposioStatus(userToken).then((status) => {
               if (!status) throw new Error("gmail status unavailable");
@@ -542,6 +630,7 @@ export function FirstRunNextSteps({
       checked: true,
       dailyEmailState: settledValue(dailyEmail),
       digitalCloneState: settledValue(digitalClone),
+      speakerReconciliationState: settledValue(speakerReconciliation),
       gmailConnected: settledValue(gmail),
       googleCalendarConnected: settledValue(googleCalendar),
     });
@@ -570,7 +659,11 @@ export function FirstRunNextSteps({
 
   const setActionLabel = useCallback(
     (
-      id: "daily-email" | "digital-clone" | "google-calendar",
+      id:
+        | "daily-email"
+        | "digital-clone"
+        | "speaker-reconciliation"
+        | "google-calendar",
       label: string,
     ) => {
       setBusyAction({ id, label });
@@ -674,6 +767,42 @@ export function FirstRunNextSteps({
     }
   }, [refresh, setActionLabel, snapshot.digitalCloneState]);
 
+  const setupSpeakerReconciliation = useCallback(async () => {
+    if (busyActionRef.current) return;
+    busyActionRef.current = {
+      id: "speaker-reconciliation",
+      label: "starting",
+    };
+    setActionLabel("speaker-reconciliation", "starting");
+    setActionError(null);
+    posthog.capture("first_run_next_step_selected", {
+      step: SPEAKER_RECONCILIATION_PIPE,
+      state: snapshot.speakerReconciliationState,
+      mode: "shadow",
+    });
+    try {
+      if (snapshot.speakerReconciliationState === "missing") {
+        setActionLabel("speaker-reconciliation", "installing");
+        await installBundledPipe(SPEAKER_RECONCILIATION_PIPE);
+      }
+      if (snapshot.speakerReconciliationState !== "enabled") {
+        setActionLabel("speaker-reconciliation", "enabling");
+        await enablePipe(SPEAKER_RECONCILIATION_PIPE);
+      }
+      await refresh();
+    } catch (error) {
+      await refresh();
+      setActionError(
+        error instanceof Error
+          ? error.message
+          : "could not start speaker reconciliation. try again.",
+      );
+    } finally {
+      busyActionRef.current = null;
+      setBusyAction(null);
+    }
+  }, [refresh, setActionLabel, snapshot.speakerReconciliationState]);
+
   const connectGoogleCalendar = useCallback(async () => {
     if (busyActionRef.current) return;
     busyActionRef.current = { id: "google-calendar", label: "connecting" };
@@ -727,11 +856,17 @@ export function FirstRunNextSteps({
       digitalCloneBusyLabel={
         busyAction?.id === "digital-clone" ? busyAction.label : null
       }
+      speakerReconciliationBusyLabel={
+        busyAction?.id === "speaker-reconciliation" ? busyAction.label : null
+      }
       calendarBusyLabel={
         busyAction?.id === "google-calendar" ? busyAction.label : null
       }
       onSetupDailyEmail={() => void setupDailyEmail()}
       onSetupDigitalClone={() => void setupDigitalClone()}
+      onSetupSpeakerReconciliation={() =>
+        void setupSpeakerReconciliation()
+      }
       onConnectGoogleCalendar={() => void connectGoogleCalendar()}
       onRetry={retry}
     />

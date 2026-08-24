@@ -68,6 +68,16 @@ function installLocalApiMock() {
         pipeStates[slug] = false;
         return response({ name: slug, connections: [] });
       }
+      if (
+        url.startsWith("/pipes/bundled/") &&
+        url.endsWith("/install") &&
+        init?.method === "POST"
+      ) {
+        if (installFailure) return response({ error: installFailure }, false);
+        const slug = url.split("/").at(-2) ?? "";
+        pipeStates[slug] = false;
+        return response({ success: true, name: slug, installed: true });
+      }
       if (url.endsWith("/enable") && init?.method === "POST") {
         const slug = url.split("/").at(-2) ?? "";
         pipeStates[slug] = true;
@@ -180,6 +190,54 @@ describe("first-run next steps", () => {
     );
     expect(openSettings).not.toHaveBeenCalled();
     window.removeEventListener("open-settings", openSettings);
+  });
+
+  it("installs and enables speaker reconciliation in shadow mode from one click", async () => {
+    render(<FirstRunNextSteps userToken="user-token" />);
+
+    const action = await screen.findByTestId(
+      "first-run-next-step-speaker-reconciliation",
+    );
+    await waitFor(() => expect(action).toHaveTextContent("install & enable"));
+    fireEvent.click(action);
+
+    await waitFor(() => expect(action).toHaveTextContent("shadow mode"));
+    expect(mocks.localFetch).toHaveBeenCalledWith(
+      "/pipes/bundled/speaker-reconciliation/install",
+      { method: "POST" },
+    );
+    expect(mocks.localFetch).toHaveBeenCalledWith(
+      "/pipes/speaker-reconciliation/enable",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ enabled: true }),
+      }),
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "first_run_next_step_selected",
+      expect.objectContaining({
+        step: "speaker-reconciliation",
+        mode: "shadow",
+      }),
+    );
+  });
+
+  it("enables an installed speaker reconciliation Pipe without reinstalling it", async () => {
+    setPipeStates({ "speaker-reconciliation": false });
+    render(<FirstRunNextSteps userToken="user-token" />);
+
+    const action = await screen.findByTestId(
+      "first-run-next-step-speaker-reconciliation",
+    );
+    await waitFor(() => expect(action).toHaveTextContent("enable"));
+    fireEvent.click(action);
+
+    await waitFor(() => expect(action).toHaveTextContent("shadow mode"));
+    expect(
+      mocks.localFetch.mock.calls.filter(([url]) =>
+        String(url).startsWith("/pipes/bundled/"),
+      ),
+    ).toHaveLength(0);
   });
 
   it("connects Google Calendar in place", async () => {
@@ -305,6 +363,7 @@ describe("first-run next steps", () => {
     setPipeStates({
       "daily-email-summary": true,
       "digital-clone": true,
+      "speaker-reconciliation": true,
     });
     render(<FirstRunNextSteps userToken="user-token" />);
 
