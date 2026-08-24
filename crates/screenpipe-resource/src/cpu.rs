@@ -97,10 +97,13 @@ impl WorkSliceController {
         if worked > self.target {
             self.fast_slices = 0;
             if self.current > 1 {
-                let scaled = (u128::from(self.current) * self.target.as_nanos()
-                    / worked.as_nanos().max(1))
-                .max(1)
-                .min(u128::from(self.max)) as u32;
+                // Use a duration ratio instead of multiplying nanoseconds by
+                // the unit count. Public callers may configure very large
+                // durations, and that integer product can overflow `u128`.
+                let scaled = (f64::from(self.current) * self.target.as_secs_f64()
+                    / worked.as_secs_f64())
+                .floor()
+                .clamp(1.0, f64::from(self.max)) as u32;
                 // Every over-budget slice must make forward progress even
                 // when integer rounding would otherwise preserve the limit.
                 self.current = scaled.min(self.current - 1).max(1);
@@ -386,5 +389,52 @@ mod tests {
         assert_eq!(controller.observe(Duration::from_millis(50)), 8);
         assert_eq!(controller.observe(Duration::from_millis(200)), 8);
         assert_eq!(controller.observe(Duration::from_millis(50)), 8);
+    }
+
+    #[test]
+    fn extreme_durations_shrink_without_overflowing() {
+        let mut controller = WorkSliceController::new(WorkSliceConfig {
+            max_units: u32::MAX,
+            initial_units: u32::MAX,
+            target_duration: Duration::from_secs(u64::MAX / 2),
+            fast_slices_before_growth: 1,
+        });
+
+        let next = controller.observe(Duration::MAX);
+        assert!(next >= 1);
+        assert!(next < u32::MAX);
+    }
+
+    #[tokio::test]
+    async fn background_lane_serializes_callers_until_the_permit_drops() {
+        let governor = ResourceGovernor::new(CpuBudgetConfig::default());
+        let first = governor.acquire_background_cpu().await;
+        let (attempting_tx, attempting_rx) = tokio::sync::oneshot::channel();
+        let mut task = {
+            let governor = Arc::clone(&governor);
+            tokio::spawn(async move {
+                attempting_tx
+                    .send(())
+                    .expect("test stopped before the second acquire attempt");
+                governor.acquire_background_cpu().await
+            })
+        };
+
+        attempting_rx
+            .await
+            .expect("second workload never attempted to enter the lane");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut task)
+                .await
+                .is_err(),
+            "a second background workload entered before the lane was released"
+        );
+
+        drop(first);
+        let second = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("second workload did not enter after the lane was released")
+            .expect("second workload task panicked");
+        drop(second);
     }
 }

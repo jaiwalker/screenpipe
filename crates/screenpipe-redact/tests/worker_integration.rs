@@ -678,6 +678,14 @@ struct SlowBatchRedactor {
     delay: Duration,
 }
 
+/// Gives audio deliberately slow timing while leaving element redaction fast,
+/// so the worker must learn independent limits for the two tables.
+struct TableTimingRedactor {
+    audio_batch_sizes: Mutex<Vec<usize>>,
+    element_batch_sizes: Mutex<Vec<usize>>,
+    audio_delay: Duration,
+}
+
 #[async_trait]
 impl Redactor for SlowBatchRedactor {
     fn name(&self) -> &str {
@@ -691,6 +699,40 @@ impl Redactor for SlowBatchRedactor {
     async fn redact_batch(&self, texts: &[String]) -> Result<Vec<RedactionOutput>, RedactError> {
         self.batch_sizes.lock().unwrap().push(texts.len());
         tokio::time::sleep(self.delay).await;
+        Ok(texts
+            .iter()
+            .map(|text| RedactionOutput {
+                input: text.clone(),
+                redacted: text.clone(),
+                spans: Vec::new(),
+            })
+            .collect())
+    }
+}
+
+#[async_trait]
+impl Redactor for TableTimingRedactor {
+    fn name(&self) -> &str {
+        "table-timing"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    async fn redact_batch(&self, texts: &[String]) -> Result<Vec<RedactionOutput>, RedactError> {
+        if texts
+            .first()
+            .is_some_and(|text| text.starts_with("slow audio"))
+        {
+            self.audio_batch_sizes.lock().unwrap().push(texts.len());
+            tokio::time::sleep(self.audio_delay).await;
+        } else if texts
+            .first()
+            .is_some_and(|text| text.starts_with("fast element"))
+        {
+            self.element_batch_sizes.lock().unwrap().push(texts.len());
+        }
         Ok(texts
             .iter()
             .map(|text| RedactionOutput {
@@ -748,6 +790,68 @@ async fn slow_work_slice_shrinks_the_next_database_batch() {
         batch_sizes.iter().skip(1).all(|size| *size == 1),
         "slow slices must stay at the minimum until timing improves: {batch_sizes:?}"
     );
+}
+
+#[tokio::test]
+async fn table_work_slices_adapt_independently() {
+    let (pool, _temp_dir) = setup_db().await;
+    for index in 0..10 {
+        sqlx::query("INSERT INTO audio_transcriptions (transcription) VALUES (?)")
+            .bind(format!("slow audio {index}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for index in 0..20 {
+        sqlx::query("INSERT INTO elements (text) VALUES (?)")
+            .bind(format!("fast element {index}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let redactor = Arc::new(TableTimingRedactor {
+        audio_batch_sizes: Mutex::new(Vec::new()),
+        element_batch_sizes: Mutex::new(Vec::new()),
+        audio_delay: Duration::from_millis(160),
+    });
+    let cfg = WorkerConfig {
+        batch_size: 8,
+        initial_batch_size: 4,
+        target_batch_duration: Duration::from_millis(100),
+        idle_between_batches: Duration::from_millis(1),
+        poll_interval: Duration::from_millis(20),
+        tables: vec![TargetTable::AudioTranscription, TargetTable::Elements],
+        ..test_worker_config()
+    };
+    let worker = Worker::new(pool.clone(), redactor.clone(), cfg);
+    let handle = worker.spawn();
+
+    wait_until("independent table batches", || async {
+        let audio_done = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audio_transcriptions WHERE redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let elements_done = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM elements WHERE redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        audio_done == 10 && elements_done == 20
+    })
+    .await;
+    handle.abort();
+
+    let audio_batches = redactor.audio_batch_sizes.lock().unwrap().clone();
+    let element_batches = redactor.element_batch_sizes.lock().unwrap().clone();
+    assert_eq!(audio_batches.first(), Some(&4));
+    assert_eq!(audio_batches.get(1), Some(&2));
+    assert!(audio_batches.iter().skip(2).all(|size| *size == 1));
+    assert_eq!(&element_batches[..3], &[4, 4, 4]);
+    assert_eq!(element_batches.get(3), Some(&8));
 }
 
 #[async_trait]
