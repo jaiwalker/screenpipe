@@ -1032,6 +1032,26 @@
       "notes": "Opening the standalone Settings route mid-stream must not abort the chat: a long synthetic stream keeps running while the user round-trips to Settings, remains live in Recents, and restores the full response (early + final tokens) after the row is clicked."
     },
     {
+      "spec": "chat-agent-activity-sidebar.spec.ts",
+      "platforms": [
+        "windows",
+        "macos",
+        "linux"
+      ],
+      "layers": [
+        "chat-ai",
+        "real-ui-e2e"
+      ],
+      "features": [
+        "chat",
+        "chat-sidebar-groups"
+      ],
+      "criticality": "high",
+      "confidence": "strong",
+      "ux": "real-user-flow",
+      "notes": "Imported local Codex and Claude conversations remain distinguishable in Agent activity, expose their provenance, and keep the local-history sync action available. Captures light and dark visual evidence."
+    },
+    {
       "spec": "chat-sidebar-groups.spec.ts",
       "platforms": [
         "windows",

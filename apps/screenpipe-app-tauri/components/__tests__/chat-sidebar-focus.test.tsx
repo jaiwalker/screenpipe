@@ -95,4 +95,13 @@ describe("SidebarChatRow current conversation", () => {
     expect(unread).toHaveTextContent("");
     expect(screen.queryByText("█")).toBeNull();
   });
+
+  it("shows Codex provenance for imported local history", () => {
+    renderRow(false, "idle", {
+      importedFrom: { source: "codex", sourceId: "thread-1", importedAt: 100 },
+    });
+
+    expect(screen.getByLabelText("Codex chat")).toBeVisible();
+    expect(screen.getByText("Codex · local history")).toBeVisible();
+  });
 });

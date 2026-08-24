@@ -46,6 +46,7 @@ import {
   Pencil,
   FolderOpen,
   Timer,
+  Download,
 } from "lucide-react";
 import { usePlatform } from "@/lib/hooks/use-platform";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -62,6 +63,7 @@ import {
 import {
   conversationMetaFromJson,
   deleteConversationFile,
+  listConversations,
   loadConversationFile,
   saveConversationFile,
   updateConversationFlags,
@@ -128,6 +130,7 @@ import {
   PIPES_SIDEBAR_COLLAPSED_EVENT,
   PIPES_SIDEBAR_COLLAPSED_KEY,
 } from "@/lib/sidebar-pipes";
+import { ImportChatsDialog } from "@/components/chat/import-chats-dialog";
 import {
   applySidebarRecentsCap,
   buildSidebarRecentsSections,
@@ -314,6 +317,7 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
     readDeletedPipeExecutionIds(),
   );
   const [openConversationMenuId, setOpenConversationMenuId] = useState<string | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   // macOS (WKWebView) auto-hides styled overlay scrollbars, so the minimal
   // scrollbar only flashes while actually scrolling. Windows/Linux (WebView2
   // / Chromium) render styled scrollbars as persistent, space-reserving
@@ -387,6 +391,7 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
             pipeContext: meta.pipeContext,
             dedupKey: meta.dedupKey,
             branchedFrom: meta.branchedFrom,
+            importedFrom: meta.importedFrom,
             draft: false,
           });
           return;
@@ -1286,39 +1291,41 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
 
           <div className="group/recents min-h-0 flex flex-col">
             <Section
-              title="recents"
+              title="agent activity"
               collapsed={recentsCollapsed}
               onCollapsedChange={setRecentsCollapsed}
               headerAction={
-                <span
-                  role="button"
-                  tabIndex={onViewAll ? 0 : -1}
-                  className={cn(
-                    "ml-auto inline-flex items-center gap-0.5 select-none",
-                    "text-[10px] uppercase tracking-wider transition-colors",
-                    "opacity-0 group-hover/recents:opacity-100",
-                    (recentsCollapsed || !hasAnythingToView) && "hidden",
-                    onViewAll
-                      ? "sidebar-text-secondary hover:text-foreground cursor-pointer"
-                      : "text-foreground/[0.35] cursor-default"
-                  )}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (!onViewAll) return;
-                    onViewAll();
-                  }}
-                  onKeyDown={(e) => {
-                    if (!onViewAll) return;
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onViewAll();
-                    }
-                  }}
-                  aria-disabled={!onViewAll}
-                >
-                  View all <ChevronRight className="h-3 w-3" aria-hidden />
-                </span>
+                <div className="ml-auto flex items-center gap-1">
+                  <button
+                    type="button"
+                    className="inline-flex h-5 w-5 items-center justify-center rounded text-foreground/45 transition-colors hover:bg-muted/30 hover:text-foreground"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setImportDialogOpen(true);
+                    }}
+                    aria-label="sync Codex and Claude chats"
+                    title="sync Codex and Claude chats"
+                  >
+                    <Download className="h-3 w-3" aria-hidden />
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "inline-flex items-center gap-0.5 text-[10px] uppercase tracking-wider transition-colors",
+                      (recentsCollapsed || !hasAnythingToView) && "hidden",
+                      onViewAll
+                        ? "sidebar-text-secondary hover:text-foreground"
+                        : "text-foreground/[0.35] cursor-default"
+                    )}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onViewAll?.();
+                    }}
+                    disabled={!onViewAll}
+                  >
+                    View all <ChevronRight className="h-3 w-3" aria-hidden />
+                  </button>
+                </div>
               }
               bodyClassName=""
             >
@@ -1555,6 +1562,16 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <ImportChatsDialog
+        open={importDialogOpen}
+        onOpenChange={setImportDialogOpen}
+        onImported={() => {
+          void listConversations({ includeHidden: true }).then((metas) => {
+            actions.hydrateFromDisk(metas.map(sessionRecordFromMeta));
+          });
+        }}
+      />
     </div>
   );
 }
@@ -2466,6 +2483,13 @@ export function SidebarChatRow({
     existingGroups,
     availableMoveGroups,
   };
+  const importedSource = session.importedFrom?.source;
+  const sourceLabel =
+    importedSource === "claude-code"
+      ? "Claude"
+      : importedSource === "codex"
+        ? "Codex"
+        : null;
   // The row is both the click target and the right-click (context menu)
   // anchor. The kebab below stays as a discoverable, mouse-only entry point;
   // both menus render the same `RowMenuItems`.
@@ -2503,12 +2527,24 @@ export function SidebarChatRow({
           onSelect(session.id);
         }}
       >
+        {sourceLabel && (
+          <span
+            className={cn(
+              "flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] font-semibold text-white",
+              importedSource === "claude-code" ? "bg-[#D97757]" : "bg-foreground"
+            )}
+            aria-label={`${sourceLabel} chat`}
+          >
+            {sourceLabel[0]}
+          </span>
+        )}
         {!insideGroup && (session.kind === "pipe-run" || session.kind === "pipe-watch") && (
           <Timer className="h-3 w-3 shrink-0 sidebar-text-tertiary" aria-hidden />
         )}
-        <span
-          className={cn(
-            "truncate flex-1 text-xs font-normal",
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+            "block truncate text-xs font-normal",
             isUnread
               ? "font-medium text-foreground"
               : isCurrent
@@ -2517,8 +2553,14 @@ export function SidebarChatRow({
                   ? "sidebar-text-tertiary"
                 : "sidebar-text-secondary"
           )}
-        >
-          {session.streamingTitle || (isInjectedTitle(session.title) ? undefined : session.title) || "untitled"}
+          >
+            {session.streamingTitle || (isInjectedTitle(session.title) ? undefined : session.title) || "untitled"}
+          </span>
+          {sourceLabel && (
+            <span className="block truncate text-[9px] leading-3 sidebar-text-tertiary">
+              {sourceLabel} · local history
+            </span>
+          )}
         </span>
         <span className="ml-1 h-4 w-10 shrink-0 relative flex items-center justify-end">
           <span
