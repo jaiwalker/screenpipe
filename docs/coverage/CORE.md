@@ -73,8 +73,8 @@ bun run coverage:core -- --llvm-cov-summary ../../docs/coverage/core-llvm-cov-su
 | ocr | 4 suites / 125 active / 7 ignored / 119.0 pts | 4 suites / 129 active / 7 ignored / 124.5 pts | 3 suites / 120 active / 6 ignored / 115.5 pts |
 | os-integration | 1 suites / 6 active / 0 ignored / 1.7 pts | 1 suites / 6 active / 0 ignored / 1.7 pts | - |
 | performance | 13 suites / 1423 active / 67 ignored / 1251.9 pts | 14 suites / 1526 active / 70 ignored / 1293.1 pts | 13 suites / 1423 active / 67 ignored / 1251.9 pts |
-| pipes | 1 suites / 486 active / 3 ignored / 340.2 pts | 1 suites / 486 active / 3 ignored / 340.2 pts | 1 suites / 486 active / 3 ignored / 340.2 pts |
-| privacy | 5 suites / 907 active / 36 ignored / 736.3 pts | 5 suites / 961 active / 16 ignored / 743.2 pts | 5 suites / 885 active / 14 ignored / 715.2 pts |
+| pipes | 1 suites / 487 active / 3 ignored / 340.9 pts | 1 suites / 487 active / 3 ignored / 340.9 pts | 1 suites / 487 active / 3 ignored / 340.9 pts |
+| privacy | 5 suites / 908 active / 36 ignored / 737.0 pts | 5 suites / 962 active / 16 ignored / 743.9 pts | 5 suites / 886 active / 14 ignored / 715.9 pts |
 | real-app | - | 1 suites / 103 active / 3 ignored / 41.2 pts | - |
 | speaker | 2 suites / 351 active / 8 ignored / 351.0 pts | 2 suites / 351 active / 8 ignored / 351.0 pts | 2 suites / 351 active / 8 ignored / 351.0 pts |
 | storage | 3 suites / 510 active / 29 ignored / 411.6 pts | 3 suites / 510 active / 29 ignored / 411.6 pts | 3 suites / 510 active / 29 ignored / 411.6 pts |
@@ -391,7 +391,7 @@ bun run coverage:core -- --llvm-cov-summary ../../docs/coverage/core-llvm-cov-su
 | engine-telemetry-observability | screenpipe-engine | src/piggyback_telemetry.rs | source | 1 | 0 | 1 |
 | engine-meeting-privacy-sync | screenpipe-engine | src/pipe_store.rs | source | 33 | 0 | 33 |
 | engine-api-routes | screenpipe-engine | src/pipe_stream.rs | source | 8 | 0 | 8 |
-| engine-meeting-privacy-sync | screenpipe-engine | src/pipes_api.rs | source | 11 | 0 | 11 |
+| engine-meeting-privacy-sync | screenpipe-engine | src/pipes_api.rs | source | 12 | 0 | 12 |
 | engine-config-lifecycle | screenpipe-engine | src/power/manager.rs | source | 2 | 0 | 2 |
 | engine-config-lifecycle | screenpipe-engine | src/power/monitor.rs | source | 3 | 0 | 3 |
 | engine-config-lifecycle | screenpipe-engine | src/power/profile.rs | source | 24 | 0 | 24 |

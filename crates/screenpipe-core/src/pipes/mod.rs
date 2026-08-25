@@ -8922,6 +8922,10 @@ mod tests {
             config.config.get("template"),
             Some(&serde_json::json!(true))
         );
+        assert_eq!(
+            config.preset,
+            vec!["screenpipe-cloud".to_string(), "*".to_string()]
+        );
         assert!(event_runs_are_read_only(&config));
         assert!(config
             .trigger
@@ -8929,8 +8933,18 @@ mod tests {
             .is_some_and(|trigger| trigger.events.iter().any(|event| event == "meeting_ended")));
         assert!(body.contains("Automatic event runs are always preview-only"));
         assert!(body.contains("APPROVE SPEAKER <numeric_id> AS <display name> FROM <proposal_id>"));
+        assert!(body.contains("GET /meetings/<id>/transcript"));
+        assert!(body.contains("no more than 5 minutes before this run began"));
+        assert!(body.contains("duration of at least 2\n   minutes"));
+        assert!(body.contains("Meeting-local mappings"));
+        assert!(body.contains("must never\nemit an `APPROVE SPEAKER` command"));
+        assert!(body.contains("Never call `/feedback`, send a\nnotification, or call port 11435"));
+        assert!(body.contains(
+            "Fetch at most 6 targeted OCR windows in three batches of at most 2 concurrent"
+        ));
         let permissions = permissions::PipePermissions::from_config(&config);
         assert!(permissions.is_endpoint_allowed("GET", "/meetings/42"));
+        assert!(permissions.is_endpoint_allowed("GET", "/meetings/42/transcript"));
         assert!(permissions.is_endpoint_allowed("GET", "/search"));
         assert!(permissions.is_endpoint_allowed("POST", "/speakers/update"));
         assert!(permissions.is_content_type_allowed("audio"));
@@ -8951,6 +8965,8 @@ mod tests {
             "Api(POST /speakers/merge)",
             "Api(POST /speakers/delete)",
             "Api(POST /raw_sql)",
+            "Api(GET /feedback)",
+            "Api(POST /notify)",
         ] {
             assert!(source.contains(forbidden), "missing deny rule: {forbidden}");
         }

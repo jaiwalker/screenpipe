@@ -3,6 +3,7 @@ schedule: manual
 enabled: false
 preset:
   - screenpipe-cloud
+  - "*"
 timeout: 600
 history: false
 subagent: false
@@ -20,6 +21,7 @@ permissions:
     - Api(GET /health)
     - Api(GET /meetings)
     - Api(GET /meetings/*)
+    - Api(GET /meetings/*/transcript)
     - Api(GET /search)
     - Api(GET /speakers/unnamed)
     - Api(GET /speakers/search)
@@ -32,6 +34,8 @@ permissions:
     - Api(POST /speakers/merge)
     - Api(POST /speakers/delete)
     - Api(POST /speakers/hallucination)
+    - Api(GET /feedback)
+    - Api(POST /notify)
     - Api(DELETE /speakers/*)
     - Api(POST /raw_sql)
     - Content(input)
@@ -84,6 +88,10 @@ An altered, incomplete, ambiguous, stale, or multi-speaker command is not
 approval. Fall back to preview and state that nothing changed. Apply and undo
 may each call `POST /speakers/update` at most once. Never batch writes.
 
+Preview may write only its local artifact. Never call `/feedback`, send a
+notification, or call port 11435. Except for the single approved update in
+apply or undo mode, every HTTP request must be a GET to localhost:3030.
+
 This Pipe may change only the display name on one existing speaker cluster.
 Never reassign transcript rows, move embeddings, merge speakers, delete a
 speaker, mark hallucinations, update metadata, or call raw SQL.
@@ -102,12 +110,17 @@ that no data exists.
 
 - `GET /health`
 - `GET /meetings/<id>` returns the exact meeting window.
-- `GET /meetings?limit=1&offset=0` is the manual-preview fallback only.
-- `GET /search?content_type=audio&start_time=<ISO>&end_time=<ISO>&limit=500&offset=0`
-  returns diarized rows. Relevant fields are `content.timestamp`,
-  `content.transcription`, `content.speaker.id`, and `content.speaker.name`.
-- `GET /search?content_type=ocr&start_time=<ISO>&end_time=<ISO>&limit=200&offset=0`
-  returns screen text and app/window metadata in the same window.
+- `GET /meetings?limit=10&offset=0` is the manual-preview fallback only. Select
+  the newest row whose window lasts at least 2 minutes; short manual or false
+  detections cannot satisfy the evidence rubric.
+- `GET /meetings/<id>/transcript` returns the meeting transcript segments.
+  Relevant fields are `source`, `device_type`, `speaker_id`, `speaker_name`,
+  `transcript`, and `captured_at`. A generic `speaker_name` such as `speaker 2`
+  with no `speaker_id` is a provisional meeting-local label, not a durable
+  global speaker identity. The same generic label on different `device_type`
+  values is not necessarily the same person.
+- `GET /search?content_type=ocr&start_time=<ISO>&end_time=<ISO>&limit=40&offset=0`
+  returns screen text and app/window metadata for one targeted evidence window.
 - `GET /speakers/unnamed?limit=20&offset=0` returns a bare array. `offset` is
   required.
 - `GET /speakers/unnamed?limit=20&offset=0&speaker_ids=<id>` rechecks one
@@ -126,36 +139,61 @@ name. Do not broaden a failed search.
 
 1. Check `/health`. If it is unhealthy or unauthorized, write a blocked report
    and stop.
-2. Read `./.trigger-context.json`. For a fresh `meeting_ended` event use its
-   `.data.meeting_id` or `.key`. For a manual preview without a usable event id,
-   use the most recent meeting. Fetch exactly that meeting and require valid
-   `meeting_start` and `meeting_end` values.
-3. In one shell command, fetch the meeting-window audio, meeting-window OCR,
-   and 20 unnamed speakers in parallel. Do not paginate. Keep the raw responses
-   in temporary files, not the artifact.
-4. Consider only speaker ids that occur in the meeting audio and also occur in
-   the unnamed-speaker response. Analyze at most 6 ids. For each, keep at most
-   8 distinct non-empty speaking timestamps spread across the meeting.
-5. Align each retained speaking timestamp to OCR within 8 seconds. A label is
-   speaker-specific only when the text and layout describe an active-speaker
+2. Read `./.trigger-context.json` if present. It establishes an automatic event
+   run only when `.event` is `meeting_ended`, its meeting id is positive, and
+   `.triggered_at` is no more than 5 minutes before this run began. Treat an
+   older, future-dated, or missing `triggered_at` as stale manual-run residue;
+   never let it select the meeting or the mode. For a valid fresh event use its
+   `.data.meeting_id` or `.key`. Otherwise fetch 10 recent meetings and select
+   the newest row with valid start/end values and a duration of at least 2
+   minutes. Fetch exactly the selected meeting. If none qualifies, write a
+   blocked manual-preview report and stop.
+3. In one shell command, fetch the meeting transcript and 20 unnamed speakers
+   in parallel. Do not paginate. Keep raw responses in temporary files, not the
+   artifact.
+4. Build no more than 6 candidate groups from transcript segments, prioritizing
+   durable global candidates before provisional groups:
+   - A **durable global candidate** has a non-null `speaker_id` that also occurs
+     in the unnamed-speaker response. Group it by that numeric id.
+   - A **provisional meeting-local candidate** has a null `speaker_id` and a
+     generic `speaker_name` such as `speaker 2`. Group it by the exact pair
+     (`device_type`, `speaker_name`). Never merge groups across device types.
+   For each group keep at most 8 distinct non-empty speaking timestamps spread
+   across the meeting.
+5. Fetch at most 6 targeted OCR windows in three batches of at most 2 concurrent
+   calls. Wait for both calls in one batch before starting the next. Each window
+   covers 8 seconds before through 8 seconds after one retained timestamp with
+   `limit=40&offset=0`. Choose windows round-robin across durable candidates
+   first, then around provisional candidates' explicit self-identifications,
+   then round-robin across the remaining provisional groups. Deduplicate
+   overlapping windows. Do not fetch an unbounded whole-meeting OCR page.
+6. Align each retained speaking timestamp to the targeted OCR within 8 seconds.
+   A label is speaker-specific only when the text and layout describe an active-speaker
    tile, a single visible speaker tile, a subtitle label, or an explicit
-   self-identification in that speaker's diarized words. A gallery or attendee
-   list containing several names is not speaker-specific.
-6. Optionally call `/speakers/similar` once for each analyzed id, up to 6
-   calls. Treat it only as a fragmentation warning.
-7. Apply the evidence rubric below and write the preview artifact. Do not put
+   self-identification in that candidate's own transcript segments. Someone
+   else addressing the candidate by name is not self-identification. A gallery
+   or attendee list containing several names is not speaker-specific.
+7. Optionally call `/speakers/similar` once for the highest-evidence durable
+   global candidate only. Never call it for a provisional group. Treat it only
+   as a fragmentation warning.
+8. Apply the evidence rubric below and write the preview artifact. Do not put
    verbatim transcript passages or unrelated screen text in the artifact.
 
-Normal preview budget: 10 local API calls after the health check, at most 500
-audio rows, 200 OCR rows, 20 unnamed speakers, and 6 candidate ids. Report
-actual successful coverage. Never convert incomplete reads into zero usage or
-an identity claim.
+Hard post-health budget: 11 calls for manual preview and 10 for event preview.
+Manual preview uses one recent-meeting list, one selected meeting, one complete
+transcript response, one unnamed-speaker page, at most 6 targeted OCR windows,
+and at most 1 optional similarity diagnostic. Event preview omits the list call.
+Return at most 240 OCR rows and analyze at most 6 candidate groups. Report
+actual successful coverage, including OCR window timestamps, transcript segment
+count, segments with durable ids, and provisional groups. Never convert
+incomplete reads into zero usage or an identity claim.
 
 ## Evidence rubric
 
-A candidate is **ready for approval** only when every requirement passes:
+A durable global candidate is **ready for global approval** only when every
+requirement passes:
 
-- at least 3 non-empty speech rows at distinct timestamps;
+- at least 3 non-empty transcript segments at distinct timestamps;
 - the same plausible human display name is visible within 8 seconds of at
   least 3 speaking timestamps spanning at least 2 minutes;
 - at least 2 observations are speaker-specific, not merely attendee presence;
@@ -167,10 +205,29 @@ A candidate is **ready for approval** only when every requirement passes:
 - the conclusion does not depend on voice similarity, a face, demographics,
   calendar presence, contact familiarity, or conversational guessing.
 
-Anything less is **needs review**. This includes one-off names, gallery frames,
-attendee lists, someone being addressed by name, mixed-room microphones,
-missing timing, missing speaker ids, missing OCR, conflicts, or any failed
-requirement above.
+A durable candidate that does not pass every global requirement is **needs
+review**. This includes one-off names, gallery frames, attendee lists, someone
+being addressed by name, mixed-room microphones, missing timing, missing OCR,
+conflicts, or any failed requirement above.
+
+A provisional meeting-local candidate is **ready as a meeting-local mapping**
+only when every requirement passes:
+
+- at least 3 non-empty transcript segments at distinct timestamps spanning at
+  least 2 minutes;
+- either the same plausible human name is speaker-specific in OCR at 3 or more
+  speaking timestamps, or the candidate explicitly identifies themself with
+  that name at 2 or more distinct speaking timestamps and a matching
+  speaker-specific meeting-app account or tile label is visible;
+- the same name validation, agreement, and no-contradiction rules used for a
+  durable candidate pass;
+- the conclusion does not depend on attendee or calendar presence, someone
+  else using the name, voice similarity, a face, demographics, contact
+  familiarity, or conversational guessing.
+
+A meeting-local mapping is a reviewable description of this meeting only. It
+is not a durable speaker id, cannot be applied by this Pipe, and must never
+emit an `APPROVE SPEAKER` command. Anything less stays in needs review.
 
 ## Preview artifact
 
@@ -178,10 +235,15 @@ Create `./output/` and replace `./output/speaker-reconciliation.md` with:
 
 - generation time, meeting id/window/app, mode, and exactly
   `No speaker data was changed.`;
-- coverage counts for audio rows, OCR rows, unnamed speakers, candidates,
-  similarity successes/failures, and API errors;
-- a **Ready for approval** table with speaker id, proposed name, short
+- coverage counts for transcript segments, segments with durable speaker ids,
+  provisional groups, targeted OCR windows and rows, unnamed speakers, analyzed
+  groups, similarity successes/failures, and API errors;
+- a **Ready for global approval** table with speaker id, proposed name, short
   rationale, evidence timestamps/apps, and proposal id;
+- a **Meeting-local mappings** table with exact target
+  `meeting <id> / <device_type>:<speaker_name>`, proposed name, short rationale,
+  and evidence timestamps/apps. State on every row that no global write is
+  available;
 - a **Needs review** table naming the failed or missing requirement;
 - skipped counts and explicit limitations;
 - one exact approval command per ready candidate.
@@ -196,8 +258,9 @@ non-expired approval command in the artifact.
 
 1. Require the report's exact speaker id, display name, proposal id, meeting
    window, and supporting timestamps.
-2. Re-fetch the bounded meeting audio, OCR, and unnamed speaker. Re-run every
-   ready-for-approval check. Any drift or missing evidence stops the write.
+2. Re-fetch the bounded meeting transcript, OCR, and unnamed speaker. Re-run
+   every ready-for-global-approval check. Any drift or missing evidence stops
+   the write. A provisional meeting-local mapping can never enter apply mode.
 3. Require `/speakers/unnamed?...&speaker_ids=<id>` to return exactly that id
    with an empty or generic current name.
 4. Search the proposed name. If another id has the same normalized name, stop;
@@ -234,7 +297,10 @@ Before finishing, verify these invariants and include failures in the report:
 
 - an automatic event run made zero API writes;
 - a preview made zero API writes;
+- a preview sent no notification and made no request to port 11435;
 - a gallery or attendee-only name stayed in needs review;
+- a provisional meeting-local mapping caused no API write and emitted no
+  approval command;
 - similarity never supplied a name;
 - an approval named at most one speaker and was less than 24 hours old;
 - apply, if any, made one name-only update and created an undo record first;
