@@ -1536,7 +1536,7 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
                       <button
                         type="button"
                         className={cn(
-                          "inline-flex items-center gap-0.5 text-[10px] uppercase tracking-wider transition-colors",
+                          "inline-flex items-center gap-0.5 text-[10px] uppercase tracking-wider opacity-0 transition-[color,opacity] group-hover:opacity-100 focus-visible:opacity-100",
                           (recentsCollapsed || !hasAnythingToView) && "hidden",
                           onViewAll
                             ? "sidebar-text-secondary hover:text-foreground"
