@@ -1049,7 +1049,7 @@
       "criticality": "high",
       "confidence": "strong",
       "ux": "real-user-flow",
-      "notes": "Recent local Codex and Claude histories sync automatically into the same Recents stream as native screenpipe chats. The primary sidebar has no import action; right-clicking View all filters by only the sources present. Captures sparse, crowded mixed-provider, and Codex-heavy native UI states with one harness icon per row, expanded pinned rows, and the capped recent working set."
+      "notes": "Recent local Codex and Claude histories sync automatically into the same Recents stream as native screenpipe chats. The primary sidebar has no import action; right-clicking View all filters by only the sources present, while a hover-only organizer exposes the same filters plus source grouping and priority or latest-update sorting. Captures sparse, crowded mixed-provider, and Codex-heavy native UI states with one harness icon per row, expanded pinned rows, and the capped recent working set."
     },
     {
       "spec": "chat-sidebar-groups.spec.ts",

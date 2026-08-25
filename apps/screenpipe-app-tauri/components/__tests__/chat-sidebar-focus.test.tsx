@@ -6,6 +6,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   filterRecentsBySource,
+  sortRecents,
   SidebarChatRow,
 } from "@/components/chat-sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -144,5 +145,22 @@ describe("Recents provider filtering", () => {
       .toEqual(["chat-focus-test", "codex-chat"]);
     expect(filterRecentsBySource(sessions, new Set(["screenpipe", "codex"])).map(({ id }) => id))
       .toEqual(["claude-chat"]);
+  });
+
+  it("can sort the same list by latest update without mutating priority order", () => {
+    const sessions: SessionRecord[] = [
+      { ...baseSession, id: "priority-first", updatedAt: 100 },
+      { ...baseSession, id: "updated-first", updatedAt: 300 },
+    ];
+
+    expect(sortRecents(sessions, "priority").map(({ id }) => id)).toEqual([
+      "priority-first",
+      "updated-first",
+    ]);
+    expect(sortRecents(sessions, "updated").map(({ id }) => id)).toEqual([
+      "updated-first",
+      "priority-first",
+    ]);
+    expect(sessions[0].id).toBe("priority-first");
   });
 });

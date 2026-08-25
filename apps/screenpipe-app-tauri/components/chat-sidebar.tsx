@@ -48,6 +48,7 @@ import {
   FolderOpen,
   Timer,
   Terminal,
+  MoreHorizontal,
 } from "lucide-react";
 import { usePlatform } from "@/lib/hooks/use-platform";
 import { emit, listen } from "@tauri-apps/api/event";
@@ -76,8 +77,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuSub,
@@ -91,6 +96,8 @@ import {
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuLabel,
+  ContextMenuRadioGroup,
+  ContextMenuRadioItem,
   ContextMenuSeparator,
   ContextMenuShortcut,
   ContextMenuSub,
@@ -140,7 +147,7 @@ import {
 } from "@/lib/sidebar-pipes";
 import {
   applySidebarRecentsCap,
-  buildSidebarRecentsSections,
+  buildGroupedRecents,
   latestSidebarPipeRunTimes,
   listMoveTargetGroups,
   recurringPipeGroupKeys,
@@ -158,9 +165,13 @@ const PIPE_RUNS_PER_GROUP = 10;
 const PIPE_INVENTORY_PAGE_SIZE = 20;
 const DELETED_PIPE_EXECUTIONS_KEY = "screenpipe:deleted-pipe-executions";
 const RECENTS_SOURCE_FILTER_KEY = "screenpipe:recents-hidden-sources";
+const RECENTS_LAYOUT_KEY = "screenpipe:recents-layout";
+const RECENTS_SORT_KEY = "screenpipe:recents-sort";
 const EXTERNAL_CHAT_SYNC_INTERVAL_MS = 60_000;
 
 type RecentSource = "screenpipe" | ExternalChatSource;
+type RecentLayout = "source" | "list";
+type RecentSort = "priority" | "updated";
 const RECENT_SOURCE_OPTIONS: Array<{ source: RecentSource; label: string }> = [
   { source: "screenpipe", label: "screenpipe" },
   { source: "codex", label: "Codex" },
@@ -179,6 +190,35 @@ export function filterRecentsBySource(
   hiddenSources: ReadonlySet<RecentSource>,
 ): SessionRecord[] {
   return sessions.filter((session) => !hiddenSources.has(recentSource(session)));
+}
+
+export function sortRecents(
+  sessions: SessionRecord[],
+  sort: RecentSort,
+): SessionRecord[] {
+  if (sort === "priority") return sessions;
+  return [...sessions].sort(
+    (left, right) =>
+      right.updatedAt - left.updatedAt ||
+      right.createdAt - left.createdAt ||
+      left.id.localeCompare(right.id),
+  );
+}
+
+function readRecentLayout(): RecentLayout {
+  try {
+    return localStorage.getItem(RECENTS_LAYOUT_KEY) === "source" ? "source" : "list";
+  } catch {
+    return "list";
+  }
+}
+
+function readRecentSort(): RecentSort {
+  try {
+    return localStorage.getItem(RECENTS_SORT_KEY) === "updated" ? "updated" : "priority";
+  } catch {
+    return "priority";
+  }
 }
 
 function readHiddenRecentSources(): Set<RecentSource> {
@@ -577,13 +617,15 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
   const [hiddenRecentSources, setHiddenRecentSources] = useState<Set<RecentSource>>(
     readHiddenRecentSources,
   );
+  const [recentLayout, setRecentLayout] = useState<RecentLayout>(readRecentLayout);
+  const [recentSort, setRecentSort] = useState<RecentSort>(readRecentSort);
   const availableRecentSources = useMemo(
     () => new Set(recents.map(recentSource)),
     [recents],
   );
-  const filteredRecents = useMemo(
-    () => filterRecentsBySource(recents, hiddenRecentSources),
-    [recents, hiddenRecentSources],
+  const visibleRecents = useMemo(
+    () => sortRecents(filterRecentsBySource(recents, hiddenRecentSources), recentSort),
+    [recents, hiddenRecentSources, recentSort],
   );
   const toggleRecentSource = useCallback((source: RecentSource) => {
     setHiddenRecentSources((current) => {
@@ -598,9 +640,50 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
       return next;
     });
   }, []);
+  const changeRecentLayout = useCallback((layout: string) => {
+    const next = layout === "source" ? "source" : "list";
+    setRecentLayout(next);
+    try {
+      localStorage.setItem(RECENTS_LAYOUT_KEY, next);
+    } catch {
+      // The in-memory preference still works for this session.
+    }
+  }, []);
+  const changeRecentSort = useCallback((sort: string) => {
+    const next = sort === "updated" ? "updated" : "priority";
+    setRecentSort(next);
+    try {
+      localStorage.setItem(RECENTS_SORT_KEY, next);
+    } catch {
+      // The in-memory preference still works for this session.
+    }
+  }, []);
   const groupedSections = useMemo(
-    () => buildSidebarRecentsSections(filteredRecents, Number.POSITIVE_INFINITY),
-    [filteredRecents],
+    () => recentLayout === "source"
+      ? RECENT_SOURCE_OPTIONS.flatMap(({ source, label }) => {
+          const sessions = visibleRecents.filter((session) => recentSource(session) === source);
+          return sessions.length === 0
+            ? []
+            : [{
+                key: `source:${source}`,
+                title: label,
+                items: buildGroupedRecents(
+                  sessions,
+                  Number.POSITIVE_INFINITY,
+                  () => null,
+                ),
+              }];
+        })
+      : [{
+          key: "all-recents",
+          title: "",
+          items: buildGroupedRecents(
+            visibleRecents,
+            Number.POSITIVE_INFINITY,
+            () => null,
+          ),
+        }],
+    [recentLayout, visibleRecents],
   );
 
   const [pipesCollapsed, setPipesCollapsed] = useCollapsedPref(
@@ -1408,7 +1491,46 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
               collapsed={recentsCollapsed}
               onCollapsedChange={setRecentsCollapsed}
               headerAction={
-                <div className="ml-auto flex items-center gap-1">
+                <div className="group ml-auto flex items-center gap-1">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex h-5 w-5 items-center justify-center rounded opacity-0 transition-opacity hover:bg-muted/40 focus-visible:opacity-100 group-hover:opacity-100"
+                        aria-label="organize recents"
+                        title="organize recents"
+                      >
+                        <MoreHorizontal className="h-3.5 w-3.5" aria-hidden />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent className="w-48" align="end">
+                      <DropdownMenuLabel>show in recents</DropdownMenuLabel>
+                      {RECENT_SOURCE_OPTIONS.filter(({ source }) =>
+                        availableRecentSources.has(source),
+                      ).map(({ source, label }) => (
+                        <DropdownMenuCheckboxItem
+                          key={source}
+                          checked={!hiddenRecentSources.has(source)}
+                          onCheckedChange={() => toggleRecentSource(source)}
+                          onSelect={(event) => event.preventDefault()}
+                        >
+                          {label}
+                        </DropdownMenuCheckboxItem>
+                      ))}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>organize sidebar</DropdownMenuLabel>
+                      <DropdownMenuRadioGroup value={recentLayout} onValueChange={changeRecentLayout}>
+                        <DropdownMenuRadioItem value="source">By source</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="list">In one list</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuLabel>sort chats by</DropdownMenuLabel>
+                      <DropdownMenuRadioGroup value={recentSort} onValueChange={changeRecentSort}>
+                        <DropdownMenuRadioItem value="priority">Priority</DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="updated">Last updated</DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <ContextMenu>
                     <ContextMenuTrigger asChild>
                       <button
@@ -1445,6 +1567,18 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
                           {label}
                         </ContextMenuCheckboxItem>
                       ))}
+                      <ContextMenuSeparator />
+                      <ContextMenuLabel>organize sidebar</ContextMenuLabel>
+                      <ContextMenuRadioGroup value={recentLayout} onValueChange={changeRecentLayout}>
+                        <ContextMenuRadioItem value="source">By source</ContextMenuRadioItem>
+                        <ContextMenuRadioItem value="list">In one list</ContextMenuRadioItem>
+                      </ContextMenuRadioGroup>
+                      <ContextMenuSeparator />
+                      <ContextMenuLabel>sort chats by</ContextMenuLabel>
+                      <ContextMenuRadioGroup value={recentSort} onValueChange={changeRecentSort}>
+                        <ContextMenuRadioItem value="priority">Priority</ContextMenuRadioItem>
+                        <ContextMenuRadioItem value="updated">Last updated</ContextMenuRadioItem>
+                      </ContextMenuRadioGroup>
                     </ContextMenuContent>
                   </ContextMenu>
                 </div>
@@ -1457,7 +1591,7 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
                     <Skeleton key={i} className="h-6 w-full rounded-md" />
                   ))}
                 </div>
-              ) : filteredRecents.length === 0 ? (
+              ) : visibleRecents.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs sidebar-text-secondary italic">
                   {recents.length > 0
                     ? "no chats match filters"
