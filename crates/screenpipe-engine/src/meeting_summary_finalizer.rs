@@ -506,3 +506,348 @@ mod tests {
         assert!(summary.starts_with("The printed summary is the canonical one"));
     }
 }
+
+/// Integration tests against a real database: these are the paths that write
+/// into user notes, so they are exercised end to end rather than mocked.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use crate::pipe_store::SqlitePipeStore;
+    use screenpipe_core::pipes::PipeStore;
+
+    async fn test_db() -> (tempfile::TempDir, Arc<DatabaseManager>) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("finalizer.db");
+        // Retry: concurrent SQLite init across parallel tests can transiently
+        // report "database is locked" (same pattern as pipe_store tests).
+        for _ in 0..3 {
+            match DatabaseManager::new(&path.to_string_lossy(), Default::default()).await {
+                Ok(db) => return (dir, Arc::new(db)),
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
+        }
+        panic!("test db failed to initialize");
+    }
+
+    fn agent_end_stdout(text: &str) -> String {
+        serde_json::json!({
+            "type": "agent_end",
+            "messages": [{"role": "assistant", "content": [{"type": "text", "text": text}]}],
+        })
+        .to_string()
+    }
+
+    async fn ended_meeting(db: &DatabaseManager) -> i64 {
+        let id = db
+            .insert_meeting("Zoom", "audio_process", Some("weekly sync"), None)
+            .await
+            .unwrap();
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        db.end_meeting(id, &now, None).await.unwrap();
+        id
+    }
+
+    async fn completed_run(store: &SqlitePipeStore, trigger_key: &str, stdout: &str) -> i64 {
+        let id = store
+            .create_execution_with_trigger(
+                SUMMARY_PIPE,
+                "event",
+                "test-model",
+                None,
+                Some("meeting_ended"),
+                Some(trigger_key),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_execution(id, "completed", stdout, "", Some(0), None, None, None)
+            .await
+            .unwrap();
+        id
+    }
+
+    async fn execution_state(db: &DatabaseManager, id: i64) -> (String, Option<String>) {
+        sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, error_type FROM pipe_executions WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap()
+    }
+
+    /// The production failure end to end: a completed run whose summary never
+    /// reached the meeting gets it recovered and saved by the engine.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sweep_recovers_an_unsaved_summary_onto_the_meeting() {
+        let (_dir, db) = test_db().await;
+        let store = SqlitePipeStore::new(db.clone());
+        let meeting_id = ended_meeting(&db).await;
+        let run = completed_run(
+            &store,
+            &meeting_id.to_string(),
+            &agent_end_stdout(
+                "## Summary\nWe agreed on the rollout plan and booked a follow-up for Thursday.",
+            ),
+        )
+        .await;
+
+        let mut processed = std::collections::HashSet::new();
+        sweep_completed_runs(&db, &mut processed).await;
+
+        let meeting = db.get_meeting_by_id(meeting_id).await.unwrap();
+        let note = meeting.note.unwrap();
+        assert!(note.starts_with("## Summary\nWe agreed on the rollout plan"));
+        // The run stays a success — the outcome was repaired, not the run.
+        assert_eq!(
+            execution_state(&db, run).await,
+            ("completed".to_string(), None)
+        );
+
+        // A later sweep must not resurrect a summary the user then deletes.
+        db.update_meeting(meeting_id, None, None, None, None, Some(""), None)
+            .await
+            .unwrap();
+        sweep_completed_runs(&db, &mut processed).await;
+        let meeting = db.get_meeting_by_id(meeting_id).await.unwrap();
+        assert_eq!(meeting.note.as_deref(), Some(""));
+    }
+
+    /// Generation-suffixed trigger keys (`<id>@<end>`) still resolve.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sweep_resolves_generation_suffixed_trigger_keys() {
+        let (_dir, db) = test_db().await;
+        let store = SqlitePipeStore::new(db.clone());
+        let meeting_id = ended_meeting(&db).await;
+        completed_run(
+            &store,
+            &format!("{}@2026-08-25T20:17:43.382Z", meeting_id),
+            &agent_end_stdout("## Summary\nGeneration-keyed run body long enough to persist."),
+        )
+        .await;
+
+        let mut processed = std::collections::HashSet::new();
+        sweep_completed_runs(&db, &mut processed).await;
+        let note = db
+            .get_meeting_by_id(meeting_id)
+            .await
+            .unwrap()
+            .note
+            .unwrap();
+        assert!(note.contains("Generation-keyed run body"));
+    }
+
+    /// No summary anywhere + no transcript → the run stops claiming success.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sweep_marks_an_empty_run_nothing_to_summarize() {
+        let (_dir, db) = test_db().await;
+        let store = SqlitePipeStore::new(db.clone());
+        let meeting_id = ended_meeting(&db).await;
+        let run = completed_run(
+            &store,
+            &meeting_id.to_string(),
+            &agent_end_stdout("nothing useful happened, skipping the save"),
+        )
+        .await;
+
+        sweep_completed_runs(&db, &mut std::collections::HashSet::new()).await;
+
+        let (status, error_type) = execution_state(&db, run).await;
+        assert_eq!(status, "failed");
+        assert_eq!(error_type.as_deref(), Some("nothing_to_summarize"));
+        // The meeting note is untouched.
+        assert_eq!(db.get_meeting_by_id(meeting_id).await.unwrap().note, None);
+    }
+
+    /// Same, but the meeting HAS a transcript: that is a retryable save loss.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sweep_marks_a_lost_save_summary_not_saved() {
+        let (_dir, db) = test_db().await;
+        let store = SqlitePipeStore::new(db.clone());
+        let meeting_id = ended_meeting(&db).await;
+        db.insert_meeting_transcript_segment(
+            meeting_id,
+            "deepgram",
+            None,
+            "item-1",
+            "MacBook Pro Microphone",
+            "input",
+            None,
+            "hello there, shall we start?",
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+        let run = completed_run(
+            &store,
+            &meeting_id.to_string(),
+            &agent_end_stdout("saved the summary onto the record (it did not)"),
+        )
+        .await;
+
+        sweep_completed_runs(&db, &mut std::collections::HashSet::new()).await;
+
+        let (status, error_type) = execution_state(&db, run).await;
+        assert_eq!(status, "failed");
+        assert_eq!(error_type.as_deref(), Some("summary_not_saved"));
+    }
+
+    /// A note that already carries a summary is left alone entirely.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn sweep_leaves_meetings_that_already_have_a_summary() {
+        let (_dir, db) = test_db().await;
+        let store = SqlitePipeStore::new(db.clone());
+        let meeting_id = ended_meeting(&db).await;
+        db.update_meeting(
+            meeting_id,
+            None,
+            None,
+            None,
+            None,
+            Some("prep\n\n## Summary\nthe agent-saved one"),
+            None,
+        )
+        .await
+        .unwrap();
+        let run = completed_run(
+            &store,
+            &meeting_id.to_string(),
+            &agent_end_stdout("## Summary\na different draft that must not overwrite anything"),
+        )
+        .await;
+
+        sweep_completed_runs(&db, &mut std::collections::HashSet::new()).await;
+
+        let meeting = db.get_meeting_by_id(meeting_id).await.unwrap();
+        assert_eq!(
+            meeting.note.as_deref(),
+            Some("prep\n\n## Summary\nthe agent-saved one")
+        );
+        assert_eq!(
+            execution_state(&db, run).await,
+            ("completed".to_string(), None)
+        );
+    }
+
+    /// Interrupted-run requeue: emits the targeted refresh event exactly for
+    /// meetings that still need it, and skips ones with a newer attempt or a
+    /// summary already on the note.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn requeue_targets_only_meetings_still_missing_their_summary() {
+        use futures::StreamExt;
+        let (_dir, db) = test_db().await;
+        let store = SqlitePipeStore::new(db.clone());
+
+        // Case A: interrupted, no newer run, no summary → requeued.
+        let needs_requeue = ended_meeting(&db).await;
+        let run_a = store
+            .create_execution_with_trigger(
+                SUMMARY_PIPE,
+                "event",
+                "test-model",
+                None,
+                Some("meeting_ended"),
+                Some(&needs_requeue.to_string()),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_execution(
+                run_a,
+                "failed",
+                "",
+                "",
+                None,
+                Some("interrupted"),
+                Some("interrupted by system restart"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Case B: interrupted but a newer run exists for the same meeting.
+        let retried = ended_meeting(&db).await;
+        let run_b = store
+            .create_execution_with_trigger(
+                SUMMARY_PIPE,
+                "event",
+                "test-model",
+                None,
+                Some("meeting_ended"),
+                Some(&retried.to_string()),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_execution(
+                run_b,
+                "failed",
+                "",
+                "",
+                None,
+                Some("interrupted"),
+                Some("interrupted by system restart"),
+                None,
+            )
+            .await
+            .unwrap();
+        completed_run(&store, &retried.to_string(), "").await;
+
+        // Case C: interrupted but the note already has a summary.
+        let already_summarized = ended_meeting(&db).await;
+        db.update_meeting(
+            already_summarized,
+            None,
+            None,
+            None,
+            None,
+            Some("## Summary\nalready here"),
+            None,
+        )
+        .await
+        .unwrap();
+        let run_c = store
+            .create_execution_with_trigger(
+                SUMMARY_PIPE,
+                "event",
+                "test-model",
+                None,
+                Some("meeting_ended"),
+                Some(&already_summarized.to_string()),
+            )
+            .await
+            .unwrap();
+        store
+            .finish_execution(
+                run_c,
+                "failed",
+                "",
+                "",
+                None,
+                Some("interrupted"),
+                Some("interrupted by system restart"),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut refresh_rx = screenpipe_events::subscribe_to_event::<serde_json::Value>(
+            "meeting_summary_refresh_requested",
+        );
+        requeue_interrupted_runs(&db).await;
+
+        // Drain what the requeue emitted (the bus is process-global, so only
+        // count events for this test's meetings).
+        let mut requeued_ids = Vec::new();
+        while let Ok(Some(event)) =
+            tokio::time::timeout(std::time::Duration::from_millis(500), refresh_rx.next()).await
+        {
+            if let Some(id) = event.data.get("meeting_id").and_then(|v| v.as_i64()) {
+                if [needs_requeue, retried, already_summarized].contains(&id) {
+                    requeued_ids.push(id);
+                }
+            }
+        }
+        assert_eq!(requeued_ids, vec![needs_requeue]);
+    }
+}
