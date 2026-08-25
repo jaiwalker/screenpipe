@@ -20,6 +20,7 @@ function writeImportedConversation(
   source: "codex" | "claude-code",
   offsetMs: number,
   pinned = false,
+  harness: "terminal" | "cursor" | "github-copilot" | "screenpipe" = "terminal",
 ): void {
   const now = Date.now() + offsetMs;
   fixtureIds.add(id);
@@ -37,7 +38,7 @@ function writeImportedConversation(
       lastUserMessageAt: now,
       lastContentAt: now + 1,
       lastViewedAt: now + 1,
-      importedFrom: { source, sourceId: `${source}-fixture`, importedAt: now },
+      importedFrom: { source, sourceId: `${source}-fixture`, importedAt: now, harness },
       messages: [
         { id: `${id}-user`, role: "user", content: title, timestamp: now },
         { id: `${id}-assistant`, role: "assistant", content: "Fixture reply", timestamp: now + 1 },
@@ -77,7 +78,7 @@ async function setTheme(theme: "light" | "dark"): Promise<void> {
   }, theme);
 }
 
-describe("agent activity sidebar", function () {
+describe("unified recents sidebar", function () {
   this.timeout(120_000);
 
   before(async () => {
@@ -99,8 +100,8 @@ describe("agent activity sidebar", function () {
     await codexRow.waitForDisplayed({ timeout: t(10_000) });
     await claudeRow.waitForDisplayed({ timeout: t(10_000) });
 
-    expect(await codexRow.getText()).toContain("Codex · local history");
-    expect(await claudeRow.getText()).toContain("Claude · local history");
+    expect(await codexRow.getText()).toContain("Codex · Terminal");
+    expect(await claudeRow.getText()).toContain("Claude · Terminal");
     expect(await $("[aria-label='sync Codex and Claude chats']").isDisplayed()).toBe(true);
 
     await saveScreenshot("chat-agent-activity-sidebar-light");
@@ -129,6 +130,7 @@ describe("agent activity sidebar", function () {
         index % 2 === 0 ? "codex" : "claude-code",
         -index * 4 * 60_000,
         index < 2,
+        (["cursor", "screenpipe", "github-copilot", "terminal"] as const)[index % 4],
       );
     });
     await reloadFixture({ expandPinned: true, height: 1200 });
@@ -171,6 +173,8 @@ describe("agent activity sidebar", function () {
         title,
         "codex",
         -index * 7 * 60_000,
+        false,
+        (["cursor", "terminal", "screenpipe"] as const)[index % 3],
       );
     });
     await reloadFixture({ expandPinned: true, height: 1200 });

@@ -98,10 +98,15 @@ describe("SidebarChatRow current conversation", () => {
 
   it("shows Codex provenance for imported local history", () => {
     renderRow(false, "idle", {
-      importedFrom: { source: "codex", sourceId: "thread-1", importedAt: 100 },
+      importedFrom: {
+        source: "codex",
+        sourceId: "thread-1",
+        importedAt: 100,
+        harness: "terminal",
+      },
     });
 
-    expect(screen.getByLabelText("Codex provider")).toBeVisible();
-    expect(screen.getByText("Codex · local history")).toBeVisible();
+    expect(screen.getByLabelText("Terminal harness")).toBeVisible();
+    expect(screen.getByText("Codex · Terminal")).toBeVisible();
   });
 });

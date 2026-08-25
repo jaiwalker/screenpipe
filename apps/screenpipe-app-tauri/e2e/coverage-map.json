@@ -1049,7 +1049,7 @@
       "criticality": "high",
       "confidence": "strong",
       "ux": "real-user-flow",
-      "notes": "Imported local Codex and Claude conversations remain distinguishable in Agent activity, expose their provenance, and keep the local-history sync action available. Captures sparse, crowded mixed-provider, and Codex-heavy native UI states, including expanded pinned rows and the capped recent working set."
+      "notes": "Imported Codex and Claude conversations share one Recents stream with native screenpipe chats while retaining traceable provider and harness provenance. Captures sparse, crowded mixed-provider, and Codex-heavy native UI states with Terminal, Cursor, screenpipe, and GitHub Copilot harnesses, expanded pinned rows, and the capped recent working set."
     },
     {
       "spec": "chat-sidebar-groups.spec.ts",

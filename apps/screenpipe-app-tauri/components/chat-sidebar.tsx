@@ -47,6 +47,7 @@ import {
   Pencil,
   FolderOpen,
   Timer,
+  Terminal,
   Download,
 } from "lucide-react";
 import { usePlatform } from "@/lib/hooks/use-platform";
@@ -1292,7 +1293,7 @@ export function ChatSidebar({ className, onViewAll }: ChatSidebarProps) {
 
           <div className="group/recents min-h-0 flex flex-col">
             <Section
-              title="agent activity"
+              title="recents"
               collapsed={recentsCollapsed}
               onCollapsedChange={setRecentsCollapsed}
               headerAction={
@@ -2491,6 +2492,29 @@ export function SidebarChatRow({
       : importedSource === "codex"
         ? "Codex"
         : null;
+  const harness = session.importedFrom?.harness ?? (sourceLabel ? null : "screenpipe");
+  const harnessLabel =
+    harness === "github-copilot"
+      ? "GitHub Copilot"
+      : harness === "cursor"
+        ? "Cursor"
+        : harness === "screenpipe"
+          ? "screenpipe"
+          : harness === "terminal"
+            ? "Terminal"
+            : null;
+  const harnessIcon =
+    harness === "github-copilot"
+      ? "/images/acp/github-copilot-cli.svg"
+      : harness === "cursor"
+        ? "/images/cursor.png"
+        : harness === "screenpipe"
+          ? "/images/screenpipe.png"
+          : harness === "terminal"
+            ? null
+            : importedSource === "claude-code"
+              ? "/images/claude-ai.svg"
+              : "/images/codex.svg";
   // The row is both the click target and the right-click (context menu)
   // anchor. The kebab below stays as a discoverable, mouse-only entry point;
   // both menus render the same `RowMenuItems`.
@@ -2528,22 +2552,36 @@ export function SidebarChatRow({
           onSelect(session.id);
         }}
       >
-        {sourceLabel && (
-          <span
-            className="flex h-5 w-5 shrink-0 items-center justify-center"
-            aria-label={`${sourceLabel} provider`}
-            title={sourceLabel}
-          >
+        <span
+          className="relative flex h-5 w-5 shrink-0 items-center justify-center"
+          aria-label={harnessLabel ? `${harnessLabel} harness` : `${sourceLabel} source`}
+          title={harnessLabel ? `${harnessLabel}${sourceLabel ? ` · ${sourceLabel}` : ""}` : sourceLabel ?? undefined}
+        >
+          {harnessIcon ? (
             <Image
-              src={importedSource === "claude-code" ? "/images/claude-ai.svg" : "/images/codex.svg"}
+              src={harnessIcon}
               alt=""
               width={17}
               height={17}
-              className="h-[17px] w-[17px] object-contain"
+              className="h-[17px] w-[17px] rounded-[4px] object-contain"
               unoptimized
             />
-          </span>
-        )}
+          ) : (
+            <Terminal className="h-4 w-4 sidebar-text-tertiary" aria-hidden />
+          )}
+          {sourceLabel && harnessLabel && (
+            <span className="absolute -bottom-0.5 -right-0.5 flex h-2.5 w-2.5 items-center justify-center rounded-full bg-background ring-1 ring-background">
+              <Image
+                src={importedSource === "claude-code" ? "/images/claude-ai.svg" : "/images/codex.svg"}
+                alt=""
+                width={10}
+                height={10}
+                className="h-2.5 w-2.5 rounded-full object-contain"
+                unoptimized
+              />
+            </span>
+          )}
+        </span>
         {!insideGroup && (session.kind === "pipe-run" || session.kind === "pipe-watch") && (
           <Timer className="h-3 w-3 shrink-0 sidebar-text-tertiary" aria-hidden />
         )}
@@ -2564,7 +2602,7 @@ export function SidebarChatRow({
           </span>
           {sourceLabel && (
             <span className="block truncate text-[9px] leading-3 sidebar-text-tertiary">
-              {sourceLabel} · {session.kind === "pipe-run" ? "automation" : "local history"}
+              {sourceLabel} · {harnessLabel ?? "imported"}
             </span>
           )}
         </span>

@@ -14,6 +14,7 @@ import {
   stat,
 } from "@tauri-apps/plugin-fs";
 import type {
+  AgentHarness,
   ChatConversation,
   ConversationKind,
   PipeContext,
@@ -365,6 +366,7 @@ export interface ConversationMeta {
     source: "claude-code" | "codex";
     sourceId: string;
     importedAt: number;
+    harness?: AgentHarness;
   };
 }
 
