@@ -391,7 +391,7 @@ describe("AIPresetsSelector controlled preset creation", () => {
   });
 });
 
-describe("AIPresetsSelector agent presets on non-agent surfaces", () => {
+describe("AIPresetsSelector agent presets", () => {
   const agentPreset: AIPreset = {
     ...originalPreset,
     id: "cursor",
@@ -412,46 +412,7 @@ describe("AIPresetsSelector agent presets on non-agent surfaces", () => {
     mocks.acpEnabled.current = true;
   });
 
-  it("lists agent presets so the dropdown matches chat", () => {
-    render(
-      <AIPresetsSelector
-        compact
-        showModelOnly
-        includeAgentPresets={false}
-        controlledPresetId={originalPreset.id}
-        onControlledSelect={mocks.controlledSelect}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("combobox"));
-
-    const option = screen.getByTestId("ai-preset-option-cursor");
-    expect(option).toBeInTheDocument();
-    expect(option).toHaveAttribute("data-disabled", "true");
-    expect(option).toHaveAttribute("data-unavailable", "true");
-    expect(within(option).getByText("chat only")).toBeInTheDocument();
-  });
-
-  it("refuses to select an agent preset the surface cannot run", () => {
-    render(
-      <AIPresetsSelector
-        compact
-        showModelOnly
-        includeAgentPresets={false}
-        controlledPresetId={originalPreset.id}
-        onControlledSelect={mocks.controlledSelect}
-      />,
-    );
-
-    const trigger = screen.getByRole("combobox");
-    fireEvent.click(trigger);
-    fireEvent.click(screen.getByTestId("ai-preset-option-cursor"));
-
-    expect(mocks.controlledSelect).not.toHaveBeenCalled();
-    expect(trigger).toHaveTextContent("old-model");
-  });
-
-  it("keeps agent presets selectable where agents run", () => {
+  it("lists and selects agent presets on every surface", () => {
     render(
       <AIPresetsSelector
         compact
@@ -463,12 +424,11 @@ describe("AIPresetsSelector agent presets on non-agent surfaces", () => {
 
     fireEvent.click(screen.getByRole("combobox"));
     const option = screen.getByTestId("ai-preset-option-cursor");
-    expect(option).not.toHaveAttribute("data-unavailable");
-    expect(within(option).queryByText("chat only")).not.toBeInTheDocument();
+    expect(option).not.toHaveAttribute("data-disabled");
 
     fireEvent.click(option);
     expect(mocks.controlledSelect).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "cursor" }),
+      expect.objectContaining({ id: "cursor", provider: "acp" }),
     );
   });
 });
