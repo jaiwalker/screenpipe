@@ -8939,16 +8939,18 @@ mod tests {
         assert!(body.contains("Meeting-local mappings"));
         assert!(body.contains("must never\nemit an `APPROVE SPEAKER` command"));
         assert!(body.contains("Never call `/feedback`, send a\nnotification, or call port 11435"));
-        assert!(body.contains(
-            "Fetch at most 6 targeted OCR windows in three batches of at most 2 concurrent"
-        ));
+        assert!(body.contains("content_type=accessibility&on_screen=true"));
+        assert!(body.contains("content_type=parsed"));
+        assert!(body.contains("Never call `content_type=ocr`"));
         let permissions = permissions::PipePermissions::from_config(&config);
         assert!(permissions.is_endpoint_allowed("GET", "/meetings/42"));
         assert!(permissions.is_endpoint_allowed("GET", "/meetings/42/transcript"));
         assert!(permissions.is_endpoint_allowed("GET", "/search"));
         assert!(permissions.is_endpoint_allowed("POST", "/speakers/update"));
         assert!(permissions.is_content_type_allowed("audio"));
-        assert!(permissions.is_content_type_allowed("ocr"));
+        assert!(permissions.is_content_type_allowed("accessibility"));
+        assert!(permissions.is_content_type_allowed("parsed"));
+        assert!(!permissions.is_content_type_allowed("ocr"));
         assert!(!permissions.is_content_type_allowed("input"));
         assert!(!permissions.is_endpoint_allowed("POST", "/speakers/reassign"));
         assert!(!permissions.is_endpoint_allowed("POST", "/speakers/merge"));
@@ -8967,6 +8969,7 @@ mod tests {
             "Api(POST /raw_sql)",
             "Api(GET /feedback)",
             "Api(POST /notify)",
+            "Content(input, ocr)",
         ] {
             assert!(source.contains(forbidden), "missing deny rule: {forbidden}");
         }
