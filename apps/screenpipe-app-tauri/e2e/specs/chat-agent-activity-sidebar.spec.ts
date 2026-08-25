@@ -11,14 +11,18 @@ import { saveScreenshot } from "../helpers/screenshot-utils.js";
 const CHATS_DIR = join(E2E_DATA_DIR, "chats");
 const CODEX_ID = "e2e-agent-sidebar-codex";
 const CLAUDE_ID = "e2e-agent-sidebar-claude";
+const FIXTURE_PREFIX = "e2e-agent-sidebar-";
+const fixtureIds = new Set<string>();
 
 function writeImportedConversation(
   id: string,
   title: string,
   source: "codex" | "claude-code",
   offsetMs: number,
+  pinned = false,
 ): void {
   const now = Date.now() + offsetMs;
+  fixtureIds.add(id);
   mkdirSync(CHATS_DIR, { recursive: true });
   writeFileSync(
     join(CHATS_DIR, `${id}.json`),
@@ -27,6 +31,7 @@ function writeImportedConversation(
       title,
       titleSource: "ai",
       kind: "chat",
+      pinned,
       createdAt: now,
       updatedAt: now,
       lastUserMessageAt: now,
@@ -42,8 +47,26 @@ function writeImportedConversation(
 }
 
 function cleanup(): void {
-  rmSync(join(CHATS_DIR, `${CODEX_ID}.json`), { force: true });
-  rmSync(join(CHATS_DIR, `${CLAUDE_ID}.json`), { force: true });
+  for (const id of fixtureIds) {
+    rmSync(join(CHATS_DIR, `${id}.json`), { force: true });
+  }
+  fixtureIds.clear();
+}
+
+async function reloadFixture({
+  expandPinned = false,
+  height = 1000,
+}: {
+  expandPinned?: boolean;
+  height?: number;
+} = {}): Promise<void> {
+  await browser.setWindowSize(1440, height);
+  await browser.execute((shouldExpandPinned: boolean) => {
+    localStorage.setItem("screenpipe:pinned-collapsed", String(!shouldExpandPinned));
+    localStorage.setItem("screenpipe:recents-collapsed", "false");
+  }, expandPinned);
+  await reloadAndWaitForHome();
+  await setTheme("light");
 }
 
 async function setTheme(theme: "light" | "dark"): Promise<void> {
@@ -63,9 +86,7 @@ describe("agent activity sidebar", function () {
     writeImportedConversation(CLAUDE_ID, "Synthesize customer feedback", "claude-code", 1_000);
     await waitForAppReady();
     await openHomeWindow();
-    await browser.setWindowSize(1440, 1000);
-    await reloadAndWaitForHome();
-    await setTheme("light");
+    await reloadFixture();
   });
 
   after(async () => {
@@ -83,5 +104,81 @@ describe("agent activity sidebar", function () {
     expect(await $("[aria-label='sync Codex and Claude chats']").isDisplayed()).toBe(true);
 
     await saveScreenshot("chat-agent-activity-sidebar-light");
+
+    cleanup();
+    const mixedTitles = [
+      "Ship Windows capture recovery",
+      "Summarize enterprise interviews",
+      "Investigate audio device switching",
+      "Draft launch announcement",
+      "Review onboarding drop-off",
+      "Prepare customer follow-ups",
+      "Trace duplicate chat sessions",
+      "Analyze weekly product usage",
+      "Polish the release checklist",
+      "Compare transcription quality",
+      "Plan the next design sprint",
+      "Find unresolved support threads",
+      "Audit agent tool permissions",
+      "Write the engineering recap",
+    ];
+    mixedTitles.forEach((title, index) => {
+      writeImportedConversation(
+        `${FIXTURE_PREFIX}mixed-${index}`,
+        title,
+        index % 2 === 0 ? "codex" : "claude-code",
+        -index * 4 * 60_000,
+        index < 2,
+      );
+    });
+    await reloadFixture({ expandPinned: true, height: 1200 });
+    await $(`[data-testid="chat-row-${FIXTURE_PREFIX}mixed-0"]`).waitForDisplayed({
+      timeout: t(10_000),
+    });
+    const mixedRows = await $$(`[data-testid^="chat-row-${FIXTURE_PREFIX}mixed-"]`);
+    expect(mixedRows.length).toBe(10);
+    await saveScreenshot("chat-agent-activity-sidebar-crowded-mixed");
+
+    cleanup();
+    writeImportedConversation(
+      `${FIXTURE_PREFIX}codex-heavy-pinned`,
+      "Customer voice synthesis",
+      "claude-code",
+      60_000,
+      true,
+    );
+    const codexTitles = [
+      "Fix intermittent OCR stalls",
+      "Review release CI failures",
+      "Refactor recording health checks",
+      "Investigate high memory usage",
+      "Add timeline keyboard navigation",
+      "Verify updater artifacts",
+      "Diagnose meeting detection",
+      "Improve permissions recovery",
+      "Audit SQLite migration safety",
+      "Test multi-monitor capture",
+      "Reduce agent startup latency",
+      "Document local API changes",
+      "Check Windows signing flow",
+      "Clean up stale feature flags",
+      "Review dependency updates",
+      "Prepare the desktop changelog",
+    ];
+    codexTitles.forEach((title, index) => {
+      writeImportedConversation(
+        `${FIXTURE_PREFIX}codex-heavy-${index}`,
+        title,
+        "codex",
+        -index * 7 * 60_000,
+      );
+    });
+    await reloadFixture({ expandPinned: true, height: 1200 });
+    await $(`[data-testid="chat-row-${FIXTURE_PREFIX}codex-heavy-pinned"]`).waitForDisplayed({
+      timeout: t(10_000),
+    });
+    const codexHeavyRows = await $$(`[data-testid^="chat-row-${FIXTURE_PREFIX}codex-heavy-"]`);
+    expect(codexHeavyRows.length).toBe(9);
+    await saveScreenshot("chat-agent-activity-sidebar-codex-heavy");
   });
 });
