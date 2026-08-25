@@ -4,7 +4,10 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SidebarChatRow } from "@/components/chat-sidebar";
+import {
+  filterRecentsBySource,
+  SidebarChatRow,
+} from "@/components/chat-sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import type { SessionRecord } from "@/lib/stores/chat-store";
 
@@ -106,7 +109,40 @@ describe("SidebarChatRow current conversation", () => {
       },
     });
 
-    expect(screen.getByLabelText("Terminal harness")).toBeVisible();
-    expect(screen.getByText("Codex · Terminal")).toBeVisible();
+    expect(screen.getByLabelText("Terminal harness")).toHaveAttribute(
+      "title",
+      "Terminal · Codex",
+    );
+  });
+});
+
+describe("Recents provider filtering", () => {
+  it("can independently hide Codex, Claude, and screenpipe chats", () => {
+    const sessions: SessionRecord[] = [
+      baseSession,
+      {
+        ...baseSession,
+        id: "codex-chat",
+        importedFrom: {
+          source: "codex",
+          sourceId: "codex-1",
+          importedAt: 100,
+        },
+      },
+      {
+        ...baseSession,
+        id: "claude-chat",
+        importedFrom: {
+          source: "claude-code",
+          sourceId: "claude-1",
+          importedAt: 100,
+        },
+      },
+    ];
+
+    expect(filterRecentsBySource(sessions, new Set(["claude-code"])).map(({ id }) => id))
+      .toEqual(["chat-focus-test", "codex-chat"]);
+    expect(filterRecentsBySource(sessions, new Set(["screenpipe", "codex"])).map(({ id }) => id))
+      .toEqual(["claude-chat"]);
   });
 });

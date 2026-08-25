@@ -100,9 +100,13 @@ describe("unified recents sidebar", function () {
     await codexRow.waitForDisplayed({ timeout: t(10_000) });
     await claudeRow.waitForDisplayed({ timeout: t(10_000) });
 
-    expect(await codexRow.getText()).toContain("Codex · Terminal");
-    expect(await claudeRow.getText()).toContain("Claude · Terminal");
-    expect(await $("[aria-label='sync Codex and Claude chats']").isDisplayed()).toBe(true);
+    expect(
+      await codexRow.$("[aria-label='Terminal harness']").getAttribute("title"),
+    ).toBe("Terminal · Codex");
+    expect(
+      await claudeRow.$("[aria-label='Terminal harness']").getAttribute("title"),
+    ).toBe("Terminal · Claude");
+    expect(await $("[aria-label='sync Codex and Claude chats']").isExisting()).toBe(false);
 
     await saveScreenshot("chat-agent-activity-sidebar-light");
 

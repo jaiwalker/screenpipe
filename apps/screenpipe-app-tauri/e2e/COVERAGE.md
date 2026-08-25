@@ -7,8 +7,8 @@ and layer declared in the manifest, weighted by confidence and criticality.
 - Manifest: `e2e/coverage-map.json`
 - Specs directory: `e2e/specs`
 - Mapped specs: 123
-- Declared test blocks: 358
-- Weighted coverage points: 282.2
+- Declared test blocks: 359
+- Weighted coverage points: 282.9
 
 Confidence weights: strong=1.0, partial=0.7, conditional=0.4, smoke=0.3.
 Criticality weights: high=1.0, medium=0.7, low=0.4.
@@ -19,9 +19,9 @@ can execute more runtime cases than this number shows.
 
 | Platform | Specs | Declared tests | Weighted points | Layers | Features | Critical score |
 | --- | --- | --- | --- | --- | --- | --- |
-| windows | 94 | 306 | 250.6 | 15 | 101 | 92% |
-| macos | 119 | 320 | 252.0 | 17 | 109 | 90% |
-| linux | 83 | 264 | 220.0 | 14 | 98 | 88% |
+| windows | 94 | 307 | 251.3 | 15 | 102 | 92% |
+| macos | 119 | 321 | 252.7 | 17 | 110 | 90% |
+| linux | 83 | 265 | 220.7 | 14 | 99 | 88% |
 
 ## Runtime Results
 
@@ -37,18 +37,18 @@ pass/fail/skip counts.
 | auth | - | 1 specs / 1 tests / 1.0 pts | - |
 | billing | 4 specs / 6 tests / 5.7 pts | 4 specs / 6 tests / 5.7 pts | 4 specs / 6 tests / 5.7 pts |
 | capture-ocr | 2 specs / 16 tests / 6.4 pts | 8 specs / 12 tests / 4.8 pts | 1 specs / 3 tests / 1.2 pts |
-| chat-ai | 27 specs / 59 tests / 44.8 pts | 39 specs / 83 tests / 60.9 pts | 26 specs / 58 tests / 44.3 pts |
+| chat-ai | 27 specs / 60 tests / 45.5 pts | 39 specs / 84 tests / 61.6 pts | 26 specs / 59 tests / 45.0 pts |
 | entitlement | - | 1 specs / 1 tests / 1.0 pts | - |
 | local-api | 27 specs / 116 tests / 97.0 pts | 36 specs / 109 tests / 92.5 pts | 22 specs / 84 tests / 75.2 pts |
 | notifications | 4 specs / 26 tests / 17.3 pts | 3 specs / 5 tests / 3.4 pts | 2 specs / 4 tests / 3.1 pts |
 | onboarding | 9 specs / 38 tests / 33.8 pts | 11 specs / 42 tests / 37.2 pts | 9 specs / 38 tests / 33.8 pts |
-| os-integration | 7 specs / 31 tests / 26.2 pts | 14 specs / 28 tests / 16.7 pts | 2 specs / 14 tests / 10.1 pts |
+| os-integration | 7 specs / 32 tests / 26.9 pts | 14 specs / 29 tests / 17.4 pts | 2 specs / 15 tests / 10.8 pts |
 | performance | 3 specs / 45 tests / 45.0 pts | 5 specs / 35 tests / 31.5 pts | 2 specs / 30 tests / 30.0 pts |
 | pipes | 6 specs / 19 tests / 19.0 pts | 8 specs / 25 tests / 25.0 pts | 6 specs / 19 tests / 19.0 pts |
 | real-ui-e2e | 68 specs / 206 tests / 170.5 pts | 82 specs / 216 tests / 178.4 pts | 63 specs / 182 tests / 156.6 pts |
 | settings | 14 specs / 40 tests / 37.0 pts | 16 specs / 34 tests / 29.7 pts | 13 specs / 31 tests / 28.0 pts |
 | storage-privacy | 9 specs / 42 tests / 33.3 pts | 9 specs / 27 tests / 26.1 pts | 6 specs / 20 tests / 19.1 pts |
-| tauri-command | 19 specs / 53 tests / 40.8 pts | 27 specs / 67 tests / 51.0 pts | 18 specs / 54 tests / 41.6 pts |
+| tauri-command | 19 specs / 54 tests / 41.5 pts | 27 specs / 68 tests / 51.7 pts | 18 specs / 55 tests / 42.3 pts |
 | window-lifecycle | 19 specs / 66 tests / 55.0 pts | 19 specs / 46 tests / 32.4 pts | 13 specs / 39 tests / 29.9 pts |
 
 ## Critical Feature Matrix
@@ -100,7 +100,7 @@ pass/fail/skip counts.
 
 | Spec | Platforms | Layers | Features | Criticality | Confidence | UX | Tests | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| acp-backend.spec.ts | windows, macos, linux | chat-ai, tauri-command, os-integration | chat, acp-backend, agent-streaming, agent-permissions, agent-cancellation, agent-terminal, agent-tool-metadata, mcp-registration, process-supervision | high | partial | mixed | 13 | Official Rust ACP SDK runtime and inline UI E2E with a deterministic stdio agent: initialization, session close, streaming, background permissions, cancellation, localized auth/cancel, malformed stdout, exact adapter/descendant reaping, terminal lifecycle/output draining, late tool metadata/error propagation with a provider fallback, and a real authenticated local API MCP health call. Curated third-party adapters remain manual smoke coverage. |
+| acp-backend.spec.ts | windows, macos, linux | chat-ai, tauri-command, os-integration | chat, acp-backend, agent-streaming, agent-permissions, agent-cancellation, agent-terminal, agent-tool-metadata, agent-tool-compaction, mcp-registration, process-supervision | high | partial | mixed | 14 | Official Rust ACP SDK runtime and inline UI E2E with a deterministic stdio agent: initialization, session close, streaming, background permissions, cancellation, localized auth/cancel, malformed stdout, exact adapter/descendant reaping, terminal lifecycle/output draining, late tool metadata/error propagation with a provider fallback, progressive compaction of repeated Claude tool calls with drill-down access, and a real authenticated local API MCP health call. Curated third-party adapters remain manual smoke coverage. |
 | acp-onboarding-ux.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e, tauri-command | chat, acp-backend, acp-onboarding, acp-auth | high | partial | real-user-flow | 2 | Selecting an ACP agent connects it with nothing sent (sign-in surfaces before the first send, not after a cold install), and the settings picker states who owns sign-in/models/API keys next to the agent list. |
 | api-key-cold-spawn.spec.ts | windows, macos, linux | local-api, tauri-command | local-api-auth, app-launch | medium | partial | command | 3 | Cold-spawn local API config regression coverage. |
 | api-search-stress.spec.ts | windows, macos, linux | local-api, performance | local-api-auth, local-api-search, health, audio-device-health, local-api-load | high | strong | api | 29 | Broad readonly API, auth, search, and load coverage. |
@@ -115,7 +115,7 @@ pass/fail/skip counts.
 | capture-restart-device-recovery.spec.ts | windows, macos | audio-device, local-api, real-ui-e2e | audio-device-health | high | conditional | real-user-flow | 3 | Opt-in real-audio continuous lane for #6089: a capture-session restart must bring back the same running device set, and the device monitor must survive to recover a device stopped afterwards. |
 | capture-stall-recovery.spec.ts | macos | capture-ocr, local-api, os-integration, real-ui-e2e | app-launch, capture-ocr, health, recording-health-alerts | high | conditional | mixed | 3 | Opt-in macOS full-stack lane proves all selected user-paused monitors remain an intentional disabled/normal state and resume cleanly, bounds a wedged SCK frame worker, proves the privacy-gated CoreGraphics fallback, reproduces a status-Running capture loop going silent, verifies stale and the failure pill, independent per-monitor stall detection with a VisionManager restart and resumed terminal capture progress, same-process UI recovery, and bounded id-based SCK lookup retry. |
 | capture-stall-stage-marker.spec.ts | macos | capture-ocr, local-api, os-integration | app-launch, capture-ocr | high | conditional | api | 1 | Opt-in macOS fault injection parks the capture loop; asserts /health names the frozen CaptureLoopStage with an advancing age while frame_status is stale, and that the stage age collapses once the watchdog recovers capture. |
-| chat-agent-activity-sidebar.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e | chat, chat-sidebar-groups | high | strong | real-user-flow | 1 | Imported Codex and Claude conversations share one Recents stream with native screenpipe chats while retaining traceable provider and harness provenance. Captures sparse, crowded mixed-provider, and Codex-heavy native UI states with Terminal, Cursor, screenpipe, and GitHub Copilot harnesses, expanded pinned rows, and the capped recent working set. |
+| chat-agent-activity-sidebar.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e | chat, chat-sidebar-groups | high | strong | real-user-flow | 1 | Recent local Codex and Claude histories sync automatically into the same Recents stream as native screenpipe chats. The primary sidebar has no import action; right-clicking View all filters by only the sources present. Captures sparse, crowded mixed-provider, and Codex-heavy native UI states with one harness icon per row, expanded pinned rows, and the capped recent working set. |
 | chat-ask-user-tool-card.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e | chat, chat-tools, pi-ask-user | medium | partial | mixed | 1 | Synthetic assistant tool block renders the Pi ask_user dropdown and sends the selected answer through the normal chat reply path. |
 | chat-automation-card-duplicate.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e | chat, chat-home-card-placeholder-preview, chat-sidebar-dedupe, chat-session-activity | medium | partial | real-user-flow | 1 | The Day Recap automation card previews its user-facing prompt in the empty composer on hover, restores the default placeholder on leave, and creates exactly one persisted conversation and one sidebar row; status-only activity for an unknown session must not create an empty untitled sibling. |
 | chat-composer-isolation.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e | chat, chat-drafts | medium | partial | mixed | 1 | Composer draft isolation across conversations. |
