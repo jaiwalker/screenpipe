@@ -1049,7 +1049,7 @@
       "criticality": "high",
       "confidence": "strong",
       "ux": "real-user-flow",
-      "notes": "Imported local Codex and Claude conversations remain distinguishable in Agent activity, expose their provenance, and keep the local-history sync action available. Captures light and dark visual evidence."
+      "notes": "Imported local Codex and Claude conversations remain distinguishable in Agent activity, expose their provenance, and keep the local-history sync action available. Captures full-app visual evidence used for the PR overview and sidebar detail."
     },
     {
       "spec": "chat-sidebar-groups.spec.ts",
