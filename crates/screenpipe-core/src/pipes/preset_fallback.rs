@@ -33,52 +33,6 @@ const NON_RETRYABLE_ERROR_TYPES: &[&str] = &[
 /// Maximum number of presets to try per request.
 pub const MAX_FALLBACK_DEPTH: usize = 4;
 
-/// Declarative fallback behavior from a Pipe's frontmatter.
-///
-/// The runner stays workflow-agnostic: a bundled or user-authored Pipe opts
-/// into broader fallback behavior explicitly instead of the engine inferring
-/// policy from its name or trigger.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PresetFallbackPolicy {
-    /// Append the user's configured presets after the Pipe's explicit chain.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub include_configured: bool,
-    /// Error categories that may advance even though the default runner treats
-    /// them as terminal. Safety refusals are always terminal and cannot be
-    /// overridden here.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub retry_on: Vec<String>,
-    /// Permission responder applied to ACP presets for this Pipe run only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_approval_mode: Option<AgentApprovalMode>,
-}
-
-impl PresetFallbackPolicy {
-    pub fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum AgentApprovalMode {
-    Ask,
-    AllowAll,
-}
-
-impl AgentApprovalMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Ask => "ask",
-            Self::AllowAll => "allow-all",
-        }
-    }
-}
-
-fn is_false(value: &bool) -> bool {
-    !value
-}
-
 // ---------------------------------------------------------------------------
 // Circuit breaker state
 // ---------------------------------------------------------------------------

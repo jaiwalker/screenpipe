@@ -3,13 +3,7 @@ schedule: manual
 enabled: true
 preset:
   - screenpipe-cloud
-preset_fallback:
-  include_configured: true
-  retry_on:
-    - auth_failed
-    - daily_limit
-    - model_not_allowed
-  agent_approval_mode: allow-all
+  - "*"
 timeout: 600
 trigger:
   events:

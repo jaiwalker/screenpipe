@@ -955,7 +955,6 @@ mod tests {
             cloud_agent: None,
             effort: crate::pipes::PipeEffort::Low,
             preset: vec![],
-            preset_fallback: crate::pipes::preset_fallback::PresetFallbackPolicy::default(),
             permissions: PipePermissionsConfig::default(),
             connections: vec![],
             timeout: None,
@@ -988,7 +987,6 @@ mod tests {
             cloud_agent: None,
             effort: crate::pipes::PipeEffort::Low,
             preset: vec![],
-            preset_fallback: crate::pipes::preset_fallback::PresetFallbackPolicy::default(),
             permissions: PipePermissionsConfig::Preset("reader".to_string()),
             connections: vec![],
             timeout: None,
@@ -1021,7 +1019,6 @@ mod tests {
             cloud_agent: None,
             effort: crate::pipes::PipeEffort::Low,
             preset: vec![],
-            preset_fallback: crate::pipes::preset_fallback::PresetFallbackPolicy::default(),
             permissions: PipePermissionsConfig::Rules {
                 allow: vec![
                     "Api(GET /search)".to_string(),
