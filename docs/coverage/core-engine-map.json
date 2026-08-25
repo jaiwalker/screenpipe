@@ -302,6 +302,7 @@
         "src/auth_key.rs",
         "src/history_access.rs",
         "src/local_chat.rs",
+        "src/meeting_summary_finalizer.rs",
         "src/pipe_stream.rs",
         "src/routes/activity_summary.rs",
         "src/routes/activity_ledger.rs",
