@@ -3351,8 +3351,7 @@ fn normalized_tool_name(title: &str) -> Option<String> {
 /// name) are refused too: a scoped surface answers from the evidence in its own
 /// turn, so a file read or a skill load is out of contract by construction.
 fn scoped_tool_allowed(allowlist: &[String], title: Option<&str>) -> bool {
-    normalized_tool_name(title.unwrap_or(""))
-        .is_some_and(|name| allowlist.contains(&name))
+    normalized_tool_name(title.unwrap_or("")).is_some_and(|name| allowlist.contains(&name))
 }
 
 /// A short, readable heading for a permission prompt, from the tool's `kind`.
@@ -5130,7 +5129,10 @@ mod tests {
             &allowlist,
             Some("mcp__screenpipe__update-memory")
         ));
-        assert!(!scoped_tool_allowed(&allowlist, Some("mcp__notion__search")));
+        assert!(!scoped_tool_allowed(
+            &allowlist,
+            Some("mcp__notion__search")
+        ));
         assert!(!scoped_tool_allowed(&allowlist, Some("Skill")));
         assert!(!scoped_tool_allowed(&allowlist, None));
     }
