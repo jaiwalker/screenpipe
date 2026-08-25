@@ -85,7 +85,7 @@ function installLocalApiMock() {
       }
       const slug = url.split("/").pop() ?? "";
       return slug in pipeStates
-        ? response({ data: { config: { name: slug, enabled: pipeStates[slug] } } })
+        ? response({ data: { config: { enabled: pipeStates[slug] } } })
         : response({ error: `pipe '${slug}' not found` });
     },
   );
@@ -103,7 +103,10 @@ beforeEach(() => {
   installFailure = null;
   setPipeStates({});
   mocks.fetchComposioStatus.mockImplementation(async () => ({
-    gmail: { connected: gmailConnected, status: gmailConnected ? "ACTIVE" : null },
+    gmail: {
+      connected: gmailConnected,
+      status: gmailConnected ? "ACTIVE" : null,
+    },
   }));
   mocks.authorizeComposioToolkit.mockResolvedValue(
     "https://auth.example.test/gmail",
@@ -124,16 +127,37 @@ beforeEach(() => {
 });
 
 describe("first-run next steps", () => {
-  it("installs, connects Gmail, and enables the daily summary from one app click", async () => {
-    const openSettings = vi.fn();
-    window.addEventListener("open-settings", openSettings);
+  it("shows one guided action, the real Google icons, and a plain speaker-review boundary", async () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
-    const action = await screen.findByTestId("first-run-next-step-daily-email");
-    await waitFor(() => expect(action).toHaveTextContent("install & connect"));
+    const action = await screen.findByTestId("first-run-next-step-setup-all");
+    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    expect(screen.getByTestId("gmail-service-icon")).toHaveAttribute(
+      "src",
+      "/images/gmail.svg",
+    );
+    expect(screen.getByTestId("google-calendar-service-icon")).toHaveAttribute(
+      "src",
+      "/google-calendar-icon.svg",
+    );
+    expect(
+      screen.getByText(
+        "after each meeting, use diarized audio plus accessibility and parsed meeting data to prepare possible names. it never changes names automatically.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/shadow mode/i)).not.toBeInTheDocument();
+  });
+
+  it("installs the full bundle and walks through Gmail then Calendar from one app click", async () => {
+    render(<FirstRunNextSteps userToken="user-token" />);
+
+    const action = await screen.findByTestId("first-run-next-step-setup-all");
+    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
     fireEvent.click(action);
 
-    await waitFor(() => expect(action).toHaveTextContent("ready"));
+    expect(
+      await screen.findByTestId("first-run-next-steps-complete"),
+    ).toHaveTextContent("daily setup ready");
     expect(mocks.localFetch).toHaveBeenCalledWith(
       "/pipes/store/install",
       expect.objectContaining({
@@ -141,6 +165,27 @@ describe("first-run next steps", () => {
         body: JSON.stringify({ slug: "daily-email-summary" }),
       }),
     );
+    expect(mocks.localFetch).toHaveBeenCalledWith(
+      "/pipes/store/install",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ slug: "digital-clone" }),
+      }),
+    );
+    expect(mocks.localFetch).toHaveBeenCalledWith(
+      "/pipes/bundled/speaker-reconciliation/install",
+      { method: "POST" },
+    );
+    for (const slug of [
+      "daily-email-summary",
+      "digital-clone",
+      "speaker-reconciliation",
+    ]) {
+      expect(mocks.localFetch).toHaveBeenCalledWith(
+        `/pipes/${slug}/enable`,
+        expect.objectContaining({ method: "POST" }),
+      );
+    }
     expect(mocks.authorizeComposioToolkit).toHaveBeenCalledWith(
       "user-token",
       "gmail",
@@ -149,220 +194,183 @@ describe("first-run next steps", () => {
       "https://auth.example.test/gmail",
     );
     expect(mocks.registerComposioMcpServer).toHaveBeenCalledWith("user-token");
-    expect(mocks.localFetch).toHaveBeenCalledWith(
-      "/pipes/daily-email-summary/enable",
-      expect.objectContaining({ method: "POST" }),
-    );
-    expect(openSettings).not.toHaveBeenCalled();
-    window.removeEventListener("open-settings", openSettings);
-  });
-
-  it("skips Gmail setup when it is already connected", async () => {
-    gmailConnected = true;
-    render(<FirstRunNextSteps userToken="user-token" />);
-
-    const action = await screen.findByTestId("first-run-next-step-daily-email");
-    await waitFor(() => expect(action).toHaveTextContent("install & enable"));
-    fireEvent.click(action);
-
-    await waitFor(() => expect(action).toHaveTextContent("ready"));
-    expect(mocks.authorizeComposioToolkit).not.toHaveBeenCalled();
-    expect(mocks.openUrl).not.toHaveBeenCalled();
-  });
-
-  it("installs and enables Digital Clone without opening Scheduled Tasks", async () => {
-    const openSettings = vi.fn();
-    window.addEventListener("open-settings", openSettings);
-    render(<FirstRunNextSteps userToken="user-token" />);
-
-    const action = await screen.findByTestId(
-      "first-run-next-step-digital-clone",
-    );
-    await waitFor(() => expect(action).toHaveTextContent("install & enable"));
-    fireEvent.click(action);
-
-    await waitFor(() => expect(action).toHaveTextContent("ready"));
-    expect(mocks.localFetch).toHaveBeenCalledWith(
-      "/pipes/store/install",
-      expect.objectContaining({
-        body: JSON.stringify({ slug: "digital-clone" }),
-      }),
-    );
-    expect(openSettings).not.toHaveBeenCalled();
-    window.removeEventListener("open-settings", openSettings);
-  });
-
-  it("installs and enables speaker reconciliation in shadow mode from one click", async () => {
-    render(<FirstRunNextSteps userToken="user-token" />);
-
-    const action = await screen.findByTestId(
-      "first-run-next-step-speaker-reconciliation",
-    );
-    expect(
-      screen.getByText(
-        "reconcile diarized voices with time-aligned accessibility and parsed meeting data. shadow mode saves no names.",
-      ),
-    ).toBeInTheDocument();
-    await waitFor(() => expect(action).toHaveTextContent("install & enable"));
-    fireEvent.click(action);
-
-    await waitFor(() => expect(action).toHaveTextContent("shadow mode"));
-    expect(mocks.localFetch).toHaveBeenCalledWith(
-      "/pipes/bundled/speaker-reconciliation/install",
-      { method: "POST" },
-    );
-    expect(mocks.localFetch).toHaveBeenCalledWith(
-      "/pipes/speaker-reconciliation/enable",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ enabled: true }),
-      }),
-    );
-    expect(mocks.capture).toHaveBeenCalledWith(
-      "first_run_next_step_selected",
-      expect.objectContaining({
-        step: "speaker-reconciliation",
-        mode: "shadow",
-      }),
-    );
-  });
-
-  it("enables an installed speaker reconciliation Pipe without reinstalling it", async () => {
-    setPipeStates({ "speaker-reconciliation": false });
-    render(<FirstRunNextSteps userToken="user-token" />);
-
-    const action = await screen.findByTestId(
-      "first-run-next-step-speaker-reconciliation",
-    );
-    await waitFor(() => expect(action).toHaveTextContent("enable"));
-    fireEvent.click(action);
-
-    await waitFor(() => expect(action).toHaveTextContent("shadow mode"));
-    expect(
-      mocks.localFetch.mock.calls.filter(([url]) =>
-        String(url).startsWith("/pipes/bundled/"),
-      ),
-    ).toHaveLength(0);
-  });
-
-  it("connects Google Calendar in place", async () => {
-    const openSettings = vi.fn();
-    window.addEventListener("open-settings", openSettings);
-    render(<FirstRunNextSteps userToken="user-token" />);
-
-    const action = await screen.findByTestId(
-      "first-run-next-step-google-calendar",
-    );
-    await waitFor(() => expect(action).toHaveTextContent("connect"));
-    fireEvent.click(action);
-
-    await waitFor(() => expect(action).toHaveTextContent("connected"));
     expect(mocks.oauthConnect).toHaveBeenCalledWith(
       "google-calendar",
       null,
       null,
     );
-    expect(openSettings).not.toHaveBeenCalled();
-    window.removeEventListener("open-settings", openSettings);
+    expect(
+      mocks.authorizeComposioToolkit.mock.invocationCallOrder[0],
+    ).toBeLessThan(mocks.oauthConnect.mock.invocationCallOrder[0]);
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "first_run_next_step_selected",
+      expect.objectContaining({ step: "recommended-setup-bundle" }),
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "first_run_setup_bundle_completed",
+    );
   });
 
-  it("enables installed tasks without another install step", async () => {
+  it("does not reinstall tasks or reopen approvals that are already connected", async () => {
     gmailConnected = true;
+    calendarConnected = true;
     setPipeStates({
       "daily-email-summary": false,
       "digital-clone": false,
+      "speaker-reconciliation": false,
     });
     render(<FirstRunNextSteps userToken="user-token" />);
 
-    const daily = await screen.findByTestId("first-run-next-step-daily-email");
-    await waitFor(() => expect(daily).toHaveTextContent("enable summary"));
-    fireEvent.click(daily);
-    await waitFor(() => expect(daily).toHaveTextContent("ready"));
+    const action = await screen.findByTestId("first-run-next-step-setup-all");
+    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    fireEvent.click(action);
 
-    const clone = screen.getByTestId("first-run-next-step-digital-clone");
-    fireEvent.click(clone);
-    await waitFor(() => expect(clone).toHaveTextContent("ready"));
     expect(
-      mocks.localFetch.mock.calls.filter(([url]) => url === "/pipes/store/install"),
+      await screen.findByTestId("first-run-next-steps-complete"),
+    ).toBeInTheDocument();
+    expect(
+      mocks.localFetch.mock.calls.filter(
+        ([url]) =>
+          url === "/pipes/store/install" ||
+          String(url).startsWith("/pipes/bundled/"),
+      ),
     ).toHaveLength(0);
+    expect(mocks.authorizeComposioToolkit).not.toHaveBeenCalled();
+    expect(mocks.oauthConnect).not.toHaveBeenCalled();
   });
 
-  it("locks the active setup so repeated clicks cannot install twice", async () => {
+  it("locks the bundle so repeated clicks cannot install twice", async () => {
     gmailConnected = true;
-    let finishInstall: (() => void) | null = null;
-    mocks.localFetch.mockImplementation((url: string, init?: RequestInit) => {
-      if (url === "/pipes/store/install") {
-        return new Promise<Response>((resolve) => {
-          finishInstall = () => {
-            pipeStates["digital-clone"] = false;
-            resolve(response({ name: "digital-clone", connections: [] }));
-          };
-        });
-      }
-      if (url.endsWith("/enable") && init?.method === "POST") {
-        pipeStates["digital-clone"] = true;
-        return Promise.resolve(response({ success: true }));
-      }
-      const slug = url.split("/").pop() ?? "";
-      return Promise.resolve(
-        slug in pipeStates
+    calendarConnected = true;
+    let finishFirstInstall: (() => void) | null = null;
+    let delayed = false;
+    mocks.localFetch.mockImplementation(
+      async (url: string, init?: RequestInit): Promise<Response> => {
+        if (url === "/pipes/store/install" && init?.method === "POST") {
+          const slug = JSON.parse(String(init.body)).slug as string;
+          if (!delayed) {
+            delayed = true;
+            return new Promise<Response>((resolve) => {
+              finishFirstInstall = () => {
+                pipeStates[slug] = false;
+                resolve(response({ name: slug, connections: [] }));
+              };
+            });
+          }
+          pipeStates[slug] = false;
+          return response({ name: slug, connections: [] });
+        }
+        if (
+          url.startsWith("/pipes/bundled/") &&
+          url.endsWith("/install") &&
+          init?.method === "POST"
+        ) {
+          const slug = url.split("/").at(-2) ?? "";
+          pipeStates[slug] = false;
+          return response({ success: true, name: slug });
+        }
+        if (url.endsWith("/enable") && init?.method === "POST") {
+          pipeStates[url.split("/").at(-2) ?? ""] = true;
+          return response({ success: true });
+        }
+        const slug = url.split("/").pop() ?? "";
+        return slug in pipeStates
           ? response({ data: { config: { enabled: pipeStates[slug] } } })
-          : response({ error: "not found" }),
-      );
-    });
+          : response({ error: "not found" });
+      },
+    );
     render(<FirstRunNextSteps userToken="user-token" />);
 
-    const action = await screen.findByTestId(
-      "first-run-next-step-digital-clone",
+    const action = await screen.findByTestId("first-run-next-step-setup-all");
+    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    fireEvent.click(action);
+    fireEvent.click(action);
+
+    await waitFor(() =>
+      expect(action).toHaveTextContent("installing daily recap"),
     );
-    await waitFor(() => expect(action).toHaveTextContent("install & enable"));
-    fireEvent.click(action);
-    fireEvent.click(action);
-    await waitFor(() => expect(action).toHaveTextContent("installing"));
     expect(action).toBeDisabled();
     expect(
-      mocks.localFetch.mock.calls.filter(([url]) => url === "/pipes/store/install"),
+      mocks.localFetch.mock.calls.filter(
+        ([url]) => url === "/pipes/store/install",
+      ),
     ).toHaveLength(1);
 
-    finishInstall?.();
-    await waitFor(() => expect(action).toHaveTextContent("ready"));
+    finishFirstInstall?.();
+    expect(
+      await screen.findByTestId("first-run-next-steps-complete"),
+    ).toBeInTheDocument();
   });
 
-  it("reports an install failure without claiming the task is ready", async () => {
-    gmailConnected = true;
+  it("resumes at Calendar after a partial Google setup failure", async () => {
+    let calendarAttempts = 0;
+    mocks.oauthConnect.mockImplementation(async () => {
+      calendarAttempts += 1;
+      if (calendarAttempts === 1) {
+        return { status: "error", error: "calendar unavailable" };
+      }
+      calendarConnected = true;
+      return { status: "ok", data: { connected: true } };
+    });
+    render(<FirstRunNextSteps userToken="user-token" />);
+
+    const action = await screen.findByTestId("first-run-next-step-setup-all");
+    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    fireEvent.click(action);
+
+    expect(await screen.findByText("calendar unavailable")).toBeInTheDocument();
+    await waitFor(() => expect(action).toHaveTextContent("continue setup"));
+    fireEvent.click(action);
+
+    expect(
+      await screen.findByTestId("first-run-next-steps-complete"),
+    ).toBeInTheDocument();
+    expect(mocks.authorizeComposioToolkit).toHaveBeenCalledTimes(1);
+    expect(mocks.oauthConnect).toHaveBeenCalledTimes(2);
+    expect(
+      mocks.localFetch.mock.calls.filter(
+        ([url]) => url === "/pipes/store/install",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("reports an install failure without opening either Google approval", async () => {
     installFailure = "engine busy";
     render(<FirstRunNextSteps userToken="user-token" />);
 
-    const action = await screen.findByTestId(
-      "first-run-next-step-digital-clone",
-    );
-    await waitFor(() => expect(action).toHaveTextContent("install & enable"));
+    const action = await screen.findByTestId("first-run-next-step-setup-all");
+    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
     fireEvent.click(action);
 
     expect(await screen.findByText("engine busy")).toBeInTheDocument();
-    expect(action).toHaveTextContent("install & enable");
-    expect(action).toBeEnabled();
+    await waitFor(() => expect(action).toHaveTextContent("continue setup"));
+    expect(mocks.authorizeComposioToolkit).not.toHaveBeenCalled();
+    expect(mocks.oauthConnect).not.toHaveBeenCalled();
   });
 
-  it("retries unknown connection state instead of navigating or guessing", async () => {
+  it("retries unknown status instead of installing or guessing", async () => {
     mocks.fetchComposioStatus.mockResolvedValue(null);
-    const openSettings = vi.fn();
-    window.addEventListener("open-settings", openSettings);
     render(<FirstRunNextSteps userToken="user-token" />);
 
-    const action = await screen.findByTestId("first-run-next-step-daily-email");
-    await waitFor(() => expect(action).toHaveTextContent("retry"));
+    const action = await screen.findByTestId("first-run-next-step-setup-all");
+    await waitFor(() => expect(action).toHaveTextContent("retry status"));
     fireEvent.click(action);
 
     await waitFor(() =>
       expect(mocks.fetchComposioStatus.mock.calls.length).toBeGreaterThan(1),
     );
+    expect(
+      mocks.localFetch.mock.calls.filter(
+        ([url]) =>
+          url === "/pipes/store/install" ||
+          String(url).startsWith("/pipes/bundled/"),
+      ),
+    ).toHaveLength(0);
     expect(mocks.authorizeComposioToolkit).not.toHaveBeenCalled();
-    expect(openSettings).not.toHaveBeenCalled();
-    window.removeEventListener("open-settings", openSettings);
+    expect(mocks.oauthConnect).not.toHaveBeenCalled();
   });
 
-  it("collapses fully completed recommendations into one quiet summary", async () => {
+  it("collapses a completed bundle into one quiet summary", async () => {
     gmailConnected = true;
     calendarConnected = true;
     setPipeStates({
@@ -376,7 +384,7 @@ describe("first-run next steps", () => {
       await screen.findByTestId("first-run-next-steps-complete"),
     ).toHaveTextContent("daily setup ready");
     expect(
-      screen.queryByTestId("first-run-next-step-daily-email"),
+      screen.queryByTestId("first-run-next-step-setup-all"),
     ).not.toBeInTheDocument();
   });
 });
