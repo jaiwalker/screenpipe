@@ -245,7 +245,7 @@ pub(crate) async fn handle_no_apps_path(
                 // End-detection health telemetry (privacy-safe buckets only).
                 capture_meeting_outcome(db, meeting_id, "auto_timeout", *flap_count).await;
                 *flap_count = 0;
-                let event_data = crate::routes::meetings::meeting_ended_event_data(
+                let event_data = crate::meeting_watcher::shared::events::meeting_ended_event_data(
                     db,
                     meeting_id,
                     &persisted_end,
@@ -437,12 +437,13 @@ pub(crate) async fn apply_state_action(
                         capture_meeting_outcome(db, meeting_id, "auto_timeout", *flap_count).await;
                         *flap_count = 0;
                         // Emit event so triggered pipes can react
-                        let event_data = crate::routes::meetings::meeting_ended_event_data(
-                            db,
-                            meeting_id,
-                            &persisted_end,
-                        )
-                        .await;
+                        let event_data =
+                            crate::meeting_watcher::shared::events::meeting_ended_event_data(
+                                db,
+                                meeting_id,
+                                &persisted_end,
+                            )
+                            .await;
                         if let Err(e) = screenpipe_events::send_event("meeting_ended", event_data) {
                             warn!("meeting v2: failed to emit meeting_ended event: {}", e);
                         }

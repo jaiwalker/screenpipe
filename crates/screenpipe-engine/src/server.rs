@@ -623,7 +623,7 @@ impl SCServer {
         // restart interrupted. Spawned here because both entrypoints (engine
         // binary and the desktop's embedded server) build their router through
         // this path; the finalizer itself is once-per-process.
-        crate::meeting_summary_finalizer::spawn_meeting_summary_finalizer(self.db.clone());
+        crate::meeting_summary::spawn_meeting_summary_finalizer(self.db.clone());
 
         if analytics_enabled {
             // Spawn periodic API usage reporter (every 5 minutes)

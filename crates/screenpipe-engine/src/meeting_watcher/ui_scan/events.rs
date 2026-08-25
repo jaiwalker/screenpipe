@@ -93,7 +93,7 @@ pub(crate) async fn handle_auto_end_request(
                 if let Ok(status) = resolve_meeting_status_from(db, manual_meeting).await {
                     emit_meeting_status_changed(&status);
                 }
-                let event_data = crate::routes::meetings::meeting_ended_event_data(
+                let event_data = crate::meeting_watcher::shared::events::meeting_ended_event_data(
                     db,
                     request.meeting_id,
                     &persisted_end,
