@@ -31,6 +31,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import { useInterval } from "@/lib/hooks/use-interval";
 import { useTauriEvent } from "@/lib/hooks/use-tauri-event";
 import {
@@ -146,7 +147,7 @@ import {
 } from "@/lib/utils/chat-sidebar-grouping";
 
 /** Max top-level rows shown in recents. Pipes use the authoritative inventory. */
-const SIDEBAR_CAP = 15;
+const SIDEBAR_CAP = 8;
 const PIPE_RUNS_PER_GROUP = 10;
 const PIPE_INVENTORY_PAGE_SIZE = 20;
 const DELETED_PIPE_EXECUTIONS_KEY = "screenpipe:deleted-pipe-executions";
@@ -2529,13 +2530,18 @@ export function SidebarChatRow({
       >
         {sourceLabel && (
           <span
-            className={cn(
-              "flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[8px] font-semibold text-white",
-              importedSource === "claude-code" ? "bg-[#D97757]" : "bg-foreground"
-            )}
-            aria-label={`${sourceLabel} chat`}
+            className="flex h-5 w-5 shrink-0 items-center justify-center"
+            aria-label={`${sourceLabel} provider`}
+            title={sourceLabel}
           >
-            {sourceLabel[0]}
+            <Image
+              src={importedSource === "claude-code" ? "/images/claude-ai.svg" : "/images/codex.svg"}
+              alt=""
+              width={17}
+              height={17}
+              className="h-[17px] w-[17px] object-contain"
+              unoptimized
+            />
           </span>
         )}
         {!insideGroup && (session.kind === "pipe-run" || session.kind === "pipe-watch") && (
@@ -2558,7 +2564,7 @@ export function SidebarChatRow({
           </span>
           {sourceLabel && (
             <span className="block truncate text-[9px] leading-3 sidebar-text-tertiary">
-              {sourceLabel} · local history
+              {sourceLabel} · {session.kind === "pipe-run" ? "automation" : "local history"}
             </span>
           )}
         </span>

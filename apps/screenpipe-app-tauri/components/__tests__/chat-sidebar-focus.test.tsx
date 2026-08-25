@@ -101,7 +101,7 @@ describe("SidebarChatRow current conversation", () => {
       importedFrom: { source: "codex", sourceId: "thread-1", importedAt: 100 },
     });
 
-    expect(screen.getByLabelText("Codex chat")).toBeVisible();
+    expect(screen.getByLabelText("Codex provider")).toBeVisible();
     expect(screen.getByText("Codex · local history")).toBeVisible();
   });
 });
