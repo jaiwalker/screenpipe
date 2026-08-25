@@ -198,6 +198,11 @@ describe("first-run next steps", () => {
     const action = await screen.findByTestId(
       "first-run-next-step-speaker-reconciliation",
     );
+    expect(
+      screen.getByText(
+        "reconcile diarized voices with time-aligned accessibility and parsed meeting data. shadow mode saves no names.",
+      ),
+    ).toBeInTheDocument();
     await waitFor(() => expect(action).toHaveTextContent("install & enable"));
     fireEvent.click(action);
 

@@ -488,7 +488,7 @@ export function FirstRunNextStepsPanel({
           <NextStepRow
             icon={<AudioLines className="h-4 w-4" aria-hidden="true" />}
             title="identify meeting speakers"
-            description="reconcile diarized voices with time-aligned screen labels after each meeting. shadow mode saves no names."
+            description="reconcile diarized voices with time-aligned accessibility and parsed meeting data. shadow mode saves no names."
             status={
               checking
                 ? "checking"
