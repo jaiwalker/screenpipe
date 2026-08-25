@@ -40,7 +40,6 @@ these are the exact response shapes. do not probe for them:
   - audio `content`: `transcription`, `speaker`, `timestamp` (`text` duplicates `transcription`)
   - ocr `content`: `text`, `frame_id`, `app_name`, `window_name`, `timestamp`
 - `GET /speakers/unnamed?limit=20&offset=0` → a bare **array** of `{"id", "name", …}`. `offset` is required; omitting it is a 400.
-- `GET /connections` → `{"data": [{"id", "name", "connected", "description", …}]}` — filter on `connected == true`
 
 step 1 — pull everything the summary needs in ONE command. the scheduler names the meeting in `./.trigger-context.json`; prefer that id, because "most recent" picks the wrong meeting when two end close together:
 
@@ -49,13 +48,12 @@ step 1 — pull everything the summary needs in ONE command. the scheduler names
   [ -z "$ID" ] && ID=$(curl -s -H "$A" "http://localhost:3030/meetings?limit=1" | jq -r '.data[0].id')
   curl -s -H "$A" "http://localhost:3030/meetings/$ID" -o /tmp/m.json
   S=$(jq -r .meeting_start /tmp/m.json); E=$(jq -r .meeting_end /tmp/m.json)
-  # the four fetches below are independent — run them in parallel, not one per turn
+  # the three fetches below are independent — run them in parallel, not one per turn
   curl -s -G -H "$A" --data-urlencode "start_time=$S" --data-urlencode "end_time=$E" \
     -d content_type=audio -d limit=500 "http://localhost:3030/search" -o /tmp/audio.json &
   curl -s -G -H "$A" --data-urlencode "start_time=$S" --data-urlencode "end_time=$E" \
     -d content_type=ocr -d limit=150 "http://localhost:3030/search" -o /tmp/ocr.json &
   curl -s -H "$A" "http://localhost:3030/speakers/unnamed?limit=20&offset=0" -o /tmp/spk.json &
-  curl -s -H "$A" "http://localhost:3030/connections" -o /tmp/conn.json &
   wait
   tail -40 ./memory.md 2>/dev/null
 
@@ -85,7 +83,7 @@ only rename when the on-screen evidence is unambiguous — never guess from voic
 
 step 3 — write the summary out as your own message, before you save it. this message must contain no tool call; end the turn after it. start a line with exactly `## Summary` and put the finished summary markdown after that heading. the meeting UI streams this section live while you write it — it is the only way the user sees anything before the run ends — and it is the same markdown you pass as `<YOUR_SUMMARY>` in step 3b.
 
-this step is not optional and it is not the closing report. "meeting 112 was summarized and saved to its record" is a report; it does not satisfy this step. saving a summary you never printed means the user watched a placeholder for the entire run and then got nothing to read, so treat that as a failed run. keep planning, tool narration, and save confirmations out of the section after the heading — those belong in your closing message in step 4.
+this step is not optional and it is not the closing report. "meeting 112 was summarized and saved to its record" is a report; it does not satisfy this step. saving a summary you never printed means the user watched a placeholder for the entire run and then got nothing to read, so treat that as a failed run. keep planning, tool narration, and save confirmations out of the section after the heading — those belong in your closing message after saving.
 
 step 3b — now save it. if your summary is worth saving, append it to the meeting note (and refresh the title in the same call) via:
 
@@ -96,18 +94,11 @@ step 3b — now save it. if your summary is worth saving, append it to the meeti
 
 replace `<EXISTING_NOTE>` with the meeting's current `note` field (empty string if none) so you don't overwrite the user's work; just append your summary under a `## Summary` heading. for the title: if the current title is missing, generic ("untitled", "meeting", just the app name) or doesn't capture what actually happened, replace it with a 5-8 word plain-english title (no quotes, no "meeting about…" prefix) — otherwise omit the field so a user-set title is left alone. if there's nothing useful to summarize (empty transcript, irrelevant audio), say so out loud and skip the PUT — don't write a placeholder.
 
-step 4 — offer to push the summary into one of the user's connected apps (ask, never push on your own). list what's actually connected, then let them pick with one click:
-
-  jq -r '.data[] | select(.connected == true) | "\(.id)\t\(.name)"' /tmp/conn.json   # already fetched in step 1
-
-rank the connected targets by relevance — an app used during the meeting first (Notion, Slack, Linear, …). then post a desktop notification whose action buttons are those targets, so the ask renders as buttons in the UI:
+step 4 — notify the user that the summary is ready, keeping the automatic result local. never suggest or create outbound push/send actions here; sharing happens only when the user explicitly chooses it from the meeting view.
 
   curl -s -X POST "http://localhost:11435/notify" \
     -H "Content-Type: application/json" \
-    -d '{"title": "<TITLE> summarized", "body": "<one-line recap> — push it somewhere?", "priority": "high", "actions": [
-          {"label": "push to notion", "type": "api", "method": "POST", "url": "http://localhost:3030/connections/notion/proxy/v1/pages", "body": { /* page payload built from the summary */ }},
-          {"label": "review in chat", "type": "pipe", "pipe": "meeting-summary", "open_in_chat": true, "context": {"meeting_id": <ID>}},
+    -d '{"title": "<TITLE> summarized", "body": "<one-line recap>", "priority": "high", "actions": [
+          {"label": "open summary", "type": "deeplink", "url": "screenpipe://meeting/<ID>"},
           {"label": "dismiss", "type": "dismiss"}
         ]}'
-
-each button maps to a connection's endpoint from its `/connections` `description` (`POST /connections/<id>/send` for slack/telegram/discord, `POST /connections/<id>/proxy/...` for notion/linear/etc.). when a target needs a destination you can't infer (a Notion parent page, a Slack channel), make that button `"review in chat"` so the user confirms specifics before anything leaves the machine. if nothing is connected, skip the notification and just say that connecting an app would let you push summaries next time.

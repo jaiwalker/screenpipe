@@ -525,7 +525,7 @@ export function buildEnrichedSummarizePrompt({
   // the id already).
   const directive = directiveOverride
     ? `the meeting you should summarize has id: ${meeting.id}. you can skip any "find which meeting ended" step.\n\n${directiveOverride}`
-    : buildMeetingSummarizeInstructions(meeting.id, { followUpAsk: true });
+    : buildMeetingSummarizeInstructions(meeting.id);
 
   return `${directive}\n\n${sections.join("\n\n")}`;
 }
@@ -570,7 +570,7 @@ function markdownImageDataUrlRegex(): RegExp {
  * Static instructions for "summarize this meeting and save it back onto the
  * record". Used by:
  *   - the in-app "summarize with AI" button (chat path) — passes the known
- *     meeting id and asks for the speaker/connector follow-up
+ *     meeting id and asks for speaker naming
  *   - the bundled meeting-summary pipe (background event-triggered path) —
  *     keep the wording in sync with crates/screenpipe-core/assets/pipes/meeting-summary/pipe.md
  *
@@ -580,7 +580,6 @@ function markdownImageDataUrlRegex(): RegExp {
  */
 export function buildMeetingSummarizeInstructions(
   meetingId: number | string,
-  options?: { followUpAsk?: boolean },
 ): string {
   const lines = [
     `search screenpipe for what happened during this meeting and summarize it: key topics, decisions, action items.`,
@@ -599,13 +598,6 @@ export function buildMeetingSummarizeInstructions(
     `    -d '{"title": "<NEW_TITLE_OR_OMIT>", "note": "<EXISTING_NOTE>\\n\\n## Summary\\n<YOUR_SUMMARY>"}'`,
     `replace <EXISTING_NOTE> with the meeting's current notes (shown above as "notes:" — empty string if none) so you don't overwrite the user's work; just append your summary under a "## Summary" heading. for the title: if the current "title:" is missing, generic ("untitled", "meeting", just the app name) or doesn't capture what actually happened, replace it with a 5-8 word plain-english title (no quotes, no "meeting about…" prefix) — otherwise omit the field so a user-set title is left alone. if there's nothing useful to summarize (empty transcript, irrelevant audio), say so out loud and skip the PUT — don't write a placeholder.`,
   ];
-
-  if (options?.followUpAsk) {
-    lines.push(
-      ``,
-      `after the PUT, offer to push the summary into one of the user's *connected* apps — ask first, never push on your own. don't guess at the integration list: GET http://localhost:3030/connections and keep only the ones with "connected": true, then ask in one short message which of those (if any) to push to. rank them by relevance — an app used during the meeting (see "apps used during meeting" / "tabs/docs visited") comes first. if nothing is connected, say so in one line (connecting Notion/Slack/Telegram/… would let you push next time) and stop. when they pick one, push via that connection's endpoint (POST /connections/<id>/send for slack/telegram/discord, POST /connections/<id>/proxy/... for notion/linear/etc.) and confirm specifics (channel, parent page) before anything leaves the machine.`,
-    );
-  }
 
   return lines.join("\n");
 }

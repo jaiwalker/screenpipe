@@ -33,6 +33,18 @@ struct FragmentSwap {
     new: &'static str,
 }
 
+/// One anchored section swap applied to an installed builtin prompt.
+struct SectionSwap {
+    /// Why this swap exists. Logged when it fires.
+    why: &'static str,
+    /// Start of the obsolete section.
+    start: &'static str,
+    /// End of the obsolete section, included in the replaced span.
+    end: &'static str,
+    /// Replacement derived from the bundled prompt.
+    new: &'static str,
+}
+
 /// The shipped prompt for a builtin pipe.
 fn bundled_prompt(name: &str) -> Option<&'static str> {
     BUNDLED_BUILTIN_PIPES
@@ -51,6 +63,29 @@ fn section_between(text: &'static str, start: &str, end: &str) -> Option<&'stati
     Some(text[from..to].trim_end())
 }
 
+/// Slice a shipped prompt from `start` through the end of the file.
+fn section_from(text: &'static str, start: &str) -> Option<&'static str> {
+    let from = text.find(start)?;
+    Some(text[from..].trim_end())
+}
+
+/// Replace an anchored section while preserving any user-authored suffix.
+fn replace_section_through(
+    text: &str,
+    start: &str,
+    end: &str,
+    replacement: &str,
+) -> Option<String> {
+    let from = text.find(start)?;
+    let end_start = from + text[from..].find(end)?;
+    let to = end_start + end.len();
+    let mut updated = String::with_capacity(text.len() - (to - from) + replacement.len());
+    updated.push_str(&text[..from]);
+    updated.push_str(replacement);
+    updated.push_str(&text[to..]);
+    (updated != text).then_some(updated)
+}
+
 /// Anchors around the latency preamble (budget + verified response shapes) in
 /// the shipped `meeting-summary` prompt.
 const FAST_PATH_START: &str = "the user is staring at a spinner";
@@ -63,6 +98,12 @@ const FAST_PATH_ANCHOR: &str =
 /// The previous bundled frontmatter before meeting-summary appended the
 /// configured-preset wildcard to its existing fallback chain.
 const PRESET_CHAIN_ANCHOR: &str = "preset:\n  - screenpipe-cloud\ntimeout: 600";
+
+/// Anchors around the obsolete outbound-sharing completion step.
+const OUTBOUND_COMPLETION_START: &str =
+    "step 4 — offer to push the summary into one of the user's connected apps";
+const OUTBOUND_COMPLETION_END: &str = "connecting an app would let you push summaries next time.";
+const LOCAL_COMPLETION_START: &str = "step 4 — notify the user that the summary is ready";
 
 /// Swaps for `meeting-summary`, oldest defect first.
 fn meeting_summary_swaps() -> Vec<FragmentSwap> {
@@ -117,6 +158,25 @@ fn meeting_summary_swaps() -> Vec<FragmentSwap> {
             old: "\"http://localhost:3030/speakers/unnamed?limit=20\"",
             new: "\"http://localhost:3030/speakers/unnamed?limit=20&offset=0\"",
         },
+        FragmentSwap {
+            why: "automatic meeting summaries stay local until the user explicitly \
+                  chooses to share from the meeting view, so connection discovery is \
+                  unnecessary",
+            old: "- `GET /connections` → `{\"data\": [{\"id\", \"name\", \"connected\", \"description\", …}]}` — filter on `connected == true`\n",
+            new: "",
+        },
+        FragmentSwap {
+            why: "automatic meeting summaries no longer fetch connections, leaving \
+                  three independent meeting-data requests",
+            old: "  # the four fetches below are independent — run them in parallel, not one per turn",
+            new: "  # the three fetches below are independent — run them in parallel, not one per turn",
+        },
+        FragmentSwap {
+            why: "automatic meeting summaries stay local, so do not query configured \
+                  outbound destinations",
+            old: "  curl -s -H \"$A\" \"http://localhost:3030/connections\" -o /tmp/conn.json &\n",
+            new: "",
+        },
     ];
 
     // Latency: the shipped prompt sent the agent off to read skill files and
@@ -145,6 +205,23 @@ fn meeting_summary_swaps() -> Vec<FragmentSwap> {
     swaps
 }
 
+/// Anchored swaps for `meeting-summary`, kept separate from exact fragments so
+/// small historical edits inside the obsolete sharing example still migrate.
+fn meeting_summary_section_swaps() -> Vec<SectionSwap> {
+    meeting_summary_local_completion_step()
+        .map(|new| {
+            vec![SectionSwap {
+                why: "automatic meeting summaries suggested direct Telegram, Slack, \
+                      and other outbound sends after every call; keep completion local \
+                      and let the user open the saved summary instead",
+                start: OUTBOUND_COMPLETION_START,
+                end: OUTBOUND_COMPLETION_END,
+                new,
+            }]
+        })
+        .unwrap_or_default()
+}
+
 /// The latency preamble as it appears in the shipped prompt.
 fn meeting_summary_fast_path() -> Option<&'static str> {
     section_between(
@@ -158,6 +235,11 @@ fn meeting_summary_fast_path() -> Option<&'static str> {
 /// `trigger`, preserving any installed trigger customization outside the span.
 fn meeting_summary_preset_chain() -> Option<&'static str> {
     section_between(bundled_prompt("meeting-summary")?, "preset:", "trigger:")
+}
+
+/// The local-only completion step as it appears in the shipped prompt.
+fn meeting_summary_local_completion_step() -> Option<&'static str> {
+    section_from(bundled_prompt("meeting-summary")?, LOCAL_COMPLETION_START)
 }
 
 /// Apply every known repair for `name` to an installed prompt.
@@ -187,6 +269,13 @@ pub(super) fn migrate_builtin_pipe_text(name: &str, original: &str) -> Option<St
         }
         tracing::debug!(pipe = name, why = swap.why, "repairing installed pipe.md");
         updated = updated.replace(swap.old, swap.new);
+    }
+    for swap in meeting_summary_section_swaps() {
+        let Some(next) = replace_section_through(&updated, swap.start, swap.end, swap.new) else {
+            continue;
+        };
+        tracing::debug!(pipe = name, why = swap.why, "repairing installed pipe.md");
+        updated = next;
     }
 
     (updated != original).then_some(updated)
@@ -235,6 +324,16 @@ mod tests {
         assert_eq!(section_between(text, "START", "END"), Some("START body"));
         assert_eq!(section_between(text, "START", "MISSING"), None);
         assert_eq!(section_between(text, "MISSING", "END"), None);
+    }
+
+    #[test]
+    fn replace_section_through_preserves_user_suffix() {
+        let text = "before\nSTART obsolete END\nmy own instruction\n";
+        let fixed = replace_section_through(text, "START", "END", "replacement")
+            .expect("anchored section should be replaced");
+
+        assert_eq!(fixed, "before\nreplacement\nmy own instruction\n");
+        assert!(replace_section_through(&fixed, "START", "END", "replacement").is_none());
     }
 
     /// The migration must quote the shipped prompt, not a copy of it, so the two
@@ -349,6 +448,54 @@ mod tests {
         assert!(migrate_builtin_pipe_text("meeting-summary", &fixed).is_none());
     }
 
+    #[test]
+    fn migrate_builtin_pipe_replaces_outbound_summary_actions() {
+        let stale = concat!(
+            "step 3b — save the summary.\n\n",
+            "step 4 — offer to push the summary into one of the user's connected apps ",
+            "(ask, never push on your own).\n\n",
+            "  curl -s http://localhost:3030/connections -o /tmp/conn.json\n",
+            "  push to telegram\n",
+            "  push to slack\n\n",
+            "if nothing is connected, skip the notification and just say that ",
+            "connecting an app would let you push summaries next time.\n\n",
+            "my own instruction stays here.\n",
+        );
+
+        let fixed = migrate_builtin_pipe_text("meeting-summary", stale)
+            .expect("outbound completion step should migrate");
+        let local_step = meeting_summary_local_completion_step()
+            .expect("bundled prompt should carry the local completion step");
+
+        assert!(fixed.contains(local_step));
+        assert!(fixed.contains("screenpipe://meeting/<ID>"));
+        assert!(fixed.contains("my own instruction stays here."));
+        assert!(!fixed.contains("push to telegram"));
+        assert!(!fixed.contains("push to slack"));
+        assert!(!fixed.contains("/connections"));
+        assert!(migrate_builtin_pipe_text("meeting-summary", &fixed).is_none());
+    }
+
+    #[test]
+    fn migrate_builtin_pipe_removes_connection_discovery() {
+        let stale = concat!(
+            "- `GET /connections` → `{\"data\": [{\"id\", \"name\", \"connected\", ",
+            "\"description\", …}]}` — filter on `connected == true`\n",
+            "  # the four fetches below are independent — run them in parallel, not one per turn\n",
+            "  curl -s -H \"$A\" \"http://localhost:3030/connections\" -o /tmp/conn.json &\n",
+            "  wait\n",
+        );
+
+        let fixed = migrate_builtin_pipe_text("meeting-summary", stale)
+            .expect("connection discovery should be removed");
+
+        assert!(!fixed.contains("/connections"));
+        assert!(!fixed.contains("/tmp/conn.json"));
+        assert!(fixed.contains("the three fetches below"));
+        assert!(fixed.ends_with("  wait\n"));
+        assert!(migrate_builtin_pipe_text("meeting-summary", &fixed).is_none());
+    }
+
     /// Latency: the shipped prompt sent the agent to read skill files and left it
     /// to probe endpoint shapes, which cost roughly eight of eighteen turns on a
     /// real 7-minute meeting while the user watched a spinner.
@@ -373,7 +520,7 @@ mod tests {
         assert!(fixed.contains("6 tool calls or fewer"));
         assert!(fixed.contains("these are the exact response shapes"));
         assert!(fixed.contains("`offset` is required"));
-        assert!(fixed.contains("filter on `connected == true`"));
+        assert!(!fixed.contains("/connections"));
 
         // the user's own edits and the surrounding steps survive.
         assert!(fixed.starts_with("a meeting just ended.\n"));
@@ -414,7 +561,7 @@ mod tests {
 
         // the endpoints reused from that batch are not re-fetched later.
         assert!(body.contains("already fetched to /tmp/spk.json in step 1"));
-        assert!(body.contains("/tmp/conn.json"));
+        assert!(!body.contains("/tmp/conn.json"));
 
         // and the discovery loop stays gone.
         assert!(!body.contains("read the screenpipe skill first"));
@@ -422,6 +569,14 @@ mod tests {
 
         // the streaming contract the UI depends on is preserved.
         assert!(body.contains("## Summary"));
+
+        // Automatic completion stays local. Sharing remains an explicit action
+        // from the meeting view rather than a generated send button.
+        assert!(body.contains("screenpipe://meeting/<ID>"));
+        assert!(body.contains("open summary"));
+        assert!(!body.contains("push to"));
+        assert!(!body.contains("\"type\": \"api\""));
+        assert!(!body.contains("/connections"));
     }
 
     #[test]

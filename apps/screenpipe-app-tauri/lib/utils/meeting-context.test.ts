@@ -43,6 +43,29 @@ describe("meeting summary pipe prompt", () => {
     expect(prompt).not.toContain("export the meeting");
     expect(prompt).not.toContain("ffmpeg-sample");
   });
+
+  it("keeps automatic summary follow-up local", () => {
+    const meeting: MeetingRecord = {
+      id: 42,
+      meeting_start: "2026-06-04T15:00:00.000Z",
+      meeting_end: "2026-06-04T15:30:00.000Z",
+      meeting_app: "zoom",
+      title: "Design review",
+      attendees: null,
+      note: null,
+      detection_source: "manual",
+      created_at: "2026-06-04T15:00:00.000Z",
+    };
+    const prompt = buildEnrichedSummarizePrompt({
+      meeting,
+      context: { activity: null, clipboardCount: 0, ok: false },
+      transcript: [],
+    });
+
+    expect(prompt).not.toContain("connected apps");
+    expect(prompt).not.toContain("/connections");
+    expect(prompt).not.toContain("push the summary");
+  });
 });
 
 describe("meeting-context image notes", () => {
