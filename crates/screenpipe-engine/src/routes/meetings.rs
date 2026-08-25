@@ -303,6 +303,66 @@ pub async fn resolve_meeting_status_from(
     }
 }
 
+/// A meeting shorter than this with no live transcript is capture noise
+/// (a double-clicked record button, a detector flap), not a meeting.
+const TRIVIAL_MEETING_MAX_SECS: i64 = 60;
+/// Below this duration nothing meaningful fits regardless of transcript rows.
+const TRIVIAL_MEETING_ALWAYS_SECS: i64 = 10;
+
+/// Build the `meeting_ended` event payload every emitter shares.
+///
+/// Besides the id and end timestamp it carries `duration_secs`,
+/// `transcript_segments`, and `skip_pipes`. The pipe scheduler skips
+/// event-triggered pipes when `skip_pipes` is true, so a 2-second accidental
+/// recording no longer spends minutes in a summary agent only to conclude
+/// there was nothing to summarize — while lifecycle consumers (audio session
+/// teardown, speaker id, suggestions) still see the event.
+pub(crate) async fn meeting_ended_event_data(
+    db: &DatabaseManager,
+    meeting_id: i64,
+    persisted_end: &str,
+) -> Value {
+    let duration_secs = match db.get_meeting_by_id(meeting_id).await {
+        Ok(meeting) => {
+            let start = parse_timestamp(Some(meeting.meeting_start.as_str()));
+            let end = parse_timestamp(Some(persisted_end))
+                .or_else(|| parse_timestamp(meeting.meeting_end.as_deref()));
+            match (start, end) {
+                (Some(start), Some(end)) => Some((end - start).num_seconds().max(0)),
+                _ => None,
+            }
+        }
+        Err(_) => None,
+    };
+    let transcript_segments = db
+        .count_meeting_transcript_segments(meeting_id)
+        .await
+        .ok();
+
+    // Unknown duration or segment count must never suppress pipes.
+    let skip_pipes = match (duration_secs, transcript_segments) {
+        (Some(duration), _) if duration < TRIVIAL_MEETING_ALWAYS_SECS => true,
+        (Some(duration), Some(segments)) => duration < TRIVIAL_MEETING_MAX_SECS && segments == 0,
+        _ => false,
+    };
+    if skip_pipes {
+        tracing::info!(
+            "meeting_ended: meeting {} is trivial ({}s, {} transcript segments) — event-triggered pipes will be skipped",
+            meeting_id,
+            duration_secs.unwrap_or(-1),
+            transcript_segments.unwrap_or(-1),
+        );
+    }
+
+    json!({
+        "meeting_id": meeting_id,
+        "meeting_end": persisted_end,
+        "duration_secs": duration_secs,
+        "transcript_segments": transcript_segments,
+        "skip_pipes": skip_pipes,
+    })
+}
+
 pub fn emit_meeting_status_changed(status: &MeetingStatusResponse) {
     tracing::info!(
         "meeting_status_changed: active={}, manual={}, active_id={:?}, app={:?}, source={:?}",
@@ -674,6 +734,117 @@ pub(crate) async fn update_meeting_handler(
     })?;
 
     Ok(JsonResponse(meeting))
+}
+
+#[derive(OaSchema, Deserialize, Debug)]
+pub struct SaveMeetingSummaryRequest {
+    /// Finished summary markdown, without the `## Summary` heading.
+    pub summary: String,
+    /// Optional replacement title (5-8 plain words). Only sent when the
+    /// caller judged the current title missing or generic.
+    pub title: Option<String>,
+}
+
+/// Merge a finished summary into a meeting note without touching user content.
+///
+/// The note's convention is user notes first, then one `## Summary` section at
+/// the end. If a summary section already exists (a re-run or a re-transcription
+/// refresh), it is replaced from its heading to the end of the note; otherwise
+/// the section is appended. Pure so the replace/append split is unit-testable.
+pub(crate) fn merge_summary_into_note(existing_note: Option<&str>, summary: &str) -> String {
+    let existing = existing_note.unwrap_or("").trim_end();
+    let summary = summary.trim();
+
+    let mut section_start: Option<usize> = None;
+    let mut offset = 0;
+    for line in existing.split_inclusive('\n') {
+        let trimmed = line.trim_start_matches('#');
+        let hashes = line.len() - trimmed.len();
+        if (1..=6).contains(&hashes)
+            && trimmed
+                .trim_start_matches([' ', '\t'])
+                .trim_end()
+                .eq_ignore_ascii_case("summary")
+            && trimmed.starts_with([' ', '\t'])
+        {
+            section_start = Some(offset);
+        }
+        offset += line.len();
+    }
+
+    let user_part = match section_start {
+        Some(start) => existing[..start].trim_end(),
+        None => existing,
+    };
+    if user_part.is_empty() {
+        format!("## Summary\n{}", summary)
+    } else {
+        format!("{}\n\n## Summary\n{}", user_part, summary)
+    }
+}
+
+/// Persist a finished summary (and optional title) onto a meeting record.
+///
+/// One server-side write path shared by the HTTP endpoint and the run
+/// finalizer, so a summary can never be lost to client-side JSON assembly —
+/// the failure that produced silent `PUT 200` no-ops from the summary Pipe.
+pub(crate) async fn save_meeting_summary(
+    db: &DatabaseManager,
+    id: i64,
+    summary: &str,
+    title: Option<&str>,
+) -> Result<MeetingRecord, String> {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        return Err("summary must not be empty".to_string());
+    }
+    let meeting = db
+        .get_meeting_by_id(id)
+        .await
+        .map_err(|e| format!("meeting not found: {}", e))?;
+    let note = merge_summary_into_note(meeting.note.as_deref(), summary);
+    let title = title
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    db.update_meeting(id, None, None, title.as_deref(), None, Some(&note), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    db.get_meeting_by_id(id)
+        .await
+        .map_err(|e| format!("meeting not found after update: {}", e))
+}
+
+/// POST /meetings/:id/summary
+///
+/// Append (or refresh) the `## Summary` section of a meeting note and
+/// optionally retitle the meeting. Rejects an empty summary with 400 so a
+/// caller that lost its payload fails loudly instead of "succeeding" with a
+/// no-op — the exact failure mode that silently dropped meeting summaries
+/// when the summary Pipe assembled the old read-modify-write PUT body itself.
+#[oasgen]
+pub(crate) async fn save_meeting_summary_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    axum::Json(body): axum::Json<SaveMeetingSummaryRequest>,
+) -> Result<JsonResponse<MeetingRecord>, (StatusCode, JsonResponse<Value>)> {
+    if body.summary.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({"error": "summary must not be empty"})),
+        ));
+    }
+    save_meeting_summary(&state.db, id, &body.summary, body.title.as_deref())
+        .await
+        .map(JsonResponse)
+        .map_err(|e| {
+            let status = if e.starts_with("meeting not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (status, JsonResponse(json!({"error": e})))
+        })
 }
 
 #[oasgen]
@@ -1139,13 +1310,8 @@ pub(crate) async fn stop_meeting_handler(
     }
 
     // Emit event so triggered pipes can react
-    if let Err(e) = screenpipe_events::send_event(
-        "meeting_ended",
-        serde_json::json!({
-            "meeting_id": id,
-            "meeting_end": persisted_end,
-        }),
-    ) {
+    let event_data = meeting_ended_event_data(&state.db, id, &persisted_end).await;
+    if let Err(e) = screenpipe_events::send_event("meeting_ended", event_data) {
         tracing::warn!("failed to emit meeting_ended event: {}", e);
     }
 
@@ -1472,5 +1638,73 @@ mod tests {
         assert!(req.end_time.is_none(), "end_time should be None");
         assert_eq!(req.limit, 15);
         assert_eq!(req.offset, 5);
+    }
+
+    #[test]
+    fn merge_summary_appends_after_user_notes() {
+        let note = merge_summary_into_note(Some("my prep notes\n- ask about pricing"), "It went well.");
+        assert_eq!(
+            note,
+            "my prep notes\n- ask about pricing\n\n## Summary\nIt went well."
+        );
+    }
+
+    #[test]
+    fn merge_summary_into_empty_or_missing_note() {
+        assert_eq!(
+            merge_summary_into_note(None, "Body."),
+            "## Summary\nBody."
+        );
+        assert_eq!(
+            merge_summary_into_note(Some("   \n"), "Body."),
+            "## Summary\nBody."
+        );
+    }
+
+    /// A re-run (retry, re-transcription refresh) replaces the summary section
+    /// instead of stacking a second one under the first.
+    #[test]
+    fn merge_summary_replaces_an_existing_section() {
+        let existing = "user notes\n\n## Summary\nold summary\nwith two lines";
+        let note = merge_summary_into_note(Some(existing), "new summary");
+        assert_eq!(note, "user notes\n\n## Summary\nnew summary");
+    }
+
+    /// Inline mentions of the heading in user text must not be treated as the
+    /// section boundary.
+    #[test]
+    fn merge_summary_ignores_inline_heading_mentions() {
+        let existing = "the doc says ## Summary should come last";
+        let note = merge_summary_into_note(Some(existing), "body");
+        assert_eq!(
+            note,
+            "the doc says ## Summary should come last\n\n## Summary\nbody"
+        );
+    }
+
+    /// The failure this endpoint exists for: a save request whose summary got
+    /// lost in client-side assembly must fail loudly, never no-op with a 200.
+    #[tokio::test]
+    async fn save_meeting_summary_rejects_empty_and_persists_content() {
+        let (_dir, db) = claim_test_db().await;
+        let id = db
+            .insert_meeting("Zoom", "audio_process", None, None)
+            .await
+            .unwrap();
+
+        assert!(save_meeting_summary(&db, id, "   \n", None).await.is_err());
+
+        let saved = save_meeting_summary(&db, id, "Decisions were made.", Some("Pricing sync"))
+            .await
+            .unwrap();
+        assert_eq!(saved.note.as_deref(), Some("## Summary\nDecisions were made."));
+        assert_eq!(saved.title.as_deref(), Some("Pricing sync"));
+
+        // A refresh replaces the section and an empty title leaves it alone.
+        let refreshed = save_meeting_summary(&db, id, "Refreshed.", Some("  "))
+            .await
+            .unwrap();
+        assert_eq!(refreshed.note.as_deref(), Some("## Summary\nRefreshed."));
+        assert_eq!(refreshed.title.as_deref(), Some("Pricing sync"));
     }
 }
