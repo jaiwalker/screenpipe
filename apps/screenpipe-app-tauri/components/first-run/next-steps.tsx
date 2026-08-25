@@ -61,19 +61,18 @@ async function checkPipeState(
   slug: string,
 ): Promise<Exclude<PipeSetupState, null>> {
   const response = await localFetch(`/pipes/${encodeURIComponent(slug)}`);
-  if (!response.ok)
-    throw new Error(`scheduled tasks API returned ${response.status}`);
+  if (!response.ok) throw new Error("Screenpipe couldn't check this setting.");
   const body = await response.json();
   if (body?.data) {
     if (typeof body.data.config?.enabled !== "boolean") {
-      throw new Error("scheduled task enabled status was unavailable");
+      throw new Error("Screenpipe couldn't check whether this is on.");
     }
     return body.data.config.enabled ? "enabled" : "disabled";
   }
   if (typeof body?.error === "string" && body.error.includes("not found")) {
     return "missing";
   }
-  throw new Error("scheduled task status was unavailable");
+  throw new Error("Screenpipe couldn't check this setting.");
 }
 
 async function enablePipe(slug: string): Promise<void> {
@@ -92,7 +91,7 @@ async function enablePipe(slug: string): Promise<void> {
     // A non-2xx response still fails below if an older engine has no body.
   }
   if (!response.ok || body?.error || body?.success === false) {
-    throw new Error(body?.error ?? "scheduled task could not be enabled");
+    throw new Error("Screenpipe couldn't turn this on.");
   }
 }
 
@@ -108,7 +107,7 @@ async function installStorePipe(slug: string): Promise<void> {
     error?: string;
   } | null;
   if (!response.ok || body?.error) {
-    throw new Error(body?.error ?? "scheduled task could not be installed");
+    throw new Error("Screenpipe couldn't add this.");
   }
 
   publishPipeInstalledReceipt({
@@ -127,7 +126,7 @@ async function installBundledPipe(slug: string): Promise<void> {
     error?: string;
   } | null;
   if (!response.ok || body?.error) {
-    throw new Error(body?.error ?? "bundled task could not be installed");
+    throw new Error("Screenpipe couldn't add this.");
   }
 
   publishPipeInstalledReceipt({
@@ -273,10 +272,10 @@ export function FirstRunNextStepsPanel({
   const setupBusy = Boolean(setupBusyLabel);
 
   const announcement = checking
-    ? "checking recommended setup status"
+    ? "checking your setup"
     : allReady
-      ? "daily setup ready. work memory and daily recap are on, speaker names wait for review, and google calendar is connected."
-      : "recommended setup status updated";
+      ? "all set. Screenpipe remembers your work, emails your daily recap, helps name people in meetings, and knows what is on your calendar."
+      : "setup checked";
 
   return (
     <section
@@ -301,12 +300,12 @@ export function FirstRunNextStepsPanel({
             id="first-run-next-steps-heading"
             className="mt-1 font-mono text-sm font-semibold lowercase text-foreground"
           >
-            turn on your daily memory
+            set up Screenpipe
           </h2>
         </div>
         <p className="max-w-sm text-[10px] leading-relaxed text-muted-foreground sm:text-right">
-          one guided setup installs the local pieces, then asks for Google
-          approval only when a connection is missing.
+          turn everything on here. connect Gmail and Google Calendar only if
+          needed.
         </p>
       </div>
 
@@ -320,12 +319,11 @@ export function FirstRunNextStepsPanel({
           </span>
           <div>
             <p className="font-mono text-xs font-semibold lowercase text-foreground">
-              daily setup ready
+              all set
             </p>
             <p className="mt-0.5 text-[10px] leading-relaxed text-muted-foreground">
-              your daily recap is on, work memory stays organized, meeting
-              speaker suggestions wait for your review, and calendar context is
-              connected.
+              Screenpipe remembers your work, emails your daily recap, helps
+              name people in meetings, and knows what is on your calendar.
             </p>
           </div>
         </div>
@@ -334,12 +332,11 @@ export function FirstRunNextStepsPanel({
           <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="max-w-md">
               <p className="font-mono text-xs font-semibold lowercase text-foreground">
-                one setup, four useful outcomes
+                one click sets up all of this
               </p>
               <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
-                one click installs the local tasks, then walks you through Gmail
-                and Google Calendar. Gmail sends your recap; Calendar is
-                read-only.
+                Screenpipe will turn these on, then help you connect Gmail and
+                Google Calendar.
               </p>
             </div>
             <Button
@@ -353,14 +350,14 @@ export function FirstRunNextStepsPanel({
             >
               <span>
                 {checking
-                  ? "checking setup"
+                  ? "checking"
                   : setupBusyLabel
                     ? setupBusyLabel
                     : hasUnknown
-                      ? "retry status"
+                      ? "check again"
                       : actionError
-                        ? "continue setup"
-                        : "set up everything"}
+                        ? "keep going"
+                        : "set up all"}
               </span>
               {checking || setupBusy ? (
                 <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
@@ -372,36 +369,36 @@ export function FirstRunNextStepsPanel({
 
           <SetupOutcomeRow
             icon={<BrainCircuit className="h-4 w-4" aria-hidden="true" />}
-            title="organize my work memory"
-            description="keep a structured memory of work, meetings, and recurring people on this device."
+            title="remember my work"
+            description="remember my work, meetings, and the people I work with."
             status={
               checking
                 ? "checking"
                 : cloneReady
-                  ? "ready"
+                  ? "on"
                   : cloneDisabled
-                    ? "installed, not active"
+                    ? "off"
                     : cloneUnknown
-                      ? "status unavailable"
-                      : "included"
+                      ? "couldn't check"
+                      : "ready to set up"
             }
             complete={cloneReady}
           />
 
           <SetupOutcomeRow
             icon={<AudioLines className="h-4 w-4" aria-hidden="true" />}
-            title="speaker names for review"
-            description="after each meeting, use diarized audio plus accessibility and parsed meeting data to prepare possible names. it never changes names automatically."
+            title="name people in meetings"
+            description="after each meeting, suggest who was speaking. you review every name before anything changes."
             status={
               checking
                 ? "checking"
                 : speakerReady
-                  ? "review only"
+                  ? "on"
                   : speakerDisabled
-                    ? "installed, not active"
+                    ? "off"
                     : speakerUnknown
-                      ? "status unavailable"
-                      : "included"
+                      ? "couldn't check"
+                      : "ready to set up"
             }
             complete={speakerReady}
           />
@@ -415,18 +412,18 @@ export function FirstRunNextStepsPanel({
                 data-testid="gmail-service-icon"
               />
             }
-            title="email my daily recap"
-            description="send one concise, evidence-backed recap to your own Gmail inbox each evening."
+            title="send my daily recap"
+            description="email me a short recap of my day each evening."
             status={
               checking
                 ? "checking"
                 : dailyReady
-                  ? "ready"
+                  ? "on"
                   : dailyUnknown
-                    ? "status unavailable"
+                    ? "couldn't check"
                     : snapshot.gmailConnected === true
                       ? "gmail connected"
-                      : "needs gmail approval"
+                      : "connect gmail"
             }
             complete={dailyReady}
           />
@@ -440,16 +437,16 @@ export function FirstRunNextStepsPanel({
                 data-testid="google-calendar-service-icon"
               />
             }
-            title="add meeting context"
-            description="read upcoming Google Calendar event details for better meeting context. it never writes to your calendar."
+            title="understand my meetings"
+            description="use Google Calendar to understand what my meetings are about. Screenpipe never changes my calendar."
             status={
               checking
                 ? "checking"
                 : calendarReady
                   ? "connected"
                   : calendarUnknown
-                    ? "status unavailable"
-                    : "needs calendar approval"
+                    ? "couldn't check"
+                    : "connect calendar"
             }
             complete={calendarReady}
           />
@@ -463,7 +460,7 @@ export function FirstRunNextStepsPanel({
         >
           <p className="text-[10px] leading-relaxed text-muted-foreground">
             {actionError ??
-              "some setup status could not be checked. nothing changed."}
+              "Screenpipe couldn't check everything. nothing changed."}
           </p>
           <Button
             type="button"
@@ -590,7 +587,7 @@ export function FirstRunNextSteps({
   const setupEverything = useCallback(async () => {
     if (setupBusyRef.current) return;
     setupBusyRef.current = true;
-    setSetupBusyLabel("starting setup");
+    setSetupBusyLabel("getting ready");
     setActionError(null);
     posthog.capture("first_run_next_step_selected", {
       step: "recommended-setup-bundle",
@@ -603,30 +600,30 @@ export function FirstRunNextSteps({
 
     try {
       if (snapshot.dailyEmailState === "missing") {
-        setSetupBusyLabel("installing daily recap");
+        setSetupBusyLabel("setting up daily recap");
         await installStorePipe(DAILY_EMAIL_PIPE);
       }
 
       if (snapshot.digitalCloneState === "missing") {
-        setSetupBusyLabel("organizing memory");
+        setSetupBusyLabel("setting up work history");
         await installStorePipe(DIGITAL_CLONE_PIPE);
       }
       if (snapshot.digitalCloneState !== "enabled") {
-        setSetupBusyLabel("turning on memory");
+        setSetupBusyLabel("turning on work history");
         await enablePipe(DIGITAL_CLONE_PIPE);
       }
 
       if (snapshot.speakerReconciliationState === "missing") {
-        setSetupBusyLabel("preparing speaker review");
+        setSetupBusyLabel("setting up meeting names");
         await installBundledPipe(SPEAKER_RECONCILIATION_PIPE);
       }
       if (snapshot.speakerReconciliationState !== "enabled") {
-        setSetupBusyLabel("turning on speaker review");
+        setSetupBusyLabel("turning on meeting names");
         await enablePipe(SPEAKER_RECONCILIATION_PIPE);
       }
 
       if (snapshot.gmailConnected !== true) {
-        setSetupBusyLabel("approve gmail");
+        setSetupBusyLabel("connect gmail");
         await connectGmail();
       }
       if (snapshot.dailyEmailState !== "enabled") {
@@ -635,21 +632,17 @@ export function FirstRunNextSteps({
       }
 
       if (snapshot.googleCalendarConnected !== true) {
-        setSetupBusyLabel("approve calendar");
+        setSetupBusyLabel("connect calendar");
         await connectGoogleCalendar();
       }
 
-      setSetupBusyLabel("finishing setup");
+      setSetupBusyLabel("almost done");
       await refresh();
       posthog.capture("first_run_setup_bundle_completed");
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         await refresh();
-        setActionError(
-          error instanceof Error
-            ? error.message
-            : "could not finish the guided setup. try again.",
-        );
+        setActionError("Screenpipe couldn't finish setup. try again.");
         posthog.capture("first_run_setup_bundle_failed", {
           message: error instanceof Error ? error.message : "unknown error",
         });

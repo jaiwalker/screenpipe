@@ -127,11 +127,11 @@ beforeEach(() => {
 });
 
 describe("first-run next steps", () => {
-  it("shows one guided action, the real Google icons, and a plain speaker-review boundary", async () => {
+  it("shows one simple action, the real Google icons, and a clear review boundary", async () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
     const action = await screen.findByTestId("first-run-next-step-setup-all");
-    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    await waitFor(() => expect(action).toHaveTextContent("set up all"));
     expect(screen.getByTestId("gmail-service-icon")).toHaveAttribute(
       "src",
       "/images/gmail.svg",
@@ -142,7 +142,7 @@ describe("first-run next steps", () => {
     );
     expect(
       screen.getByText(
-        "after each meeting, use diarized audio plus accessibility and parsed meeting data to prepare possible names. it never changes names automatically.",
+        "after each meeting, suggest who was speaking. you review every name before anything changes.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/shadow mode/i)).not.toBeInTheDocument();
@@ -152,12 +152,12 @@ describe("first-run next steps", () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
     const action = await screen.findByTestId("first-run-next-step-setup-all");
-    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    await waitFor(() => expect(action).toHaveTextContent("set up all"));
     fireEvent.click(action);
 
     expect(
       await screen.findByTestId("first-run-next-steps-complete"),
-    ).toHaveTextContent("daily setup ready");
+    ).toHaveTextContent("all set");
     expect(mocks.localFetch).toHaveBeenCalledWith(
       "/pipes/store/install",
       expect.objectContaining({
@@ -222,7 +222,7 @@ describe("first-run next steps", () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
     const action = await screen.findByTestId("first-run-next-step-setup-all");
-    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    await waitFor(() => expect(action).toHaveTextContent("set up all"));
     fireEvent.click(action);
 
     expect(
@@ -282,12 +282,12 @@ describe("first-run next steps", () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
     const action = await screen.findByTestId("first-run-next-step-setup-all");
-    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    await waitFor(() => expect(action).toHaveTextContent("set up all"));
     fireEvent.click(action);
     fireEvent.click(action);
 
     await waitFor(() =>
-      expect(action).toHaveTextContent("installing daily recap"),
+      expect(action).toHaveTextContent("setting up daily recap"),
     );
     expect(action).toBeDisabled();
     expect(
@@ -315,11 +315,13 @@ describe("first-run next steps", () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
     const action = await screen.findByTestId("first-run-next-step-setup-all");
-    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    await waitFor(() => expect(action).toHaveTextContent("set up all"));
     fireEvent.click(action);
 
-    expect(await screen.findByText("calendar unavailable")).toBeInTheDocument();
-    await waitFor(() => expect(action).toHaveTextContent("continue setup"));
+    expect(
+      await screen.findByText("Screenpipe couldn't finish setup. try again."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(action).toHaveTextContent("keep going"));
     fireEvent.click(action);
 
     expect(
@@ -339,11 +341,13 @@ describe("first-run next steps", () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
     const action = await screen.findByTestId("first-run-next-step-setup-all");
-    await waitFor(() => expect(action).toHaveTextContent("set up everything"));
+    await waitFor(() => expect(action).toHaveTextContent("set up all"));
     fireEvent.click(action);
 
-    expect(await screen.findByText("engine busy")).toBeInTheDocument();
-    await waitFor(() => expect(action).toHaveTextContent("continue setup"));
+    expect(
+      await screen.findByText("Screenpipe couldn't finish setup. try again."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(action).toHaveTextContent("keep going"));
     expect(mocks.authorizeComposioToolkit).not.toHaveBeenCalled();
     expect(mocks.oauthConnect).not.toHaveBeenCalled();
   });
@@ -353,7 +357,7 @@ describe("first-run next steps", () => {
     render(<FirstRunNextSteps userToken="user-token" />);
 
     const action = await screen.findByTestId("first-run-next-step-setup-all");
-    await waitFor(() => expect(action).toHaveTextContent("retry status"));
+    await waitFor(() => expect(action).toHaveTextContent("check again"));
     fireEvent.click(action);
 
     await waitFor(() =>
@@ -382,7 +386,7 @@ describe("first-run next steps", () => {
 
     expect(
       await screen.findByTestId("first-run-next-steps-complete"),
-    ).toHaveTextContent("daily setup ready");
+    ).toHaveTextContent("all set");
     expect(
       screen.queryByTestId("first-run-next-step-setup-all"),
     ).not.toBeInTheDocument();
