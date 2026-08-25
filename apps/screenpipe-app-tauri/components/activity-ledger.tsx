@@ -1979,10 +1979,12 @@ Re-query Screenpipe only inside the cited time range and use the cited frames an
                 <AIPresetsSelector
                   compact
                   showModelOnly
+                  // Activity generation runs raw Pi, so coding agent presets are
+                  // listed for parity with chat but cannot be selected.
                   includeAgentPresets={false}
                   triggerAriaLabel="AI preset"
                   containerClassName="w-[190px] max-w-[36vw] min-w-[132px] shrink-0 gap-0"
-                  triggerClassName="h-9 rounded-none border-border text-xs"
+                  triggerClassName="h-9 rounded-md border border-transparent bg-transparent px-2 text-xs text-muted-foreground shadow-none transition-colors duration-150 hover:border-border hover:bg-muted/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-signal focus-visible:ring-offset-1 motion-reduce:transition-none"
                   controlledPresetId={reviewPreset.id}
                   onControlledSelect={(nextPreset) => {
                     if (!nextPreset) return;

@@ -1348,8 +1348,13 @@ interface AIPresetsSelectorProps {
   onOpenChange?: (open: boolean) => void;
   /** Optional controls that belong with model selection in the same popover. */
   popoverFooter?: ReactNode;
-  /** Scheduled pipes still run through raw Pi and cannot execute ACP adapters. */
+  /** Surfaces that run raw Pi (activity generation) cannot execute ACP
+   *  adapters. They still list coding agent presets so the dropdown matches
+   *  chat, but render them disabled instead of silently dropping presets the
+   *  user configured. */
   includeAgentPresets?: boolean;
+  /** Badge explaining why agent presets are listed but not selectable here. */
+  agentPresetUnavailableLabel?: string;
 }
 
 export const AIPresetDialog = ({
@@ -1450,6 +1455,7 @@ export const AIPresetsSelector = ({
   onOpenChange,
   popoverFooter,
   includeAgentPresets = true,
+  agentPresetUnavailableLabel = "chat only",
 }: AIPresetsSelectorProps) => {
   const { settings, updateSettings } = useSettings();
   const [open, setOpen] = useState(false);
@@ -1472,16 +1478,28 @@ export const AIPresetsSelector = ({
     [onOpenChange],
   );
 
+  // Every preset the user configured and policy allows. Surfaces that cannot
+  // execute a preset still list it — hiding presets left users asking why the
+  // dropdown showed fewer models than chat.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const aiPresets = useMemo(() => {
+  const visiblePresets = useMemo(() => {
     const presets = (settings?.aiPresets || []) as AIPreset[];
-    const policyPresets = isManagedDeployment
+    return isManagedDeployment
       ? filterPresetsForEnterprisePolicy(presets, aiPresetPolicy)
       : presets;
-    return includeAgentPresets
-      ? policyPresets
-      : policyPresets.filter((preset) => preset.provider !== "acp");
-  }, [settings?.aiPresets, isManagedDeployment, aiPresetPolicy, includeAgentPresets]);
+  }, [settings?.aiPresets, isManagedDeployment, aiPresetPolicy]);
+
+  const isPresetSelectable = useCallback(
+    (preset: AIPreset) => includeAgentPresets || preset.provider !== "acp",
+    [includeAgentPresets],
+  );
+
+  // Selection, cycling and the trigger only ever consider presets this surface
+  // can actually run.
+  const aiPresets = useMemo(
+    () => visiblePresets.filter(isPresetSelectable),
+    [visiblePresets, isPresetSelectable],
+  );
 
   const selectedPreset = useMemo(() => {
     if (isControlled) {
@@ -2096,20 +2114,22 @@ export const AIPresetsSelector = ({
                   </CommandGroup>
                 )}
                 <CommandGroup>
-                  {aiPresets.map((preset) => {
+                  {visiblePresets.map((preset) => {
                     const isCloud = preset.provider === "screenpipe-cloud";
                     const piModel = isCloud ? piModels.find(m => m.id === preset.model) : null;
                     const isGated = showUpsell && piModel?.locked;
+                    const unavailableHere = !isPresetSelectable(preset);
+                    const isDisabled = Boolean(isGated) || unavailableHere;
 
                     return (
                     <CommandItem
                       key={preset.id}
                       value={preset.id}
-                      disabled={isGated}
+                      disabled={isDisabled}
                       onSelect={() => {
                         // Use preset from closure — cmdk lowercases the value
                         // so string comparison against preset.id would fail
-                        if (isGated) return;
+                        if (isDisabled) return;
                         if (isControlled) {
                           onControlledSelect(preset);
                         } else if (preset.id !== selectedPreset && !aiPresetPolicy.lock_default_preset) {
@@ -2131,6 +2151,8 @@ export const AIPresetsSelector = ({
                         handleOpenChange(false);
                       }}
                       className="flex py-2"
+                      data-testid={`ai-preset-option-${preset.id}`}
+                      data-unavailable={unavailableHere ? "true" : undefined}
                     >
                       <div className="flex w-full items-center justify-between gap-2 overflow-hidden">
                         <div className="flex items-center gap-2 min-w-0">
@@ -2167,6 +2189,11 @@ export const AIPresetsSelector = ({
                           {isGated && (
                             <span className="rounded bg-muted text-muted-foreground px-1.5 py-0.5 text-[10px] font-medium shrink-0 ml-1 border border-border/50">
                               business plan only
+                            </span>
+                          )}
+                          {unavailableHere && (
+                            <span className="rounded bg-muted text-muted-foreground px-1.5 py-0.5 text-[10px] font-medium shrink-0 ml-1 border border-border/50">
+                              {agentPresetUnavailableLabel}
                             </span>
                           )}
                           {preset.defaultPreset && (
@@ -2213,7 +2240,9 @@ export const AIPresetsSelector = ({
                                 </Button>
                               </>
                             )}
-                            {!preset.defaultPreset && !aiPresetPolicy.lock_default_preset && (
+                            {!preset.defaultPreset &&
+                              !aiPresetPolicy.lock_default_preset &&
+                              !unavailableHere && (
                               <Button
                                 variant="ghost"
                                 size="icon"
