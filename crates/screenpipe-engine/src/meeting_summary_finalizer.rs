@@ -64,9 +64,10 @@ pub fn spawn_meeting_summary_finalizer(db: Arc<DatabaseManager>) {
     }
     tokio::spawn(async move {
         use futures::StreamExt;
-        let mut completed_rx = screenpipe_events::subscribe_to_event::<serde_json::Value>(
-            format!("pipe_completed:{}", SUMMARY_PIPE),
-        );
+        let mut completed_rx = screenpipe_events::subscribe_to_event::<serde_json::Value>(format!(
+            "pipe_completed:{}",
+            SUMMARY_PIPE
+        ));
         // Runs this process already reconciled. Without this, a sweep fired by
         // meeting B's completion would re-inspect meeting A's older run and
         // re-save a summary the user may have deleted from their note.

@@ -334,10 +334,7 @@ pub(crate) async fn meeting_ended_event_data(
         }
         Err(_) => None,
     };
-    let transcript_segments = db
-        .count_meeting_transcript_segments(meeting_id)
-        .await
-        .ok();
+    let transcript_segments = db.count_meeting_transcript_segments(meeting_id).await.ok();
 
     // Unknown duration or segment count must never suppress pipes.
     let skip_pipes = match (duration_secs, transcript_segments) {
@@ -1642,7 +1639,8 @@ mod tests {
 
     #[test]
     fn merge_summary_appends_after_user_notes() {
-        let note = merge_summary_into_note(Some("my prep notes\n- ask about pricing"), "It went well.");
+        let note =
+            merge_summary_into_note(Some("my prep notes\n- ask about pricing"), "It went well.");
         assert_eq!(
             note,
             "my prep notes\n- ask about pricing\n\n## Summary\nIt went well."
@@ -1651,10 +1649,7 @@ mod tests {
 
     #[test]
     fn merge_summary_into_empty_or_missing_note() {
-        assert_eq!(
-            merge_summary_into_note(None, "Body."),
-            "## Summary\nBody."
-        );
+        assert_eq!(merge_summary_into_note(None, "Body."), "## Summary\nBody.");
         assert_eq!(
             merge_summary_into_note(Some("   \n"), "Body."),
             "## Summary\nBody."
@@ -1697,7 +1692,10 @@ mod tests {
         let saved = save_meeting_summary(&db, id, "Decisions were made.", Some("Pricing sync"))
             .await
             .unwrap();
-        assert_eq!(saved.note.as_deref(), Some("## Summary\nDecisions were made."));
+        assert_eq!(
+            saved.note.as_deref(),
+            Some("## Summary\nDecisions were made.")
+        );
         assert_eq!(saved.title.as_deref(), Some("Pricing sync"));
 
         // A refresh replaces the section and an empty title leaves it alone.
