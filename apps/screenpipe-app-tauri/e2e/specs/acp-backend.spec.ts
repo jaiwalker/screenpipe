@@ -43,7 +43,7 @@ type ProcessMarker = {
   descendantPid?: number;
 };
 
-type AcpScenario = "normal" | "malformed" | "exit" | "auth" | "mcp" | "tree" | "terminal" | "subagent" | "metadata" | "resume";
+type AcpScenario = "normal" | "malformed" | "exit" | "auth" | "mcp" | "tree" | "terminal" | "subagent" | "metadata" | "repeated-tools" | "resume";
 
 const fixturePath = fileURLToPath(new URL("../fixtures/mock-acp-agent.ts", import.meta.url));
 let normalSession = "";
@@ -57,6 +57,7 @@ let mcpSession = "";
 let terminalSession = "";
 let subagentSession = "";
 let metadataSession = "";
+let repeatedToolsSession = "";
 let resumeSession = "";
 let orphanedPresetSession = "";
 let treeMarkerPrefix = "";
@@ -74,6 +75,7 @@ function resetRunIdentifiers(): void {
   terminalSession = randomUUID();
   subagentSession = randomUUID();
   metadataSession = randomUUID();
+  repeatedToolsSession = randomUUID();
   resumeSession = randomUUID();
   orphanedPresetSession = randomUUID();
   treeMarkerPrefix = path.join(os.tmpdir(), `screenpipe-acp-process-${treeSession}`);
@@ -88,7 +90,11 @@ function acpProviderConfig(
   return {
     backend: "acp",
     acpAgent: {
-      id: scenario === "metadata" ? "pi-acp" : "custom",
+      id: scenario === "metadata"
+        ? "pi-acp"
+        : scenario === "repeated-tools"
+          ? "claude-acp"
+          : "custom",
       command: process.execPath,
       args: [fixturePath, `--scenario=${scenario}`],
       env,
@@ -146,6 +152,7 @@ async function resetCapturedState(): Promise<void> {
     delete (window as any).__e2eAcpPromptState;
     delete (window as any).__e2eAcpStartState;
     delete (window as any).__e2eAcpNewSessionState;
+    delete (window as any).__e2eExpandToolActivity;
   });
 }
 
@@ -556,6 +563,7 @@ describe("ACP backend", function () {
     await invokeOrThrow("pi_stop", { sessionId: mcpSession }).catch(() => undefined);
     await invokeOrThrow("pi_stop", { sessionId: terminalSession }).catch(() => undefined);
     await invokeOrThrow("pi_stop", { sessionId: metadataSession }).catch(() => undefined);
+    await invokeOrThrow("pi_stop", { sessionId: repeatedToolsSession }).catch(() => undefined);
     rmSync(processMarkerPath("adapter"), { force: true });
     rmSync(processMarkerPath("descendant"), { force: true });
   });
@@ -972,6 +980,53 @@ describe("ACP backend", function () {
       isError: true,
     });
     await stopAndAssertGone(metadataSession);
+  });
+
+  it("compacts repeated Claude recording queries behind one drill-down row", async () => {
+    await startAcp(repeatedToolsSession, "repeated-tools");
+    await foregroundChat(repeatedToolsSession);
+    await browser.execute(() => {
+      (window as any).__e2eExpandToolActivity = true;
+    });
+    await beginPrompt(repeatedToolsSession, "review my recording history");
+    const prompt = await waitForPromptDone();
+    expect(prompt.error).toBeUndefined();
+    await browser.waitUntil(
+      async () => (await capturedEvents(repeatedToolsSession)).some(
+        (envelope) => envelope.event?.type === "agent_end",
+      ),
+      {
+        timeout: t(10_000),
+        interval: 100,
+        timeoutMsg: "repeated Claude tool turn did not complete",
+      },
+    );
+
+    const widgets = await $$('[data-testid="tool-activity-widget"]');
+    const widget = widgets[widgets.length - 1];
+    const list = await widget.$('[data-testid="tool-activity-list"]');
+    await list.waitForExist({ timeout: t(10_000) });
+
+    const compactRows = await widget.$$('[data-testid="tool-activity-item"]');
+    expect(compactRows).toHaveLength(1);
+    expect(await compactRows[0].getText()).toContain("Searched recordings");
+    expect(await compactRows[0].getText()).toContain("25 queries");
+    const screenshot = await saveScreenshot("acp-repeated-tools-compacted");
+    expect(existsSync(screenshot)).toBe(true);
+
+    await compactRows[0].click();
+    await browser.waitUntil(
+      async () => (await widget.$$('[data-testid="tool-activity-item"]')).length === 26,
+      {
+        timeout: t(5_000),
+        interval: 100,
+        timeoutMsg: "individual recording query details were not disclosed",
+      },
+    );
+    const detailedRows = await widget.$$('[data-testid="tool-activity-item"]');
+    await detailedRows[25].click();
+    expect(await widget.getText()).toContain("2026-08-25T00:00:00Z");
+    await stopAndAssertGone(repeatedToolsSession);
   });
 
   it("reattaches to a prior session via session/resume when one is provided", async () => {

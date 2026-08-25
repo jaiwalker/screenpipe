@@ -17,7 +17,7 @@ type JsonRpcMessage = {
   error?: unknown;
 };
 
-type Scenario = "normal" | "malformed" | "exit" | "auth" | "mcp" | "tree" | "terminal" | "subagent" | "metadata" | "resume";
+type Scenario = "normal" | "malformed" | "exit" | "auth" | "mcp" | "tree" | "terminal" | "subagent" | "metadata" | "repeated-tools" | "resume";
 
 const scenarioArg = process.argv.find((arg) => arg.startsWith("--scenario="));
 const scenario = (scenarioArg?.slice("--scenario=".length) ?? "normal") as Scenario;
@@ -345,6 +345,43 @@ function emitMetadataRefinementFlow(requestId: JsonRpcId): void {
   activePromptRequestId = undefined;
 }
 
+/** Claude can split a broad history request into many adjacent recording
+ *  windows. Keep this intentionally large so the desktop test catches a
+ *  verbatim activity rail that grows one row per query. */
+async function emitRepeatedRecordingQueriesFlow(requestId: JsonRpcId): Promise<void> {
+  for (let index = 0; index < 25; index++) {
+    const toolCallId = `mock-recording-query-${index + 1}`;
+    update({
+      sessionUpdate: "tool_call",
+      toolCallId,
+      title: "query_recordings",
+      kind: "other",
+      status: "in_progress",
+      rawInput: {
+        start_time: `2026-08-${String(index + 1).padStart(2, "0")}T00:00:00Z`,
+        limit: 50,
+      },
+    });
+    update({
+      sessionUpdate: "tool_call_update",
+      toolCallId,
+      status: "completed",
+      rawOutput: { rows: 1 },
+    });
+    // Real Claude queries arrive over a multi-minute turn. Give the desktop a
+    // render boundary between calls so this fixture exercises that event path
+    // instead of an artificial 50-notification stdout burst.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  update({
+    sessionUpdate: "agent_message_chunk",
+    content: { type: "text", text: "Recording query batch complete." },
+    messageId: "mock-repeated-tools-final",
+  });
+  respond(requestId, { stopReason: "end_turn" });
+  activePromptRequestId = undefined;
+}
+
 /** Deterministic subagent turn matching the claude-agent-acp and codex-acp
  *  wire formats: a parent Task tool call, a flat child stamped with
  *  _meta.claudeCode.parentToolUseId, heartbeat and streamed-output
@@ -653,6 +690,10 @@ async function handleRequest(message: JsonRpcMessage): Promise<void> {
       }
       if (scenario === "metadata") {
         emitMetadataRefinementFlow(message.id);
+        return;
+      }
+      if (scenario === "repeated-tools") {
+        await emitRepeatedRecordingQueriesFlow(message.id);
         return;
       }
       if (!activePromptIsCancellation) beginPermissionFlow();
