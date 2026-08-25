@@ -348,9 +348,21 @@ function emitMetadataRefinementFlow(requestId: JsonRpcId): void {
 /** Claude can split a broad history request into many adjacent recording
  *  windows. Keep this intentionally large so the desktop test catches a
  *  verbatim activity rail that grows one row per query. */
-async function emitRepeatedRecordingQueriesFlow(requestId: JsonRpcId): Promise<void> {
-  for (let index = 0; index < 25; index++) {
+async function emitRepeatedRecordingQueriesFlow(
+  requestId: JsonRpcId,
+  prompt: string,
+): Promise<void> {
+  const normalizedPrompt = prompt.toLowerCase();
+  const failedFinalQuery = normalizedPrompt.includes("failure");
+  const queryCount = normalizedPrompt.includes("short")
+    ? 2
+    : failedFinalQuery
+      ? 4
+      : 25;
+
+  for (let index = 0; index < queryCount; index++) {
     const toolCallId = `mock-recording-query-${index + 1}`;
+    const isFailedQuery = failedFinalQuery && index === queryCount - 1;
     update({
       sessionUpdate: "tool_call",
       toolCallId,
@@ -366,18 +378,25 @@ async function emitRepeatedRecordingQueriesFlow(requestId: JsonRpcId): Promise<v
       sessionUpdate: "tool_call_update",
       toolCallId,
       status: "completed",
-      rawOutput: { rows: 1 },
+      rawOutput: isFailedQuery
+        ? { error: "Recording window was unavailable" }
+        : { rows: 1 },
     });
     // Real Claude queries arrive over a multi-minute turn. Give the desktop a
     // render boundary between calls so this fixture exercises that event path
     // instead of an artificial 50-notification stdout burst.
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  update({
-    sessionUpdate: "agent_message_chunk",
-    content: { type: "text", text: "Recording query batch complete." },
-    messageId: "mock-repeated-tools-final",
-  });
+  // Keep the failure variant terminal and unrecovered so its final UI state
+  // proves the failed call remains separate. A later assistant answer would
+  // intentionally apply the chat's existing recovered-error presentation.
+  if (!failedFinalQuery) {
+    update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "Recording query batch complete." },
+      messageId: "mock-repeated-tools-final",
+    });
+  }
   respond(requestId, { stopReason: "end_turn" });
   activePromptRequestId = undefined;
 }
@@ -667,7 +686,8 @@ async function handleRequest(message: JsonRpcMessage): Promise<void> {
         return;
       }
       activePromptRequestId = message.id;
-      activePromptIsCancellation = promptText(message.params).toLowerCase().includes("cancel");
+      const prompt = promptText(message.params);
+      activePromptIsCancellation = prompt.toLowerCase().includes("cancel");
       emitPromptPrelude();
       if (scenario === "terminal") {
         try {
@@ -693,7 +713,7 @@ async function handleRequest(message: JsonRpcMessage): Promise<void> {
         return;
       }
       if (scenario === "repeated-tools") {
-        await emitRepeatedRecordingQueriesFlow(message.id);
+        await emitRepeatedRecordingQueriesFlow(message.id, prompt);
         return;
       }
       if (!activePromptIsCancellation) beginPermissionFlow();

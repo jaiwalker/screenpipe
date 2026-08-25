@@ -1002,8 +1002,20 @@ describe("ACP backend", function () {
       },
     );
 
-    const widgets = await $$('[data-testid="tool-activity-widget"]');
-    const widget = widgets[widgets.length - 1];
+    const latestWidget = async (expectedCount: number) => {
+      await browser.waitUntil(
+        async () => (await $$('[data-testid="tool-activity-widget"]')).length >= expectedCount,
+        {
+          timeout: t(10_000),
+          interval: 100,
+          timeoutMsg: `expected ${expectedCount} Claude tool activity widgets`,
+        },
+      );
+      const widgets = await $$('[data-testid="tool-activity-widget"]');
+      return widgets[widgets.length - 1];
+    };
+
+    const widget = await latestWidget(1);
     const list = await widget.$('[data-testid="tool-activity-list"]');
     await list.waitForExist({ timeout: t(10_000) });
 
@@ -1011,8 +1023,8 @@ describe("ACP backend", function () {
     expect(compactRows).toHaveLength(1);
     expect(await compactRows[0].getText()).toContain("Searched recordings");
     expect(await compactRows[0].getText()).toContain("25 queries");
-    const screenshot = await saveScreenshot("acp-repeated-tools-compacted");
-    expect(existsSync(screenshot)).toBe(true);
+    const compactScreenshot = await saveScreenshot("acp-repeated-tools-compact");
+    expect(existsSync(compactScreenshot)).toBe(true);
 
     await compactRows[0].click();
     await browser.waitUntil(
@@ -1023,9 +1035,83 @@ describe("ACP backend", function () {
         timeoutMsg: "individual recording query details were not disclosed",
       },
     );
+    // Let the parent rail finish its disclosure transition before opening a
+    // nested query, keeping the visual proof deterministic in WebKit.
+    await browser.pause(350);
     const detailedRows = await widget.$$('[data-testid="tool-activity-item"]');
+    await detailedRows[1].click();
+    expect(await widget.getText()).toContain("2026-08-01T00:00:00Z");
+    await browser.pause(350);
+    await browser.execute((element) => {
+      element.scrollIntoView({ block: "center", inline: "nearest" });
+    }, detailedRows[1]);
+    await browser.pause(100);
+    const firstDetailIsVisible = await browser.execute((element) => {
+      const rect = element.getBoundingClientRect();
+      let current: HTMLElement | null = element;
+      while (current) {
+        const style = window.getComputedStyle(current);
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+          return false;
+        }
+        current = current.parentElement;
+      }
+      return rect.width > 0
+        && rect.height > 0
+        && rect.top >= 0
+        && rect.left >= 0
+        && rect.bottom <= window.innerHeight
+        && rect.right <= window.innerWidth;
+    }, detailedRows[1]);
+    expect(firstDetailIsVisible).toBe(true);
+    const expandedScreenshot = await saveScreenshot("acp-repeated-tools-expanded");
+    expect(existsSync(expandedScreenshot)).toBe(true);
+
     await detailedRows[25].click();
     expect(await widget.getText()).toContain("2026-08-25T00:00:00Z");
+    const expandedRows = await widget.$$('[data-testid="tool-activity-item"]');
+    await browser.execute((element) => {
+      element.scrollIntoView({ block: "center", inline: "nearest" });
+    }, expandedRows[0]);
+    await expandedRows[0].click();
+
+    await beginPrompt(repeatedToolsSession, "show the recording query failure state");
+    const failurePrompt = await waitForPromptDone();
+    expect(failurePrompt.error).toBeUndefined();
+    const failureWidget = await latestWidget(2);
+    await browser.waitUntil(
+      async () => (await failureWidget.getAttribute("data-activity-state")) === "error",
+      {
+        timeout: t(5_000),
+        interval: 100,
+        timeoutMsg: "failed Claude query widget did not settle into its error state",
+      },
+    );
+    const failureRows = await failureWidget.$$('[data-testid="tool-activity-item"]');
+    expect(failureRows).toHaveLength(2);
+    expect(await failureRows[0].getText()).toContain("3 queries");
+    expect(await failureRows[1].getText()).toContain("failed");
+    const failureScreenshot = await saveScreenshot("acp-repeated-tools-failure");
+    expect(existsSync(failureScreenshot)).toBe(true);
+
+    await beginPrompt(repeatedToolsSession, "show a short recording query sequence");
+    const shortPrompt = await waitForPromptDone();
+    expect(shortPrompt.error).toBeUndefined();
+    const shortWidget = await latestWidget(3);
+    await browser.waitUntil(
+      async () => (await shortWidget.getAttribute("data-activity-state")) === "completed",
+      {
+        timeout: t(5_000),
+        interval: 100,
+        timeoutMsg: "short Claude query widget did not settle into its completed state",
+      },
+    );
+    const shortRows = await shortWidget.$$('[data-testid="tool-activity-item"]');
+    expect(shortRows).toHaveLength(2);
+    expect(await shortWidget.getText()).not.toContain("2 queries");
+    const shortScreenshot = await saveScreenshot("acp-repeated-tools-short");
+    expect(existsSync(shortScreenshot)).toBe(true);
+
     await stopAndAssertGone(repeatedToolsSession);
   });
 

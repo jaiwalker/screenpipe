@@ -588,11 +588,14 @@ function ToolCallRailItem({
         <AnimatePresence>
           {!isAskUser && expanded && (
             <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: "auto", opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
+              // Nested disclosures can be opened after the parent rail has
+              // already animated. Starting another entrance animation here can
+              // leave WebKit at opacity 0, so keep the live details in normal
+              // document flow and only animate their exit.
+              initial={false}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
               transition={{ duration: reduceMotion ? 0 : 0.15 }}
-              className="overflow-hidden"
             >
               <div className="border-l border-border ml-0 pl-3 mt-1 mb-1">
                 {!compactedCalls && <FriendlyToolDetails toolCall={toolCall} />}
@@ -1582,11 +1585,10 @@ function ToolActivityGroup({
       <AnimatePresence>
         {isExpanded && (
           <motion.div
-            initial={e2eForceExpanded ? false : { height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
+            initial={reduceMotion || e2eForceExpanded ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
             transition={{ duration: reduceMotion || e2eForceExpanded ? 0 : 0.15 }}
-            className="overflow-hidden"
           >
             <div
               className={cn(
