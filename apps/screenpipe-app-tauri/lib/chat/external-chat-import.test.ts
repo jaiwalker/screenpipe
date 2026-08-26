@@ -9,11 +9,13 @@ const mocks = vi.hoisted(() => ({
   readDir: vi.fn(),
   readTextFile: vi.fn(),
   stat: vi.fn(),
+  emit: vi.fn(),
+  deleteConversationFile: vi.fn(),
   loadConversationFile: vi.fn(),
   saveConversationFile: vi.fn(),
 }));
 
-vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn() }));
+vi.mock("@tauri-apps/api/event", () => ({ emit: mocks.emit }));
 vi.mock("@tauri-apps/api/path", () => ({
   homeDir: vi.fn(async () => "/fixture"),
   join: vi.fn(async (...parts: string[]) => parts.join("/")),
@@ -25,6 +27,7 @@ vi.mock("@tauri-apps/plugin-fs", () => ({
   stat: mocks.stat,
 }));
 vi.mock("@/lib/chat-storage", () => ({
+  deleteConversationFile: mocks.deleteConversationFile,
   loadConversationFile: mocks.loadConversationFile,
   invalidateConversationListCache: vi.fn(),
   saveConversationFile: mocks.saveConversationFile,
@@ -101,6 +104,44 @@ describe("scanExternalChatHistory", () => {
 
     expect(codex?.candidates.map((candidate) => candidate.sourceId)).toEqual([
       insideWindow.replace(".jsonl", ""),
+    ]);
+  });
+
+  it("keeps Screenpipe Activity sessions out of visible Claude history", async () => {
+    const nowMs = new Date(2026, 7, 21, 12, 0, 0).getTime();
+    const internalProject = "-Users-test--screenpipe-pi-daily-summary";
+    const userProject = "-Users-test--screenpipe-pi-chat";
+
+    mocks.readDir.mockImplementation(async (path: string) => {
+      if (path === "/fixture/.claude/projects") {
+        return [internalProject, userProject].map((name) => ({
+          name,
+          isDirectory: true,
+        }));
+      }
+      if (path.endsWith(internalProject)) {
+        return [{ name: "activity-session.jsonl", isDirectory: false }];
+      }
+      if (path.endsWith(userProject)) {
+        return [{ name: "user-session.jsonl", isDirectory: false }];
+      }
+      return [];
+    });
+    mocks.stat.mockResolvedValue({ size: 1024, mtime: new Date(nowMs) });
+
+    const result = await scanExternalChatHistory({ nowMs });
+    const claude = result.sources.find((source) => source.source === "claude-code");
+
+    expect(claude?.candidates.map((candidate) => candidate.sourceId)).toEqual([
+      "user-session",
+    ]);
+    expect(claude?.availableCount).toBe(1);
+    expect(result.totalCandidates).toBe(1);
+    expect(result.maintenanceCandidates).toEqual([
+      expect.objectContaining({
+        sourceId: "activity-session",
+        maintenance: "remove-screenpipe-background-import",
+      }),
     ]);
   });
 
@@ -318,5 +359,98 @@ describe("scanExternalChatHistory", () => {
     expect(saved.messages[0].content).toBe("fix the sidebar");
     expect(saved.messages[0].importedFrom).toBe("codex");
     expect(saved.messages[1].importedFrom).toBe("codex");
+  });
+
+  it("removes an already-imported Screenpipe Activity session", async () => {
+    const sourceId = "activity-session";
+    const id = `imported-claude-code-${sourceId}`;
+    mocks.loadConversationFile.mockResolvedValue({
+      id,
+      title: "Build activity timeline for August",
+      titleSource: "fallback",
+      kind: "chat",
+      createdAt: 1,
+      updatedAt: 2,
+      importedFrom: {
+        source: "claude-code",
+        sourceId,
+        importedAt: 2,
+      },
+      messages: [
+        {
+          id: `${id}-legacy-user`,
+          role: "user",
+          content: "Build activity timeline for August",
+          timestamp: 1,
+        },
+        {
+          id: `${id}-assistant`,
+          role: "assistant",
+          content: "done",
+          timestamp: 2,
+          importedFrom: "claude-code",
+        },
+      ],
+    });
+
+    const result = await importExternalChatHistory([{
+      source: "claude-code",
+      path: "/fixture/activity-session.jsonl",
+      sourceId,
+      modifiedAt: 2,
+      size: 1024,
+      maintenance: "remove-screenpipe-background-import",
+    }]);
+
+    expect(result).toMatchObject({ imported: 0, updated: 1, skipped: 0, failed: 0 });
+    expect(mocks.readTextFile).not.toHaveBeenCalled();
+    expect(mocks.deleteConversationFile).toHaveBeenCalledWith(id);
+    expect(mocks.emit).toHaveBeenCalledWith("chat-deleted", { id });
+  });
+
+  it("preserves an Activity import that the user continued in Screenpipe", async () => {
+    const sourceId = "continued-activity-session";
+    const id = `imported-claude-code-${sourceId}`;
+    mocks.loadConversationFile.mockResolvedValue({
+      id,
+      title: "Build activity timeline",
+      titleSource: "fallback",
+      kind: "chat",
+      createdAt: 1,
+      updatedAt: 3,
+      importedFrom: {
+        source: "claude-code",
+        sourceId,
+        importedAt: 2,
+      },
+      messages: [
+        {
+          id: `${id}-source-user`,
+          role: "user",
+          content: "Build activity timeline",
+          timestamp: 1,
+          importedFrom: "claude-code",
+        },
+        {
+          id: "screenpipe-follow-up",
+          role: "user",
+          content: "keep going",
+          timestamp: 3,
+        },
+      ],
+    });
+
+    const result = await importExternalChatHistory([{
+      source: "claude-code",
+      path: "/fixture/continued-activity-session.jsonl",
+      sourceId,
+      modifiedAt: 3,
+      size: 1024,
+      maintenance: "remove-screenpipe-background-import",
+    }]);
+
+    expect(result).toMatchObject({ imported: 0, updated: 0, skipped: 1, failed: 0 });
+    expect(mocks.deleteConversationFile).not.toHaveBeenCalled();
+    expect(mocks.emit).not.toHaveBeenCalled();
   });
 });

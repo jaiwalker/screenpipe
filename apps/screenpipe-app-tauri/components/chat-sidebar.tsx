@@ -274,7 +274,10 @@ function syncExternalChatsIfNeeded(force = false): Promise<void> {
   lastExternalChatSyncAt = now;
   externalChatSyncPromise = scanExternalChatHistory()
     .then((scan) => importExternalChatHistory(
-      scan.sources.flatMap((source) => source.candidates),
+      [
+        ...scan.sources.flatMap((source) => source.candidates),
+        ...scan.maintenanceCandidates,
+      ],
       { skipUnchanged: true },
     ))
     .then(() => undefined)
