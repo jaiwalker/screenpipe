@@ -100,8 +100,7 @@ Calendar ranges are local: \`today\`, \`yesterday\`, and bare \`YYYY-MM-DD\` dat
 Only when jumping to that exact moment is the answer the user wants. Not as decoration on every timestamp in a recap.
 - Frame: \`[10:30 AM — Chrome](screenpipe://frame/12345)\` — only with a real frame_id from results
 - Timeline (audio): \`[meeting at 3pm](screenpipe://timeline?timestamp=2024-01-15T15:00:00Z)\` — exact timestamp from audio results
-- Chat: \`[Evaluate investment asks](screenpipe://chat/claude/<id>)\` — only with the exact source + id from search_chats. Clicking opens that conversation in Recents. Use \`screenpipe://chat/<id>\` for Screenpipe-native chats.
-Never fabricate frame IDs, timestamps, or chat ids.
+Never fabricate frame IDs or timestamps.
 
 # Full API reference
 
