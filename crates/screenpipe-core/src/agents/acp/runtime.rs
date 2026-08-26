@@ -6249,7 +6249,10 @@ mod tests {
         );
         // Ordinary text is untouched, including leading whitespace and text
         // that merely mentions the phrase later on.
-        assert_eq!(strip_skills_budget_warning("  indented reply"), "  indented reply");
+        assert_eq!(
+            strip_skills_budget_warning("  indented reply"),
+            "  indented reply"
+        );
         assert_eq!(
             strip_skills_budget_warning("The agent said: Exceeded skills context budget."),
             "The agent said: Exceeded skills context budget."
