@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>screenpipe composer worktree preview</title>
+    <style>
+      :root {
+        --ink: #050505;
+        --bone: #f2efe6;
+        --trace: #78786f;
+        --border: #d9d6cc;
+        --danger: #b42318;
+        --warn: #b45309;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bone);
+        color: var(--ink);
+        font-family: "Space Grotesk", "IBM Plex Mono", ui-sans-serif, system-ui, sans-serif;
+      }
+      body.dark {
+        --ink: #f2efe6;
+        --bone: #050505;
+        --trace: #9a9a90;
+        --border: #2a2a26;
+        background: var(--bone);
+        color: var(--ink);
+      }
+      .frame {
+        width: 720px;
+        padding: 28px 32px 24px;
+      }
+      .label {
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--trace);
+        margin-bottom: 12px;
+      }
+      .composer {
+        border-top: 1px solid var(--border);
+        padding-top: 12px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 72px;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--bone) 88%, white);
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 12px;
+        font: 14px/1.4 "IBM Plex Mono", ui-monospace, monospace;
+        resize: none;
+      }
+      .worktree {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 28px;
+        padding: 8px 4px 0;
+        font-size: 11px;
+        font-weight: 500;
+        color: var(--trace);
+      }
+      .box {
+        width: 14px;
+        height: 14px;
+        border: 1px solid var(--ink);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: none;
+      }
+      .box.on { background: var(--ink); color: var(--bone); font-size: 11px; }
+      .box.hover { outline: 1px solid var(--ink); outline-offset: 2px; }
+      .box.disabled { opacity: 0.45; }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        max-width: 160px;
+        height: 24px;
+        border: 1px solid var(--border);
+        padding: 0 6px;
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+        font-size: 10px;
+        color: var(--ink);
+      }
+      .error { color: var(--danger); font-size: 10px; }
+      .warn { color: var(--warn); font-size: 11px; margin-top: 8px; }
+      .controls {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 4px 0;
+      }
+      .plus, .send {
+        width: 32px;
+        height: 32px;
+        border: 0;
+        display: grid;
+        place-items: center;
+        font-size: 18px;
+      }
+      .plus { background: transparent; color: var(--trace); }
+      .model {
+        font-size: 12px;
+        color: var(--trace);
+        flex: 1;
+      }
+      .send { background: var(--ink); color: var(--bone); }
+      .popover {
+        margin-top: 8px;
+        width: 320px;
+        border: 1px solid var(--border);
+        background: var(--bone);
+        padding: 12px;
+        font-size: 12px;
+      }
+      .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 10px; color: var(--trace); word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <div class="label" id="caption">composer</div>
+      <div class="composer">
+        <textarea placeholder="ask anything, or @mention apps, people, timestamps"></textarea>
+        <div class="worktree" id="worktree-row"></div>
+        <div id="extra"></div>
+        <div class="controls">
+          <div class="plus">+</div>
+          <div class="model">claude sonnet 4.6</div>
+          <div class="send">↑</div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const params = new URLSearchParams(location.search);
+      const state = params.get("state") || "after-idle";
+      if (params.get("theme") === "dark") document.body.classList.add("dark");
+      const row = document.getElementById("worktree-row");
+      const extra = document.getElementById("extra");
+      const caption = document.getElementById("caption");
+      const states = {
+        before: { caption: "before — no worktree control", html: "" },
+        "after-idle": {
+          caption: "after — unchecked",
+          html: '<span class="box"></span> isolate in worktree',
+        },
+        "after-hover": {
+          caption: "after — keyboard focus",
+          html: '<span class="box hover"></span> isolate in worktree',
+        },
+        "after-checked": {
+          caption: "after — isolated",
+          html: '<span class="box on">✓</span> isolate in worktree <span class="badge">⎇ screenpipe</span>',
+        },
+        "after-dirty": {
+          caption: "after — dirty source notice",
+          html: '<span class="box on">✓</span> isolate in worktree <span class="badge">⎇ screenpipe</span>',
+          extra:
+            '<div class="popover"><div>isolated worktree</div><div class="mono">screenpipe/chat-7f3a</div><p class="warn">the source repo had uncommitted changes. this worktree started from HEAD; those changes were left untouched.</p></div>',
+        },
+        "after-error": {
+          caption: "after — create failed",
+          html: '<span class="box"></span> isolate in worktree <span class="error">not a git repository</span>',
+        },
+        "after-locked": {
+          caption: "after — too late after first message",
+          html: '<span class="box disabled"></span> isolate in worktree',
+        },
+      };
+      const current = states[state] || states["after-idle"];
+      caption.textContent = current.caption;
+      row.innerHTML = current.html;
+      extra.innerHTML = current.extra || "";
+      if (!current.html) row.style.display = "none";
+    </script>
+  </body>
+</html>

@@ -7,6 +7,7 @@ import { AttachmentTray } from "@/components/chat/standalone/attachment-tray";
 import { ComposerControlsRow } from "@/components/chat/standalone/composer-controls-row";
 import { ComposerInputBox } from "@/components/chat/standalone/composer-input-box";
 import { ComposerSuggestions } from "@/components/chat/standalone/composer-suggestions";
+import { ComposerWorktreeToggle } from "@/components/chat/standalone/composer-worktree-toggle";
 import { ConnectAppsNudge } from "@/components/chat/standalone/connect-apps-nudge";
 import type { ChatComposerProps } from "@/components/chat/standalone/composer-types";
 import { DropOverlay } from "@/components/chat/standalone/drop-overlay";
@@ -31,6 +32,7 @@ export function ChatComposer({
   mentions,
   filters,
   modelControls,
+  codingWorkspace,
   connectBanner,
   onStop,
 }: ChatComposerProps) {
@@ -97,6 +99,8 @@ export function ChatComposer({
           />
 
           <ComposerInputBox input={input} mentions={mentions} />
+
+          <ComposerWorktreeToggle codingWorkspace={codingWorkspace} />
 
           <FreePlanCounterChip />
 
