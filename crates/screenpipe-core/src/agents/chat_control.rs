@@ -242,6 +242,30 @@ fn append_searchable(buffer: &mut String, text: &str) -> bool {
     false
 }
 
+/// True when a message is nothing but a harness directive: it opens with a bare
+/// `<tag>` and closes it later. Every runtime injects these (environment blocks,
+/// available-plugin lists, hook output, session context), and the same block
+/// appears in thousands of chats, so indexing one would make it match every
+/// query and titling a chat with one would hide what the user actually asked.
+fn is_wrapped_directive(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix('<') else {
+        return false;
+    };
+    let Some(tag_end) = rest.find('>') else {
+        return false;
+    };
+    let tag = &rest[..tag_end];
+    if tag.is_empty()
+        || !tag.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        })
+    {
+        return false;
+    }
+    trimmed.contains(&format!("</{tag}>"))
+}
+
 fn truncated_scan_warning(source: ChatSource) -> String {
     format!(
         "{}: read the {MAX_BODY_SCAN_FILES} most recent transcripts; older chats were not searched",
@@ -488,7 +512,7 @@ fn parse_claude_chat(path: &Path) -> Result<(ChatSearchResult, String), String> 
             continue;
         }
         let text = value_message_text(&value);
-        if text.trim().is_empty() {
+        if text.trim().is_empty() || is_wrapped_directive(&text) {
             continue;
         }
         if preview.is_empty() && role == Some("user") {
@@ -649,10 +673,6 @@ fn gemini_message_text(message: &Value) -> String {
     }
 }
 
-fn is_gemini_harness_context(text: &str) -> bool {
-    text.trim_start().starts_with("<session_context>")
-}
-
 fn parse_gemini_chat(path: &Path) -> Result<(ChatSearchResult, String), String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let reader = BufReader::new(file);
@@ -694,7 +714,7 @@ fn parse_gemini_chat(path: &Path) -> Result<(ChatSearchResult, String), String> 
             .or_else(|| message.get("role").and_then(Value::as_str))
             .unwrap_or_default();
         let text = gemini_message_text(message);
-        if text.trim().is_empty() || is_gemini_harness_context(&text) {
+        if text.trim().is_empty() || is_wrapped_directive(&text) {
             continue;
         }
         if preview.is_empty() && kind == "user" {
@@ -750,13 +770,12 @@ fn search_gemini(query: &str, limit: usize) -> Result<SourceSearch, String> {
 }
 
 /// Codex harness preamble that is injected into every thread, so matching it
-/// would return every chat rather than the one the user means.
+/// would return every chat rather than the one the user means. Most blocks are
+/// caught generically; these two are not well-formed tags.
 fn is_codex_harness_context(text: &str) -> bool {
     let trimmed = text.trim_start();
-    trimmed.starts_with("<environment_context>")
+    is_wrapped_directive(text)
         || trimmed.starts_with("<permissions instructions>")
-        || trimmed.starts_with("<screenpipe-system-context>")
-        || trimmed.starts_with("<user_instructions>")
         || trimmed.starts_with("# AGENTS.md instructions")
 }
 
@@ -1932,6 +1951,32 @@ mod tests {
             &mut unread,
             &CodexTranscript::default()
         ));
+    }
+
+    #[test]
+    fn injected_directive_blocks_never_become_titles_or_search_hits() {
+        // Blocks every runtime injects into thousands of chats.
+        for injected in [
+            "<environment_context>\ncwd=/tmp\n</environment_context>",
+            "<screenpipe-system-context>\nprefer MCP\n</screenpipe-system-context>",
+            "<recommended_plugins>\nplugin list\n</recommended_plugins>",
+            "<session_context>\nThis is the Gemini CLI.\n</session_context>",
+            "  <user_instructions>\nbe terse\n</user_instructions>",
+        ] {
+            assert!(is_wrapped_directive(injected), "missed: {injected}");
+        }
+        // Real user prose, including prose that merely mentions a tag.
+        for prose in [
+            "why does the uploader stall",
+            "the <Timeline> component renders twice",
+            "fix <div> alignment",
+            "<not closed",
+        ] {
+            assert!(!is_wrapped_directive(prose), "false positive: {prose}");
+        }
+        // Codex's two malformed preambles still need explicit handling.
+        assert!(is_codex_harness_context("<permissions instructions> ..."));
+        assert!(is_codex_harness_context("# AGENTS.md instructions\n\n..."));
     }
 
     #[test]
