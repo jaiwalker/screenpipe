@@ -56,6 +56,8 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("# Search rules");
     expect(prompt).not.toContain("# Speakers");
     expect(prompt).toContain("# Full API reference");
+    expect(prompt).toContain("screenpipe://chat/claude/");
+    expect(prompt).toContain("Clicking opens that conversation in Recents");
   });
 
   it("injects the current time, timezone, and local time footer", () => {

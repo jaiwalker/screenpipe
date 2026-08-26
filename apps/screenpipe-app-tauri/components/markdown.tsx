@@ -33,6 +33,7 @@ export const chatUrlTransform = createScreenpipeUrlTransform([
   "frame",
   "meeting",
   "view",
+  "chat",
 ]);
 
 export function screenpipeViewerPathFromHref(href: string): string | null {

@@ -24,6 +24,7 @@ vi.mock("@/lib/utils/tauri", () => ({
 }));
 
 import {
+  chatUrlTransform,
   openScreenpipeViewerLink,
   rewriteLocalMarkdownLinksForChat,
   screenpipeViewerPathFromHref,
@@ -146,5 +147,15 @@ describe("rewriteLocalMarkdownLinksForChat", () => {
     ).toBe(
       "[clip](</Users/me/System Audio (output)_2026-05-25_11-27-00.mp4>)",
     );
+  });
+});
+
+describe("chatUrlTransform", () => {
+  it("keeps screenpipe://chat links so listed chats stay clickable", () => {
+    expect(
+      chatUrlTransform(
+        "screenpipe://chat/claude/7682ab66-17ba-431e-864a-08ecfd5feb0f",
+      ),
+    ).toBe("screenpipe://chat/claude/7682ab66-17ba-431e-864a-08ecfd5feb0f");
   });
 });

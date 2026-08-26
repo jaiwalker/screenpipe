@@ -24,6 +24,7 @@ import { useTimelineStore } from "@/lib/hooks/use-timeline-store";
 import { cn } from "@/lib/utils";
 import { sanitizeToolCallXml } from "@/lib/utils/sanitize-tool-call-xml";
 import { LinkPreviewAnchor } from "@/components/chat/link-preview-anchor";
+import { isChatDeeplink, openChatDeeplink } from "@/lib/chat/chat-deeplink";
 
 export interface MarkdownBlockOptions {
   /** Extra parsing passes layered onto the main Chat Markdown pipeline. */
@@ -121,13 +122,19 @@ export function MarkdownBlock({
             href?.startsWith("screenpipe://timeline") ||
             href?.startsWith("screenpipe://frame") ||
             href?.startsWith("screenpipe://meeting") ||
-            href?.startsWith("screenpipe://view")
+            href?.startsWith("screenpipe://view") ||
+            isChatDeeplink(href)
           ) {
             const handleScreenpipeLinkClick = async (
               e: React.MouseEvent<HTMLAnchorElement>,
             ) => {
               e.preventDefault();
               try {
+                if (isChatDeeplink(href)) {
+                  await openChatDeeplink(href);
+                  return;
+                }
+
                 if (href.startsWith("screenpipe://view")) {
                   const viewerPath = screenpipeViewerPathFromHref(href);
                   if (viewerPath && onOpenViewerPath) {

@@ -26,6 +26,7 @@ import { foregroundAfterOAuth } from "@/lib/connections/foreground-oauth";
 import { settingsSectionFromDeepLink } from "@/lib/utils/settings-deep-link";
 import posthog from "posthog-js";
 import { handleExternalDeepLink } from "@/lib/external-deeplink";
+import { resolveChatDeeplinkConversationId } from "@/lib/chat/chat-deeplink";
 import {
   handoffTargetById,
   performAgentHandoff,
@@ -418,26 +419,23 @@ export function DeeplinkHandler() {
 
       // Handle chat deep links:
       //   screenpipe://chat/<conversationId>?message=<messageId>
+      //   screenpipe://chat/<source>/<id>  (claude, codex, cursor, …)
       //   screenpipe://chat?conversation=<conversationId>&message=<messageId>
       if (parsedUrl.host === "chat" || parsedUrl.pathname?.startsWith("/chat/")) {
         // Public prompt links may only prefill an editable composer. They can
         // never inject hidden context or auto-send a model request.
         if (await handleExternalDeepLink(parsedUrl)) return;
 
-        const pathId =
-          parsedUrl.host === "chat"
-            ? parsedUrl.pathname.replace(/^\/+/, "").split("/")[0]
-            : parsedUrl.pathname.replace(/^\/chat\/?/, "").split("/")[0];
-        const conversationId = parsedUrl.searchParams.get("conversation") || pathId;
-        if (conversationId) {
-          const decodedConversationId = decodeURIComponent(conversationId);
-          const messageId = parsedUrl.searchParams.get("message") || undefined;
+        const resolved = await resolveChatDeeplinkConversationId(url);
+        if (resolved) {
           await commands.showWindowActivated({ Home: { page: "home" } });
           await new Promise((resolve) => setTimeout(resolve, 150));
           await emit("chat-load-conversation", {
-            conversationId: decodedConversationId,
+            conversationId: resolved.conversationId,
             targetWindow: "home",
-            ...(messageId ? { focusMessageId: decodeURIComponent(messageId) } : {}),
+            ...(resolved.messageId
+              ? { focusMessageId: decodeURIComponent(resolved.messageId) }
+              : {}),
           });
         }
       }

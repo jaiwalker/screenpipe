@@ -12,6 +12,7 @@ const {
   setPendingNavigationMock,
   showWindowMock,
   routeNotificationDeeplinkMock,
+  openChatDeeplinkMock,
 } = vi.hoisted(() => ({
   emitMock: vi.fn(async () => undefined),
   openViewerWindowMock: vi.fn(async (_path: string) => ({
@@ -20,6 +21,7 @@ const {
   setPendingNavigationMock: vi.fn(),
   showWindowMock: vi.fn(async () => ({ status: "ok" as const })),
   routeNotificationDeeplinkMock: vi.fn(async () => undefined),
+  openChatDeeplinkMock: vi.fn(async () => true),
 }));
 
 vi.mock("@/lib/utils/tauri", () => ({
@@ -43,6 +45,12 @@ vi.mock("@/lib/hooks/use-timeline-store", () => ({
 
 vi.mock("@/lib/notifications/actions", () => ({
   routeNotificationDeeplink: routeNotificationDeeplinkMock,
+}));
+
+vi.mock("@/lib/chat/chat-deeplink", () => ({
+  isChatDeeplink: (href?: string) =>
+    Boolean(href?.startsWith("screenpipe://chat/") && !href.includes("/new")),
+  openChatDeeplink: openChatDeeplinkMock,
 }));
 
 describe("MarkdownBlock", () => {
@@ -128,5 +136,24 @@ describe("MarkdownBlock", () => {
       );
     });
     expect(setPendingNavigationMock).not.toHaveBeenCalled();
+  });
+
+  it("opens a listed agent chat in Recents instead of a browser tab", async () => {
+    render(
+      <MarkdownBlock
+        text="[Evaluate investment asks](screenpipe://chat/claude/7682ab66-17ba-431e-864a-08ecfd5feb0f)"
+        isUser={false}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("link", { name: "Evaluate investment asks" }),
+    );
+
+    await waitFor(() => {
+      expect(openChatDeeplinkMock).toHaveBeenCalledWith(
+        "screenpipe://chat/claude/7682ab66-17ba-431e-864a-08ecfd5feb0f",
+      );
+    });
   });
 });
