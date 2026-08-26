@@ -113,4 +113,20 @@ describe("RightPanelTabStrip", () => {
       "report.md",
     );
   });
+
+  it("exposes an explicit new browser tab action", () => {
+    const onNewBrowserTab = vi.fn();
+    render(
+      <RightPanelTabStrip
+        tabs={tabs}
+        activeTabId={tabs[0].id}
+        onSelect={vi.fn()}
+        onClose={vi.fn()}
+        onNewBrowserTab={onNewBrowserTab}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New browser tab" }));
+    expect(onNewBrowserTab).toHaveBeenCalledTimes(1);
+  });
 });

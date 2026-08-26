@@ -5,7 +5,7 @@
 "use client";
 
 import React, { useEffect, useRef } from "react";
-import { FileText, Globe2, Loader2, X } from "lucide-react";
+import { FileText, Globe2, Loader2, Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export const BROWSER_RIGHT_PANEL_TAB_ID = "browser";
@@ -33,6 +33,7 @@ interface RightPanelTabStripProps {
   activeTabId: string | null;
   onSelect: (tab: RightPanelTab) => void;
   onClose: (tab: RightPanelTab) => void;
+  onNewBrowserTab?: () => void;
 }
 
 export function RightPanelTabStrip({
@@ -40,6 +41,7 @@ export function RightPanelTabStrip({
   activeTabId,
   onSelect,
   onClose,
+  onNewBrowserTab,
 }: RightPanelTabStripProps) {
   const tabRefs = useRef(new Map<string, HTMLButtonElement>());
 
@@ -155,6 +157,17 @@ export function RightPanelTabStrip({
           );
         })}
       </div>
+      {onNewBrowserTab ? (
+        <button
+          type="button"
+          className="flex w-9 shrink-0 items-center justify-center border-l border-border/45 text-muted-foreground transition-colors hover:bg-background/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          aria-label="New browser tab"
+          title="New browser tab"
+          onClick={onNewBrowserTab}
+        >
+          <Plus className="h-3.5 w-3.5" aria-hidden />
+        </button>
+      ) : null}
     </div>
   );
 }

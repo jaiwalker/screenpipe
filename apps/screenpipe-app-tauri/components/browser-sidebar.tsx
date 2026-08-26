@@ -5,9 +5,10 @@
 
 /**
  * BrowserSidebar — a right-side panel inside the chat layout that hosts the
- * agent-controlled embedded browser. The actual page is rendered by a Tauri
- * child `Webview` (label: "owned-browser") created in
- * `src-tauri/src/owned_browser.rs`. This component owns:
+ * agent-controlled embedded browser plus user-created browser tabs. Pages are
+ * rendered by native Tauri child `Webview` instances created in
+ * `src-tauri/src/owned_browser.rs`: the agent retains the stable default label,
+ * while every user tab gets its own label and retained page state. This owns:
  *   1. Layout: coalesces placeholder measurements and pushes parent-local
  *      bounds to Tauri so the native webview tracks the panel.
  *   2. Width: a JS-clamped state — never relies on CSS flex/max-width, since
@@ -24,7 +25,13 @@
  * always renders the native state when it is available.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { commands } from "@/lib/utils/tauri";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
@@ -33,6 +40,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { platform as getPlatform } from "@tauri-apps/plugin-os";
 import {
+  ChevronLeft,
+  ChevronRight,
   Cookie,
   ExternalLink,
   KeyRound,
@@ -81,6 +90,8 @@ const CHROME_WEBSTORE_URL =
 
 interface BrowserSidebarProps {
   conversationId: string | null;
+  /** Width already reserved by sibling panes such as the live chat split. */
+  additionalReservedWidth?: number;
   /** Session id the on-screen chat's agent process runs under (the value the
    *  agent's `x-screenpipe-session` header carries). Used alongside
    *  `conversationId` to reveal the chat's own agent navigations even when the
@@ -144,6 +155,7 @@ interface ActiveV20CookieBlock {
 }
 
 interface OwnedBrowserStateEvent {
+  tabId?: string | null;
   url?: string | null;
   title?: string | null;
   loading?: boolean | null;
@@ -151,19 +163,33 @@ interface OwnedBrowserStateEvent {
   owner?: string | null;
 }
 
+interface LiveBrowserTab {
+  id: string;
+  url: string;
+  title: string | null;
+  loading: boolean;
+  owner: string | null;
+  navigationId: string | null;
+}
+
 /** Clamp the panel width so it can never push the chat below MIN_CHAT_WIDTH
  *  in the *available* horizontal area (the chat layout's split host, not
  *  the whole window — AppSidebar / history sidebar can eat into it).
  *  Returns at least MIN_WIDTH when there's room, otherwise 0 (panel can't
  *  fit — caller should hide it). */
-function clampWidth(want: number, available: number): number {
-  const max = Math.max(0, available - MIN_CHAT_WIDTH);
+function clampWidth(
+  want: number,
+  available: number,
+  additionalReservedWidth = 0,
+): number {
+  const max = Math.max(0, available - MIN_CHAT_WIDTH - additionalReservedWidth);
   if (max < MIN_WIDTH) return 0;
   return Math.max(MIN_WIDTH, Math.min(want, max));
 }
 
 export function BrowserSidebar({
   conversationId,
+  additionalReservedWidth = 0,
   agentSessionId,
   filePreview,
   onReplaceFilePreviewPath,
@@ -177,9 +203,16 @@ export function BrowserSidebar({
   const [collapsed, setCollapsed] = useState(false);
   const [currentUrl, setCurrentUrl] = useState<string | null>(null);
   const [currentOwner, setCurrentOwner] = useState<string | null>(null);
-  const [currentNavigationId, setCurrentNavigationId] = useState<string | null>(null);
+  const [currentNavigationId, setCurrentNavigationId] = useState<string | null>(
+    null,
+  );
   const [currentTitle, setCurrentTitle] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [browserTabs, setBrowserTabs] = useState<LiveBrowserTab[]>([]);
+  const [activeBrowserTabId, setActiveBrowserTabId] = useState<string | null>(
+    null,
+  );
+  const [addressDraft, setAddressDraft] = useState("");
   const [sessionAccessRequest, setSessionAccessRequest] =
     useState<ActiveSessionAccessRequest | null>(null);
   const [sessionAccessAnswer, setSessionAccessAnswer] = useState<
@@ -208,7 +241,11 @@ export function BrowserSidebar({
   const dialogActiveRef = useRef(false);
   const filePreviewRef = useRef(filePreview);
   filePreviewRef.current = filePreview;
-  /** Closing the browser tab hides the singleton without destroying it. Ignore
+  const activeBrowserTabIdRef = useRef(activeBrowserTabId);
+  activeBrowserTabIdRef.current = activeBrowserTabId;
+  const browserTabsRef = useRef(browserTabs);
+  browserTabsRef.current = browserTabs;
+  /** Closing the default browser tab hides it without destroying it. Ignore
    * late native state events until a new owned navigation explicitly reopens
    * the tab, otherwise the just-closed URL can immediately reappear. */
   const browserTabClosedRef = useRef(false);
@@ -217,7 +254,11 @@ export function BrowserSidebar({
   );
   const filePaths = filePreview?.paths ?? EMPTY_FILE_PATHS;
   const previewPath = filePreview?.activePath ?? null;
-  const effectiveWidth = clampWidth(requestedWidth, availableW);
+  const effectiveWidth = clampWidth(
+    requestedWidth,
+    availableW,
+    additionalReservedWidth,
+  );
   const hasPanelContent = !!currentUrl || filePaths.length > 0;
   const panelRequestedOpen = filePreview?.panelOpen ?? (visible && !collapsed);
   const panelOpen = panelRequestedOpen && hasPanelContent && effectiveWidth > 0;
@@ -278,6 +319,49 @@ export function BrowserSidebar({
   // Bounds push (CSS rect → Rust → child webview bounds)
   // ---------------------------------------------------------------------------
 
+  const hideNativeBrowserTab = useCallback((tabId: string | null) => {
+    if (!tabId || tabId === BROWSER_RIGHT_PANEL_TAB_ID) {
+      return commands.ownedBrowserHide();
+    }
+    return commands.ownedBrowserTabHide(tabId);
+  }, []);
+
+  const navigateNativeBrowserTab = useCallback(
+    (tabId: string, url: string, owner: string | null) => {
+      if (tabId === BROWSER_RIGHT_PANEL_TAB_ID) {
+        return commands.ownedBrowserNavigate(url, owner, true);
+      }
+      return commands.ownedBrowserTabNavigate(tabId, url, owner);
+    },
+    [],
+  );
+
+  const updateBrowserTab = useCallback(
+    (tabId: string, patch: Partial<Omit<LiveBrowserTab, "id">>) => {
+      setBrowserTabs((tabs) => {
+        const index = tabs.findIndex((tab) => tab.id === tabId);
+        if (index === -1) {
+          if (!patch.url) return tabs;
+          return [
+            ...tabs,
+            {
+              id: tabId,
+              url: patch.url,
+              title: patch.title ?? null,
+              loading: patch.loading ?? false,
+              owner: patch.owner ?? null,
+              navigationId: patch.navigationId ?? null,
+            },
+          ];
+        }
+        const next = [...tabs];
+        next[index] = { ...next[index], ...patch };
+        return next;
+      });
+    },
+    [],
+  );
+
   const pushBounds = useCallback(async () => {
     const el = placeholderRef.current;
     if (!el) return;
@@ -285,7 +369,7 @@ export function BrowserSidebar({
     // session-access card or any dialog/modal is visible (the native webview
     // would cover the HTML overlay otherwise).
     if (sessionAccessActiveRef.current || dialogActiveRef.current) {
-      await commands.ownedBrowserHide().catch(() => {});
+      await hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
       return;
     }
     // offsetParent === null when any ancestor is display:none. That's how
@@ -297,22 +381,34 @@ export function BrowserSidebar({
     const hidden = el.offsetParent === null;
     const r = el.getBoundingClientRect();
     if (hidden || r.width <= 0 || r.height <= 0) {
-      await commands.ownedBrowserHide().catch(() => {});
+      await hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
       return;
     }
     try {
       const w = getCurrentWindow();
-      await commands.ownedBrowserSetBounds(
-        w.label,
-        r.left,
-        r.top,
-        r.width,
-        r.height,
-      );
+      const tabId = activeBrowserTabIdRef.current;
+      if (!tabId || tabId === BROWSER_RIGHT_PANEL_TAB_ID) {
+        await commands.ownedBrowserSetBounds(
+          w.label,
+          r.left,
+          r.top,
+          r.width,
+          r.height,
+        );
+      } else {
+        await commands.ownedBrowserTabSetBounds(
+          tabId,
+          w.label,
+          r.left,
+          r.top,
+          r.width,
+          r.height,
+        );
+      }
     } catch (e) {
       console.error("owned_browser_set_bounds failed", e);
     }
-  }, []);
+  }, [hideNativeBrowserTab]);
 
   const schedulePushBounds = useCallback(() => {
     if (boundsRafRef.current !== null) return;
@@ -335,9 +431,14 @@ export function BrowserSidebar({
     return () => {
       // Route changes like /home -> /settings unmount the React owner, but the
       // native child webview can remain visible unless we hide it explicitly.
-      commands.ownedBrowserHide().catch(() => {});
+      hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
+      for (const tab of browserTabsRef.current) {
+        if (tab.id !== BROWSER_RIGHT_PANEL_TAB_ID) {
+          void commands.ownedBrowserTabClose(tab.id).catch(() => {});
+        }
+      }
     };
-  }, []);
+  }, [hideNativeBrowserTab]);
 
   // ---------------------------------------------------------------------------
   // Dialog/modal detection — hide the native webview when any Radix dialog is
@@ -355,7 +456,7 @@ export function BrowserSidebar({
       const open = hasModalOverlay();
       if (open && !dialogActiveRef.current) {
         dialogActiveRef.current = true;
-        commands.ownedBrowserHide().catch(() => {});
+        hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
       } else if (!open && dialogActiveRef.current) {
         dialogActiveRef.current = false;
         schedulePushBounds();
@@ -368,7 +469,7 @@ export function BrowserSidebar({
     sync();
 
     return () => observer.disconnect();
-  }, [schedulePushBounds]);
+  }, [hideNativeBrowserTab, schedulePushBounds]);
 
   // ---------------------------------------------------------------------------
   // Viewport resize tracking — drives both the JS clamp and re-pushing bounds
@@ -405,10 +506,11 @@ export function BrowserSidebar({
     const unlistenPromise = listen<OwnedBrowserNavigatePayload>(
       NAVIGATE_EVENT,
       (e) => {
-        const { url, owner, navigationId, reveal } = parseNavigatePayload(e.payload);
+        const { url, owner, navigationId, reveal, tabId } =
+          parseNavigatePayload(e.payload);
         if (!url) return;
-        // The owned browser is a singleton shared across every chat and
-        // background pipe. Ignore navigations owned by a *different*
+        // The agent-controlled default is shared across chats and background
+        // pipes; user-created tabs carry a tab id. Ignore navigations owned by a *different*
         // conversation than the one on screen — otherwise a background pipe
         // (or another chat's agent) pops its page into whatever chat the user
         // is looking at, and `persistState` writes that URL into the wrong
@@ -441,6 +543,26 @@ export function BrowserSidebar({
           return;
         }
         if (!navigationId) return;
+        const resolvedTabId = tabId ?? BROWSER_RIGHT_PANEL_TAB_ID;
+        updateBrowserTab(resolvedTabId, {
+          url,
+          owner,
+          navigationId,
+          title: null,
+          loading: true,
+        });
+        if (tabId && activeBrowserTabIdRef.current !== tabId) {
+          return;
+        }
+        if (
+          !tabId &&
+          activeBrowserTabIdRef.current !== BROWSER_RIGHT_PANEL_TAB_ID
+        ) {
+          void hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(
+            () => {},
+          );
+        }
+        setActiveBrowserTabId(resolvedTabId);
         browserTabClosedRef.current = false;
         if (typeof window !== "undefined") {
           (window as any).__e2eOwnedBrowserLastNavigate = {
@@ -460,6 +582,7 @@ export function BrowserSidebar({
         setCurrentOwner(owner);
         setCurrentNavigationId(navigationId);
         setCurrentTitle(null);
+        setAddressDraft(url);
         setLoading(true);
         if (reveal) {
           setVisible(true);
@@ -472,14 +595,16 @@ export function BrowserSidebar({
         }
       },
     );
-    unlistenPromise.then(() => {
-      if (typeof window !== "undefined") {
-        (window as any).__e2eOwnedBrowserNavigateReady = {
-          conversationId,
-          agentSessionId,
-        };
-      }
-    }).catch(() => {});
+    unlistenPromise
+      .then(() => {
+        if (typeof window !== "undefined") {
+          (window as any).__e2eOwnedBrowserNavigateReady = {
+            conversationId,
+            agentSessionId,
+          };
+        }
+      })
+      .catch(() => {});
     return () => {
       if (typeof window !== "undefined") {
         const ready = (window as any).__e2eOwnedBrowserNavigateReady;
@@ -498,6 +623,8 @@ export function BrowserSidebar({
     agentSessionId,
     onSelectFilePreviewPath,
     onSetPanelOpen,
+    hideNativeBrowserTab,
+    updateBrowserTab,
   ]);
 
   useTauriEvent<SessionAccessEvent>(SESSION_ACCESS_REQUEST_EVENT, (e) => {
@@ -506,8 +633,10 @@ export function BrowserSidebar({
     if (!requestId || !payload?.url || !payload?.host) return;
     // Same ownership gate as the navigate event — a background pipe's
     // cookie-consent prompt must not surface in another chat.
-    if (isForeignNavigation(payload.owner, conversationId, agentSessionId)) return;
-    if (isMismatchedNavigation(payload.navigationId, currentNavigationId)) return;
+    if (isForeignNavigation(payload.owner, conversationId, agentSessionId))
+      return;
+    if (isMismatchedNavigation(payload.navigationId, currentNavigationId))
+      return;
     const request = {
       requestId,
       url: payload.url,
@@ -531,14 +660,16 @@ export function BrowserSidebar({
     setCurrentTitle(null);
     setLoading(true);
     persistState({ url: request.url, collapsed: false });
-    commands.ownedBrowserHide().catch(() => {});
+    hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
   });
 
   useTauriEvent<V20CookieBlockEvent>(V20_COOKIE_BLOCK_EVENT, (e) => {
     const payload = e.payload;
     if (!payload?.url || !payload?.host) return;
-    if (isForeignNavigation(payload.owner, conversationId, agentSessionId)) return;
-    if (isMismatchedNavigation(payload.navigationId, currentNavigationId)) return;
+    if (isForeignNavigation(payload.owner, conversationId, agentSessionId))
+      return;
+    if (isMismatchedNavigation(payload.navigationId, currentNavigationId))
+      return;
     const block = {
       url: payload.url,
       host: payload.host,
@@ -563,18 +694,24 @@ export function BrowserSidebar({
     setCurrentTitle(null);
     setLoading(false);
     persistState({ url: block.url, collapsed: false });
-    commands.ownedBrowserHide().catch(() => {});
+    hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
   });
 
   useEffect(() => {
     sessionAccessActiveRef.current =
       sessionAccessRequest !== null || v20CookieBlock !== null;
     if (sessionAccessRequest || v20CookieBlock) {
-      commands.ownedBrowserHide().catch(() => {});
+      hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
     } else if (panelOpen) {
       schedulePushBounds();
     }
-  }, [sessionAccessRequest, v20CookieBlock, panelOpen, schedulePushBounds]);
+  }, [
+    hideNativeBrowserTab,
+    sessionAccessRequest,
+    v20CookieBlock,
+    panelOpen,
+    schedulePushBounds,
+  ]);
 
   // While the locked/v20 block card is visible, poll extension status every 2s.
   // When the extension connects, auto-retry navigation and dismiss the card.
@@ -597,13 +734,11 @@ export function BrowserSidebar({
             // Extension is now connected — retry the navigation, which will
             // go through the extension cookie path.
             setV20CookieBlock(null);
-            commands
-              .ownedBrowserNavigate(
-                retryUrl,
-                v20CookieBlock.owner ?? currentOwner ?? conversationId ?? null,
-                true,
-              )
-              .catch(() => {});
+            navigateNativeBrowserTab(
+              activeBrowserTabIdRef.current ?? BROWSER_RIGHT_PANEL_TAB_ID,
+              retryUrl,
+              v20CookieBlock.owner ?? currentOwner ?? conversationId ?? null,
+            ).catch(() => {});
           }
         } else {
           setExtensionConnected(false);
@@ -619,19 +754,46 @@ export function BrowserSidebar({
       cancelled = true;
       clearInterval(t);
     };
-  }, [v20CookieBlock]);
+  }, [conversationId, currentOwner, navigateNativeBrowserTab, v20CookieBlock]);
 
   useTauriEvent<OwnedBrowserStateEvent>(STATE_EVENT, (e) => {
     const payload = e.payload;
     if (!payload || typeof payload !== "object") return;
-    if (browserTabClosedRef.current) return;
+    const tabId = payload.tabId ?? BROWSER_RIGHT_PANEL_TAB_ID;
+    if (browserTabClosedRef.current && tabId === BROWSER_RIGHT_PANEL_TAB_ID)
+      return;
     // Native page-state updates reflect the singleton webview's *current*
     // content. When a background pipe drives it, these still fire — ignore
     // them so the foreign URL/title isn't persisted into this chat (the
     // sticky half of the leak: without this the URL is restored on reopen
     // even though the panel never visibly popped).
-    if (isForeignNavigation(payload.owner, conversationId, agentSessionId)) return;
-    if (isMismatchedNavigation(payload.navigationId, currentNavigationId)) return;
+    if (isForeignNavigation(payload.owner, conversationId, agentSessionId))
+      return;
+    const knownTab = browserTabs.find((tab) => tab.id === tabId);
+    if (
+      isMismatchedNavigation(
+        payload.navigationId,
+        tabId === activeBrowserTabId
+          ? currentNavigationId
+          : knownTab?.navigationId,
+      )
+    )
+      return;
+
+    const patch: Partial<Omit<LiveBrowserTab, "id">> = {};
+    if (typeof payload.url === "string" && payload.url.length > 0) {
+      patch.url = payload.url;
+      patch.owner = payload.owner ?? conversationId ?? null;
+      patch.navigationId = payload.navigationId!;
+      if (payload.url !== knownTab?.url) patch.title = null;
+    }
+    if (typeof payload.title === "string") {
+      const title = payload.title.trim();
+      patch.title = title.length > 0 ? title : null;
+    }
+    if (typeof payload.loading === "boolean") patch.loading = payload.loading;
+    updateBrowserTab(tabId, patch);
+    if (tabId !== activeBrowserTabIdRef.current) return;
 
     if (typeof payload.url === "string" && payload.url.length > 0) {
       if (payload.url !== currentUrl) {
@@ -640,7 +802,9 @@ export function BrowserSidebar({
       setCurrentUrl(payload.url);
       setCurrentOwner(payload.owner ?? conversationId ?? null);
       setCurrentNavigationId(payload.navigationId!);
-      persistState({ url: payload.url });
+      setAddressDraft(payload.url);
+      if (tabId === BROWSER_RIGHT_PANEL_TAB_ID)
+        persistState({ url: payload.url });
     }
     if (typeof payload.title === "string") {
       const title = payload.title.trim();
@@ -657,6 +821,14 @@ export function BrowserSidebar({
 
   useEffect(() => {
     let cancelled = false;
+    for (const tab of browserTabsRef.current) {
+      if (tab.id !== BROWSER_RIGHT_PANEL_TAB_ID) {
+        void commands.ownedBrowserTabClose(tab.id).catch(() => {});
+      }
+    }
+    setBrowserTabs([]);
+    setActiveBrowserTabId(null);
+    setAddressDraft("");
     if (!conversationId) {
       setVisible(false);
       setCollapsed(false);
@@ -670,7 +842,7 @@ export function BrowserSidebar({
       setV20CookieBlock(null);
       setRequestedWidth(DEFAULT_WIDTH);
       browserTabClosedRef.current = false;
-      commands.ownedBrowserHide().catch(() => {});
+      hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
       return () => {
         cancelled = true;
       };
@@ -699,6 +871,15 @@ export function BrowserSidebar({
           onSetPanelOpen?.(!wasCollapsed);
         }
         setCurrentUrl(url);
+        setAddressDraft(url);
+        setActiveBrowserTabId(BROWSER_RIGHT_PANEL_TAB_ID);
+        updateBrowserTab(BROWSER_RIGHT_PANEL_TAB_ID, {
+          url,
+          owner: conversationId,
+          navigationId: null,
+          title: null,
+          loading: !wasCollapsed,
+        });
         setCurrentOwner(conversationId);
         setCurrentNavigationId(null);
         setCurrentTitle(null);
@@ -711,10 +892,12 @@ export function BrowserSidebar({
         // browser silently fails to restore. Retry once when Rust emits
         // `owned-browser:ready` so the saved state survives app quit.
         const tryNavigate = () =>
-          commands.ownedBrowserNavigate(url, conversationId, false).catch((e) => {
-            const msg = typeof e === "string" ? e : String(e);
-            return msg.includes("not initialized") ? "retry" : null;
-          });
+          commands
+            .ownedBrowserNavigate(url, conversationId, false)
+            .catch((e) => {
+              const msg = typeof e === "string" ? e : String(e);
+              return msg.includes("not initialized") ? "retry" : null;
+            });
         const first = await tryNavigate();
         if (!cancelled && first === "retry") {
           unlistenReady = await listen("owned-browser:ready", () => {
@@ -723,31 +906,39 @@ export function BrowserSidebar({
         }
         // If collapsed, hide the webview right away — pushBounds wouldn't
         // run because the placeholder isn't mounted.
-        if (wasCollapsed) commands.ownedBrowserHide().catch(() => {});
+        if (wasCollapsed)
+          hideNativeBrowserTab(BROWSER_RIGHT_PANEL_TAB_ID).catch(() => {});
       } else {
         browserTabClosedRef.current = true;
         setVisible(false);
         setCollapsed(false);
         setCurrentUrl(null);
+        setActiveBrowserTabId(null);
         setCurrentOwner(null);
         setCurrentNavigationId(null);
         setCurrentTitle(null);
         setLoading(false);
         setV20CookieBlock(null);
-        commands.ownedBrowserHide().catch(() => {});
+        hideNativeBrowserTab(BROWSER_RIGHT_PANEL_TAB_ID).catch(() => {});
       }
     })();
     return () => {
       cancelled = true;
       if (unlistenReady) unlistenReady();
     };
-  }, [conversationId, onSelectFilePreviewPath, onSetPanelOpen]);
+  }, [
+    conversationId,
+    hideNativeBrowserTab,
+    onSelectFilePreviewPath,
+    onSetPanelOpen,
+    updateBrowserTab,
+  ]);
 
   useEffect(() => {
     if (previewActive) {
-      commands.ownedBrowserHide().catch(() => {});
+      hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
     }
-  }, [previewActive]);
+  }, [hideNativeBrowserTab, previewActive]);
 
   // ---------------------------------------------------------------------------
   // Bounds tracking — covers slide-in, window resize, drag-resize, and
@@ -758,11 +949,11 @@ export function BrowserSidebar({
 
   useEffect(() => {
     if (!panelOpen) {
-      commands.ownedBrowserHide().catch(() => {});
+      hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
       return;
     }
     if (previewActive) {
-      commands.ownedBrowserHide().catch(() => {});
+      hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
       return;
     }
     const el = placeholderRef.current;
@@ -787,23 +978,21 @@ export function BrowserSidebar({
     availableW,
     schedulePushBounds,
     previewActive,
+    hideNativeBrowserTab,
   ]);
 
   // ---------------------------------------------------------------------------
   // Drag-resize
   // ---------------------------------------------------------------------------
 
-  const onDragMove = useCallback(
-    (e: MouseEvent) => {
-      const s = dragStateRef.current;
-      if (!s) return;
-      // Dragging the handle LEFT widens the panel (it sits on the right of
-      // the screen). startX - currentX = pixels grown.
-      const next = s.startWidth + (s.startX - e.clientX);
-      setRequestedWidth(next);
-    },
-    [],
-  );
+  const onDragMove = useCallback((e: MouseEvent) => {
+    const s = dragStateRef.current;
+    if (!s) return;
+    // Dragging the handle LEFT widens the panel (it sits on the right of
+    // the screen). startX - currentX = pixels grown.
+    const next = s.startWidth + (s.startX - e.clientX);
+    setRequestedWidth(next);
+  }, []);
 
   const onDragEnd = useCallback(() => {
     const s = dragStateRef.current;
@@ -815,9 +1004,17 @@ export function BrowserSidebar({
     if (s) {
       // Persist the final width (clamped). Don't persist intermediate values
       // — they'd flood the chat JSON with disk writes during a drag.
-      persistState({ width: clampWidth(requestedWidth, availableW) });
+      persistState({
+        width: clampWidth(requestedWidth, availableW, additionalReservedWidth),
+      });
     }
-  }, [onDragMove, persistState, requestedWidth, availableW]);
+  }, [
+    additionalReservedWidth,
+    onDragMove,
+    persistState,
+    requestedWidth,
+    availableW,
+  ]);
 
   const onDragStart = useCallback(
     (e: React.MouseEvent) => {
@@ -839,18 +1036,41 @@ export function BrowserSidebar({
   // ---------------------------------------------------------------------------
 
   const reload = useCallback(async () => {
-    if (!currentUrl) return;
+    if (!currentUrl || !activeBrowserTabId) return;
     try {
       setLoading(true);
-      await commands.ownedBrowserNavigate(
+      updateBrowserTab(activeBrowserTabId, { loading: true });
+      await navigateNativeBrowserTab(
+        activeBrowserTabId,
         currentUrl,
         currentOwner ?? conversationId ?? null,
-        true,
       );
     } catch (e) {
       console.error("reload failed", e);
     }
-  }, [conversationId, currentOwner, currentUrl]);
+  }, [
+    activeBrowserTabId,
+    conversationId,
+    currentOwner,
+    currentUrl,
+    navigateNativeBrowserTab,
+    updateBrowserTab,
+  ]);
+
+  const moveHistory = useCallback(
+    async (direction: "back" | "forward") => {
+      if (!activeBrowserTabId) return;
+      setLoading(true);
+      updateBrowserTab(activeBrowserTabId, { loading: true });
+      await commands.ownedBrowserHistory(
+        activeBrowserTabId === BROWSER_RIGHT_PANEL_TAB_ID
+          ? null
+          : activeBrowserTabId,
+        direction,
+      );
+    },
+    [activeBrowserTabId, updateBrowserTab],
+  );
 
   const setCookieAccessGranted = useCallback(
     async (granted: boolean) => {
@@ -861,38 +1081,56 @@ export function BrowserSidebar({
   );
 
   const retryWithCookies = useCallback(async () => {
-    if (!currentUrl) return;
+    if (!currentUrl || !activeBrowserTabId) return;
     await commands.confirmBrowserCookieAccessForSession();
     setLoading(true);
-    await commands
-      .ownedBrowserNavigate(
-        currentUrl,
-        currentOwner ?? conversationId ?? null,
-        true,
-      )
-      .catch((e) => {
-        console.error("retry cookie navigation failed", e);
-      });
-  }, [conversationId, currentOwner, currentUrl]);
+    await navigateNativeBrowserTab(
+      activeBrowserTabId,
+      currentUrl,
+      currentOwner ?? conversationId ?? null,
+    ).catch((e) => {
+      console.error("retry cookie navigation failed", e);
+    });
+  }, [
+    activeBrowserTabId,
+    conversationId,
+    currentOwner,
+    currentUrl,
+    navigateNativeBrowserTab,
+  ]);
 
   const clearBrowserData = useCallback(async () => {
     try {
       // If browser login stays enabled, reload immediately re-injects cookies
       // from the user's real browser, making clear look like a no-op.
       await setCookieAccessGranted(false);
-      await commands.ownedBrowserClearBrowsingData();
+      if (
+        activeBrowserTabId &&
+        activeBrowserTabId !== BROWSER_RIGHT_PANEL_TAB_ID
+      ) {
+        await commands.ownedBrowserTabClearBrowsingData(activeBrowserTabId);
+      } else {
+        await commands.ownedBrowserClearBrowsingData();
+      }
       if (currentUrl) {
         setLoading(true);
-        await commands.ownedBrowserNavigate(
+        await navigateNativeBrowserTab(
+          activeBrowserTabId ?? BROWSER_RIGHT_PANEL_TAB_ID,
           currentUrl,
           currentOwner ?? conversationId ?? null,
-          true,
         );
       }
     } catch (e) {
       console.error("clear owned-browser browsing data failed", e);
     }
-  }, [conversationId, currentOwner, currentUrl, setCookieAccessGranted]);
+  }, [
+    activeBrowserTabId,
+    conversationId,
+    currentOwner,
+    currentUrl,
+    navigateNativeBrowserTab,
+    setCookieAccessGranted,
+  ]);
 
   const enableAndRetryWithCookies = useCallback(async () => {
     await setCookieAccessGranted(true);
@@ -960,8 +1198,8 @@ export function BrowserSidebar({
     setLoading(false);
     onSetPanelOpen?.(false);
     persistState({ collapsed: true });
-    commands.ownedBrowserHide().catch(() => {});
-  }, [onSetPanelOpen, persistState]);
+    hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
+  }, [hideNativeBrowserTab, onSetPanelOpen, persistState]);
 
   const expand = useCallback(() => {
     setCollapsed(false);
@@ -980,18 +1218,21 @@ export function BrowserSidebar({
     previewPath,
   ]);
 
-  const toggleFromHeader = useCallback((action: "toggle" | "show" = "toggle") => {
-    if (!hasPanelContent) return;
-    if (action === "show") {
-      expand();
-      return;
-    }
-    if (panelOpen) {
-      collapse();
-    } else {
-      expand();
-    }
-  }, [collapse, expand, hasPanelContent, panelOpen]);
+  const toggleFromHeader = useCallback(
+    (action: "toggle" | "show" = "toggle") => {
+      if (!hasPanelContent) return;
+      if (action === "show") {
+        expand();
+        return;
+      }
+      if (panelOpen) {
+        collapse();
+      } else {
+        expand();
+      }
+    },
+    [collapse, expand, hasPanelContent, panelOpen],
+  );
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -1025,9 +1266,11 @@ export function BrowserSidebar({
           request.requestId,
           allow,
         );
-        await updateSettings({ browserCookieAccessGranted: allow }).catch((e) => {
-          console.error("persist browserCookieAccessGranted failed", e);
-        });
+        await updateSettings({ browserCookieAccessGranted: allow }).catch(
+          (e) => {
+            console.error("persist browserCookieAccessGranted failed", e);
+          },
+        );
         setSessionAccessRequest((current) =>
           current?.requestId === request.requestId ? null : current,
         );
@@ -1045,25 +1288,123 @@ export function BrowserSidebar({
     [sessionAccessRequest, sessionAccessAnswer, updateSettings],
   );
 
+  const selectBrowserTab = useCallback(
+    (tabId: string) => {
+      const tab = browserTabs.find((candidate) => candidate.id === tabId);
+      if (!tab) return;
+      const previous = activeBrowserTabIdRef.current;
+      if (previous && previous !== tabId) {
+        void hideNativeBrowserTab(previous).catch(() => {});
+      }
+      setActiveBrowserTabId(tabId);
+      setCurrentUrl(tab.url);
+      setCurrentOwner(tab.owner);
+      setCurrentNavigationId(tab.navigationId);
+      setCurrentTitle(tab.title);
+      setLoading(tab.loading);
+      setAddressDraft(tab.url);
+      onSelectFilePreviewPath?.(null);
+      onSetPanelOpen?.(true);
+      setVisible(true);
+      setCollapsed(false);
+      requestAnimationFrame(schedulePushBounds);
+    },
+    [
+      browserTabs,
+      hideNativeBrowserTab,
+      onSelectFilePreviewPath,
+      onSetPanelOpen,
+      schedulePushBounds,
+    ],
+  );
+
+  const createBrowserTab = useCallback(() => {
+    const tabId = `tab-${crypto.randomUUID()}`;
+    const url = "about:blank";
+    const owner = conversationId ?? agentSessionId ?? null;
+    const tab: LiveBrowserTab = {
+      id: tabId,
+      url,
+      title: "new tab",
+      loading: true,
+      owner,
+      navigationId: null,
+    };
+    const previous = activeBrowserTabIdRef.current;
+    if (previous) void hideNativeBrowserTab(previous).catch(() => {});
+    setBrowserTabs((tabs) => [...tabs, tab]);
+    setActiveBrowserTabId(tabId);
+    setCurrentUrl(url);
+    setCurrentOwner(owner);
+    setCurrentNavigationId(null);
+    setCurrentTitle(tab.title);
+    setLoading(true);
+    setAddressDraft(url);
+    browserTabClosedRef.current = false;
+    onSelectFilePreviewPath?.(null);
+    onSetPanelOpen?.(true);
+    setVisible(true);
+    setCollapsed(false);
+    void navigateNativeBrowserTab(tabId, url, owner).then(() => {
+      requestAnimationFrame(schedulePushBounds);
+    });
+  }, [
+    agentSessionId,
+    conversationId,
+    hideNativeBrowserTab,
+    navigateNativeBrowserTab,
+    onSelectFilePreviewPath,
+    onSetPanelOpen,
+    schedulePushBounds,
+  ]);
+
+  useEffect(() => {
+    const create = () => createBrowserTab();
+    window.addEventListener("screenpipe:browser-sidebar-new-tab", create);
+    return () =>
+      window.removeEventListener("screenpipe:browser-sidebar-new-tab", create);
+  }, [createBrowserTab]);
+
+  const submitAddress = useCallback(
+    (event: React.FormEvent) => {
+      event.preventDefault();
+      const tabId = activeBrowserTabIdRef.current;
+      const url = addressDraft.trim();
+      if (!tabId || !url) return;
+      const owner = currentOwner ?? conversationId ?? agentSessionId ?? null;
+      setCurrentTitle(null);
+      setLoading(true);
+      updateBrowserTab(tabId, { url, title: null, loading: true, owner });
+      void navigateNativeBrowserTab(tabId, url, owner);
+    },
+    [
+      addressDraft,
+      agentSessionId,
+      conversationId,
+      currentOwner,
+      navigateNativeBrowserTab,
+      updateBrowserTab,
+    ],
+  );
+
   const panelTabs = useMemo<RightPanelTab[]>(() => {
-    const tabs: RightPanelTab[] = [];
-    if (currentUrl) {
-      let label = currentTitle?.trim() || "browser";
-      if (!currentTitle) {
+    const tabs: RightPanelTab[] = browserTabs.map((tab) => {
+      let label = tab.title?.trim() || "browser";
+      if (!tab.title) {
         try {
-          label = new URL(currentUrl).hostname || currentUrl;
+          label = new URL(tab.url).hostname || tab.url;
         } catch {
-          label = currentUrl;
+          label = tab.url;
         }
       }
-      tabs.push({
-        id: BROWSER_RIGHT_PANEL_TAB_ID,
-        kind: "browser",
+      return {
+        id: tab.id,
+        kind: "browser" as const,
         label,
-        title: currentTitle ? `${currentTitle}\n${currentUrl}` : currentUrl,
-        loading,
-      });
-    }
+        title: tab.title ? `${tab.title}\n${tab.url}` : tab.url,
+        loading: tab.loading,
+      };
+    });
     for (const path of filePaths) {
       tabs.push({
         id: rightPanelFileTabId(path),
@@ -1074,41 +1415,70 @@ export function BrowserSidebar({
       });
     }
     return tabs;
-  }, [currentTitle, currentUrl, filePaths, loading]);
+  }, [browserTabs, filePaths]);
 
   const activePanelTabId = previewPath
     ? rightPanelFileTabId(previewPath)
-    : currentUrl
-      ? BROWSER_RIGHT_PANEL_TAB_ID
+    : activeBrowserTabId
+      ? activeBrowserTabId
       : null;
 
-  const closeBrowserTab = useCallback(() => {
-    browserTabClosedRef.current = true;
-    const fallbackPath = previewPath ?? filePaths[0] ?? null;
-    setVisible(false);
-    setCollapsed(false);
-    setCurrentUrl(null);
-    setCurrentOwner(null);
-    setCurrentNavigationId(null);
-    setCurrentTitle(null);
-    setLoading(false);
-    setSessionAccessRequest(null);
-    setSessionAccessAnswer(null);
-    setV20CookieBlock(null);
-    persistState({ url: null });
-    commands.ownedBrowserHide().catch(() => {});
-    if (fallbackPath) {
-      onSelectFilePreviewPath?.(fallbackPath);
-    } else {
-      onSetPanelOpen?.(false);
-    }
-  }, [
-    filePaths,
-    onSelectFilePreviewPath,
-    onSetPanelOpen,
-    persistState,
-    previewPath,
-  ]);
+  const closeBrowserTab = useCallback(
+    (tabId: string) => {
+      const index = browserTabs.findIndex((tab) => tab.id === tabId);
+      if (index === -1) return;
+      const fallback = browserTabs[index + 1] ?? browserTabs[index - 1] ?? null;
+      const closingActive = activeBrowserTabIdRef.current === tabId;
+      if (tabId === BROWSER_RIGHT_PANEL_TAB_ID) {
+        browserTabClosedRef.current = true;
+        persistState({ url: null });
+        void hideNativeBrowserTab(tabId).catch(() => {});
+      } else {
+        void commands.ownedBrowserTabClose(tabId).catch(() => {});
+      }
+      setBrowserTabs((tabs) => tabs.filter((tab) => tab.id !== tabId));
+      if (!closingActive) return;
+      const fallbackPath = previewPath ?? filePaths[0] ?? null;
+      setSessionAccessRequest(null);
+      setSessionAccessAnswer(null);
+      setV20CookieBlock(null);
+      if (fallback) {
+        setActiveBrowserTabId(fallback.id);
+        setCurrentUrl(fallback.url);
+        setCurrentOwner(fallback.owner);
+        setCurrentNavigationId(fallback.navigationId);
+        setCurrentTitle(fallback.title);
+        setLoading(fallback.loading);
+        setAddressDraft(fallback.url);
+        requestAnimationFrame(schedulePushBounds);
+        return;
+      }
+      setActiveBrowserTabId(null);
+      setVisible(false);
+      setCollapsed(false);
+      setCurrentUrl(null);
+      setCurrentOwner(null);
+      setCurrentNavigationId(null);
+      setCurrentTitle(null);
+      setLoading(false);
+      setAddressDraft("");
+      if (fallbackPath) {
+        onSelectFilePreviewPath?.(fallbackPath);
+      } else {
+        onSetPanelOpen?.(false);
+      }
+    },
+    [
+      browserTabs,
+      filePaths,
+      hideNativeBrowserTab,
+      onSelectFilePreviewPath,
+      onSetPanelOpen,
+      persistState,
+      previewPath,
+      schedulePushBounds,
+    ],
+  );
 
   const selectPanelTab = useCallback(
     (tab: RightPanelTab) => {
@@ -1116,20 +1486,17 @@ export function BrowserSidebar({
         onSelectFilePreviewPath?.(tab.path);
         return;
       }
-      if (!currentUrl) return;
-      onSelectFilePreviewPath?.(null);
-      onSetPanelOpen?.(true);
-      setVisible(true);
-      setCollapsed(false);
-      persistState({ collapsed: false });
+      selectBrowserTab(tab.id);
+      if (tab.id === BROWSER_RIGHT_PANEL_TAB_ID)
+        persistState({ collapsed: false });
     },
-    [currentUrl, onSelectFilePreviewPath, onSetPanelOpen, persistState],
+    [onSelectFilePreviewPath, persistState, selectBrowserTab],
   );
 
   const closePanelTab = useCallback(
     (tab: RightPanelTab) => {
       if (tab.kind === "browser") {
-        closeBrowserTab();
+        closeBrowserTab(tab.id);
         return;
       }
       if (!tab.path) return;
@@ -1188,212 +1555,235 @@ export function BrowserSidebar({
             activeTabId={activePanelTabId}
             onSelect={selectPanelTab}
             onClose={closePanelTab}
+            onNewBrowserTab={createBrowserTab}
           />
           <div
             id="right-panel-active-content"
             role="tabpanel"
-            aria-label={panelTabs.find((tab) => tab.id === activePanelTabId)?.label}
+            aria-label={
+              panelTabs.find((tab) => tab.id === activePanelTabId)?.label
+            }
             className="flex min-h-0 flex-1 flex-col"
           >
-          {previewActive ? (
-            previewPath ? (
-              <FilePreviewSidebar
-                path={previewPath}
-                onReplacePath={onReplaceFilePreviewPath}
-              />
-            ) : null
-          ) : (
-            <>
-              <div className="relative flex items-center gap-2 px-3 h-10 border-b border-border/50 bg-background/60 pl-4">
-                <div
-                  className="flex-1 min-w-0 text-muted-foreground"
-                  title={currentUrl ?? headerTitle}
-                >
-                  <div className="text-xs truncate">{headerTitle}</div>
-                  {currentTitle && currentUrl && (
-                    <div className="text-[10px] leading-3 truncate opacity-70">
-                      {currentUrl}
-                    </div>
-                  )}
-                </div>
-                {isMac && (
+            {previewActive ? (
+              previewPath ? (
+                <FilePreviewSidebar
+                  path={previewPath}
+                  onReplacePath={onReplaceFilePreviewPath}
+                />
+              ) : null
+            ) : (
+              <>
+                <div className="relative flex items-center gap-2 px-3 h-10 border-b border-border/50 bg-background/60 pl-4">
                   <button
-                    onClick={openCookieMenu}
-                    title="Browser session cookies"
+                    onClick={() => void moveHistory("back")}
+                    title="Back"
+                    aria-label="Browser back"
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => void moveHistory("forward")}
+                    title="Forward"
+                    aria-label="Browser forward"
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                  <form className="min-w-0 flex-1" onSubmit={submitAddress}>
+                    <input
+                      aria-label="Browser address"
+                      value={addressDraft}
+                      onChange={(event) => setAddressDraft(event.target.value)}
+                      onFocus={(event) => event.currentTarget.select()}
+                      title={currentTitle ?? currentUrl ?? headerTitle}
+                      className="h-7 w-full truncate rounded-md border border-transparent bg-muted/35 px-2 text-xs text-foreground outline-none transition-colors hover:border-border/70 focus:border-border focus:bg-background focus:ring-1 focus:ring-ring"
+                      spellCheck={false}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                    />
+                  </form>
+                  {isMac && (
+                    <button
+                      onClick={openCookieMenu}
+                      title="Browser session cookies"
+                      className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
+                    >
+                      <Cookie className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  <button
+                    onClick={reload}
+                    title="Reload"
                     className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
                   >
-                    <Cookie className="h-3.5 w-3.5" />
+                    <RotateCw className="h-3.5 w-3.5" />
                   </button>
-                )}
-                <button
-                  onClick={reload}
-                  title="Reload"
-                  className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-                >
-                  <RotateCw className="h-3.5 w-3.5" />
-                </button>
-                {loading && (
-                  <div
-                    className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-0.5 overflow-hidden bg-border/25"
-                    role="progressbar"
-                    aria-label="Page loading"
-                  >
-                    <div className="h-full w-1/3 min-w-20 bg-foreground/70 animate-owned-browser-load" />
-                  </div>
-                )}
-              </div>
-              {/* Placeholder — native child webview is positioned over this rect only. */}
-              <div
-                ref={placeholderRef}
-                className="flex-1 bg-background relative"
-                aria-hidden={
-                  sessionAccessRequest || v20CookieBlock ? true : undefined
-                }
-              />
-              {sessionAccessRequest && (
-            <div className="absolute inset-0 z-40 flex items-center justify-center bg-background p-4">
-                <div className="w-full max-w-sm border border-border bg-card p-4 shadow-sm">
-                  <div className="mb-3 flex items-start gap-3">
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border border-border bg-muted text-foreground">
-                      <KeyRound className="h-4 w-4" />
+                  {loading && (
+                    <div
+                      className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-0.5 overflow-hidden bg-border/25"
+                      role="progressbar"
+                      aria-label="Page loading"
+                    >
+                      <div className="h-full w-1/3 min-w-20 bg-foreground/70 animate-owned-browser-load" />
                     </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-foreground">
+                  )}
+                </div>
+                {/* Placeholder — native child webview is positioned over this rect only. */}
+                <div
+                  ref={placeholderRef}
+                  className="flex-1 bg-background relative"
+                  aria-hidden={
+                    sessionAccessRequest || v20CookieBlock ? true : undefined
+                  }
+                />
+                {sessionAccessRequest && (
+                  <div className="absolute inset-0 z-40 flex items-center justify-center bg-background p-4">
+                    <div className="w-full max-w-sm border border-border bg-card p-4 shadow-sm">
+                      <div className="mb-3 flex items-start gap-3">
+                        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border border-border bg-muted text-foreground">
+                          <KeyRound className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-foreground">
+                            {sessionAccessRequest.alreadyGranted
+                              ? "macOS may ask for access"
+                              : "Use your browser login?"}
+                          </div>
+                          <div className="mt-1 break-all text-xs text-muted-foreground">
+                            {sessionAccessRequest.host}
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-xs leading-5 text-muted-foreground">
                         {sessionAccessRequest.alreadyGranted
-                          ? "macOS may ask for access"
-                          : "Use your browser login?"}
-                      </div>
-                      <div className="mt-1 break-all text-xs text-muted-foreground">
-                        {sessionAccessRequest.host}
+                          ? "Screenpipe is about to copy browser session cookies. macOS may ask for browser Safe Storage access next."
+                          : "ScreenPipe can use your browser sessions so the agent opens sites already signed in. This applies to all sites. It does not read saved passwords."}
+                      </p>
+                      {isMac && !sessionAccessRequest.alreadyGranted && (
+                        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                          If you allow it, macOS may ask for access to browser
+                          safe storage next.
+                        </p>
+                      )}
+                      <div className="mt-4 flex flex-col gap-2">
+                        <Button
+                          size="sm"
+                          disabled={sessionAccessAnswer !== null}
+                          onClick={() => answerSessionAccess(true)}
+                          className="w-full"
+                        >
+                          {sessionAccessAnswer === "allow"
+                            ? isMac
+                              ? "Waiting for macOS…"
+                              : "Applying…"
+                            : sessionAccessRequest.alreadyGranted
+                              ? "Continue"
+                              : "Use browser session"}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={sessionAccessAnswer !== null}
+                          onClick={() => answerSessionAccess(false)}
+                          className="w-full"
+                        >
+                          Continue logged out
+                        </Button>
                       </div>
                     </div>
                   </div>
-                  <p className="text-xs leading-5 text-muted-foreground">
-                    {sessionAccessRequest.alreadyGranted
-                      ? "Screenpipe is about to copy browser session cookies. macOS may ask for browser Safe Storage access next."
-                      : "ScreenPipe can use your browser sessions so the agent opens sites already signed in. This applies to all sites. It does not read saved passwords."}
-                  </p>
-                  {isMac && !sessionAccessRequest.alreadyGranted && (
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                      If you allow it, macOS may ask for access to browser safe
-                      storage next.
-                    </p>
-                  )}
-                  <div className="mt-4 flex flex-col gap-2">
-                    <Button
-                      size="sm"
-                      disabled={sessionAccessAnswer !== null}
-                      onClick={() => answerSessionAccess(true)}
-                      className="w-full"
-                    >
-                      {sessionAccessAnswer === "allow"
-                        ? isMac ? "Waiting for macOS…" : "Applying…"
-                        : sessionAccessRequest.alreadyGranted
-                          ? "Continue"
-                          : "Use browser session"}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={sessionAccessAnswer !== null}
-                      onClick={() => answerSessionAccess(false)}
-                      className="w-full"
-                    >
-                      Continue logged out
-                    </Button>
-                  </div>
-                </div>
-            </div>
-          )}
-              {v20CookieBlock && (
-            <div className="absolute inset-0 z-40 flex items-center justify-center bg-background p-4">
-                <div className="w-full max-w-sm border border-border bg-card p-4 shadow-sm">
-                  <div className="mb-3 flex items-start gap-3">
-                    <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border border-border bg-muted text-foreground">
-                      <KeyRound className="h-4 w-4" />
+                )}
+                {v20CookieBlock && (
+                  <div className="absolute inset-0 z-40 flex items-center justify-center bg-background p-4">
+                    <div className="w-full max-w-sm border border-border bg-card p-4 shadow-sm">
+                      <div className="mb-3 flex items-start gap-3">
+                        <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border border-border bg-muted text-foreground">
+                          <KeyRound className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-foreground">
+                            Browser login is protected
+                          </div>
+                          <div className="mt-1 break-all text-xs text-muted-foreground">
+                            {v20CookieBlock.host}
+                          </div>
+                        </div>
+                      </div>
+                      {v20CookieBlock.reason === "locked" ? (
+                        <>
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            {v20CookieBlock.sources.length > 0
+                              ? v20CookieBlock.sources.join(", ")
+                              : "Your browser"}{" "}
+                            is running and holds an exclusive lock on its cookie
+                            database. Screenpipe cannot read it while the
+                            browser is open.
+                          </p>
+                          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                            Connect the Screenpipe Browser Bridge extension to
+                            share this login directly — no passwords, no closing
+                            your browser.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            Chrome or Edge has matching session cookies, but
+                            Windows app-bound encryption prevents Screenpipe
+                            from reusing them directly.
+                          </p>
+                          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                            Connect the Screenpipe Browser Bridge extension to
+                            reuse this login without sharing passwords.
+                          </p>
+                          <div className="mt-3 text-[11px] leading-4 text-muted-foreground">
+                            Found{" "}
+                            {v20CookieBlock.v20Count || v20CookieBlock.rows}{" "}
+                            protected cookies
+                            {v20CookieBlock.sources.length > 0
+                              ? ` in ${v20CookieBlock.sources.join(", ")}`
+                              : ""}
+                            .
+                          </div>
+                        </>
+                      )}
+                      <div className="mt-4 flex flex-col gap-2">
+                        {extensionConnected ? (
+                          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Extension connected — retrying…
+                          </div>
+                        ) : (
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              openUrl(CHROME_WEBSTORE_URL).catch(() => {});
+                            }}
+                            className="w-full"
+                          >
+                            <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
+                            Connect extension
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setV20CookieBlock(null)}
+                          className="w-full"
+                        >
+                          Continue without signing in
+                        </Button>
+                      </div>
                     </div>
-                    <div className="min-w-0">
-                      <div className="text-sm font-medium text-foreground">
-                        Browser login is protected
-                      </div>
-                      <div className="mt-1 break-all text-xs text-muted-foreground">
-                        {v20CookieBlock.host}
-                      </div>
-                    </div>
                   </div>
-                  {v20CookieBlock.reason === "locked" ? (
-                    <>
-                      <p className="text-xs leading-5 text-muted-foreground">
-                        {v20CookieBlock.sources.length > 0
-                          ? v20CookieBlock.sources.join(", ")
-                          : "Your browser"}{" "}
-                        is running and holds an exclusive lock on its cookie
-                        database. Screenpipe cannot read it while the browser is
-                        open.
-                      </p>
-                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        Connect the Screenpipe Browser Bridge extension to share
-                        this login directly — no passwords, no closing your
-                        browser.
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-xs leading-5 text-muted-foreground">
-                        Chrome or Edge has matching session cookies, but Windows
-                        app-bound encryption prevents Screenpipe from reusing
-                        them directly.
-                      </p>
-                      <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                        Connect the Screenpipe Browser Bridge extension to reuse
-                        this login without sharing passwords.
-                      </p>
-                      <div className="mt-3 text-[11px] leading-4 text-muted-foreground">
-                        Found {v20CookieBlock.v20Count || v20CookieBlock.rows}{" "}
-                        protected cookies
-                        {v20CookieBlock.sources.length > 0
-                          ? ` in ${v20CookieBlock.sources.join(", ")}`
-                          : ""}
-                        .
-                      </div>
-                    </>
-                  )}
-                  <div className="mt-4 flex flex-col gap-2">
-                    {extensionConnected ? (
-                      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Loader2 className="h-3 w-3 animate-spin" />
-                        Extension connected — retrying…
-                      </div>
-                    ) : (
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          openUrl(CHROME_WEBSTORE_URL).catch(() => {});
-                        }}
-                        className="w-full"
-                      >
-                        <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-                        Connect extension
-                      </Button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setV20CookieBlock(null)}
-                      className="w-full"
-                    >
-                      Continue without signing in
-                    </Button>
-                  </div>
-                </div>
-            </div>
-              )}
-            </>
-          )}
+                )}
+              </>
+            )}
           </div>
         </div>
       )}
-
     </>
   );
 }
