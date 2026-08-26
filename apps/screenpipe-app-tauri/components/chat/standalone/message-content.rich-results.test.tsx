@@ -61,4 +61,32 @@ describe("MessageContent rich results", () => {
     );
     expect(screen.getByText("Research brief")).toBeTruthy();
   });
+
+  it("composes structured output with a durable result card", () => {
+    const structuredJson = JSON.stringify({
+      entries: Array.from({ length: 30 }, (_, index) => ({
+        id: index,
+        status: "ready",
+      })),
+    });
+    const message: Message = {
+      id: "structured-result-message",
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+      contentBlocks: [{
+        type: "text",
+        text: `${structuredJson}\n::screenpipe-result{kind="artifact" state="created" title="Export" path="/Users/test/export.json"}`,
+      }],
+    };
+
+    render(<MessageContent message={message} onOpenRichResult={vi.fn()} />);
+
+    expect(screen.getByTestId("structured-output")).toBeTruthy();
+    expect(screen.getByTestId("chat-rich-result-artifact")).toHaveAttribute(
+      "data-state",
+      "created",
+    );
+    expect(screen.queryByText(/screenpipe-result/)).toBeNull();
+  });
 });
