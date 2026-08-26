@@ -24,7 +24,7 @@
  * always renders the native state when it is available.
  */
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "@/lib/utils/tauri";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
@@ -51,6 +51,13 @@ import {
 } from "@/lib/browser-state-cache";
 import { Button } from "@/components/ui/button";
 import { FilePreviewSidebar } from "@/components/file-preview-sidebar";
+import {
+  BROWSER_RIGHT_PANEL_TAB_ID,
+  RightPanelTabStrip,
+  rightPanelFileTabId,
+  rightPanelFileTabLabel,
+  type RightPanelTab,
+} from "@/components/right-panel-tab-strip";
 import { localFetch } from "@/lib/api";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { useTauriEvent } from "@/lib/hooks/use-tauri-event";
@@ -68,6 +75,7 @@ const STATE_EVENT = "owned-browser:state";
 const DEFAULT_WIDTH = 480;
 const MIN_WIDTH = 320;
 const MIN_CHAT_WIDTH = 360;
+const EMPTY_FILE_PATHS: string[] = [];
 const CHROME_WEBSTORE_URL =
   "https://chromewebstore.google.com/search/screenpipe%20browser%20bridge";
 
@@ -79,11 +87,14 @@ interface BrowserSidebarProps {
    *  `conversationId` state lags the id the agent was spawned with. */
   agentSessionId?: string | null;
   filePreview?: {
-    path: string;
-    visible: boolean;
-    previousMode: "browser" | "hidden";
+    paths: string[];
+    activePath: string | null;
+    panelOpen: boolean;
   } | null;
   onReplaceFilePreviewPath?: (path: string) => void;
+  onCloseFilePreviewPath?: (path: string) => void;
+  onSelectFilePreviewPath?: (path: string | null) => void;
+  onSetPanelOpen?: (open: boolean) => void;
   onPanelStateChange?: (state: { hasUrl: boolean; open: boolean }) => void;
 }
 
@@ -156,6 +167,9 @@ export function BrowserSidebar({
   agentSessionId,
   filePreview,
   onReplaceFilePreviewPath,
+  onCloseFilePreviewPath,
+  onSelectFilePreviewPath,
+  onSetPanelOpen,
   onPanelStateChange,
 }: BrowserSidebarProps) {
   const { settings, updateSettings } = useSettings();
@@ -192,14 +206,22 @@ export function BrowserSidebar({
   const sessionAccessActiveRef = useRef(false);
   /** True while any Radix dialog/modal is open — pushBounds must not re-show the native webview. */
   const dialogActiveRef = useRef(false);
+  const filePreviewRef = useRef(filePreview);
+  filePreviewRef.current = filePreview;
+  /** Closing the browser tab hides the singleton without destroying it. Ignore
+   * late native state events until a new owned navigation explicitly reopens
+   * the tab, otherwise the just-closed URL can immediately reappear. */
+  const browserTabClosedRef = useRef(false);
   const dragStateRef = useRef<{ startX: number; startWidth: number } | null>(
     null,
   );
-  const previewActive = filePreview?.visible === true && !!filePreview.path;
-  const previewPath = previewActive ? filePreview.path : null;
+  const filePaths = filePreview?.paths ?? EMPTY_FILE_PATHS;
+  const previewPath = filePreview?.activePath ?? null;
   const effectiveWidth = clampWidth(requestedWidth, availableW);
-  const browserPanelOpen = visible && !collapsed && effectiveWidth > 0;
-  const panelOpen = previewActive || browserPanelOpen;
+  const hasPanelContent = !!currentUrl || filePaths.length > 0;
+  const panelRequestedOpen = filePreview?.panelOpen ?? (visible && !collapsed);
+  const panelOpen = panelRequestedOpen && hasPanelContent && effectiveWidth > 0;
+  const previewActive = panelOpen && !!previewPath;
 
   useEffect(() => {
     try {
@@ -419,6 +441,7 @@ export function BrowserSidebar({
           return;
         }
         if (!navigationId) return;
+        browserTabClosedRef.current = false;
         if (typeof window !== "undefined") {
           (window as any).__e2eOwnedBrowserLastNavigate = {
             accepted: true,
@@ -441,6 +464,8 @@ export function BrowserSidebar({
         if (reveal) {
           setVisible(true);
           setCollapsed(false);
+          onSelectFilePreviewPath?.(null);
+          onSetPanelOpen?.(true);
           persistState({ url, collapsed: false });
         } else {
           persistState({ url });
@@ -467,7 +492,13 @@ export function BrowserSidebar({
       }
       unlistenPromise.then((fn) => fn()).catch(() => {});
     };
-  }, [persistState, conversationId, agentSessionId]);
+  }, [
+    persistState,
+    conversationId,
+    agentSessionId,
+    onSelectFilePreviewPath,
+    onSetPanelOpen,
+  ]);
 
   useTauriEvent<SessionAccessEvent>(SESSION_ACCESS_REQUEST_EVENT, (e) => {
     const payload = e.payload;
@@ -491,6 +522,9 @@ export function BrowserSidebar({
     setV20CookieBlock(null);
     setVisible(true);
     setCollapsed(false);
+    browserTabClosedRef.current = false;
+    onSelectFilePreviewPath?.(null);
+    onSetPanelOpen?.(true);
     setCurrentUrl(request.url);
     setCurrentOwner(request.owner);
     setCurrentNavigationId(request.navigationId);
@@ -520,6 +554,9 @@ export function BrowserSidebar({
     setV20CookieBlock(block);
     setVisible(true);
     setCollapsed(false);
+    browserTabClosedRef.current = false;
+    onSelectFilePreviewPath?.(null);
+    onSetPanelOpen?.(true);
     setCurrentUrl(block.url);
     setCurrentOwner(block.owner);
     setCurrentNavigationId(block.navigationId);
@@ -587,6 +624,7 @@ export function BrowserSidebar({
   useTauriEvent<OwnedBrowserStateEvent>(STATE_EVENT, (e) => {
     const payload = e.payload;
     if (!payload || typeof payload !== "object") return;
+    if (browserTabClosedRef.current) return;
     // Native page-state updates reflect the singleton webview's *current*
     // content. When a background pipe drives it, these still fire — ignore
     // them so the foreign URL/title isn't persisted into this chat (the
@@ -631,6 +669,7 @@ export function BrowserSidebar({
       setSessionAccessAnswer(null);
       setV20CookieBlock(null);
       setRequestedWidth(DEFAULT_WIDTH);
+      browserTabClosedRef.current = false;
       commands.ownedBrowserHide().catch(() => {});
       return () => {
         cancelled = true;
@@ -649,8 +688,16 @@ export function BrowserSidebar({
       const wasCollapsed = state?.collapsed === true;
       setRequestedWidth(width);
       if (url) {
+        browserTabClosedRef.current = false;
         setVisible(true);
         setCollapsed(wasCollapsed);
+        // The file-tab working set is already scoped to this conversation.
+        // Preserve its active tab and hidden/open state when returning to the
+        // chat; only create browser-active panel state on a first restore.
+        if (!filePreviewRef.current) {
+          onSelectFilePreviewPath?.(null);
+          onSetPanelOpen?.(!wasCollapsed);
+        }
         setCurrentUrl(url);
         setCurrentOwner(conversationId);
         setCurrentNavigationId(null);
@@ -678,6 +725,7 @@ export function BrowserSidebar({
         // run because the placeholder isn't mounted.
         if (wasCollapsed) commands.ownedBrowserHide().catch(() => {});
       } else {
+        browserTabClosedRef.current = true;
         setVisible(false);
         setCollapsed(false);
         setCurrentUrl(null);
@@ -693,7 +741,7 @@ export function BrowserSidebar({
       cancelled = true;
       if (unlistenReady) unlistenReady();
     };
-  }, [conversationId]);
+  }, [conversationId, onSelectFilePreviewPath, onSetPanelOpen]);
 
   useEffect(() => {
     if (previewActive) {
@@ -910,29 +958,40 @@ export function BrowserSidebar({
   const collapse = useCallback(() => {
     setCollapsed(true);
     setLoading(false);
+    onSetPanelOpen?.(false);
     persistState({ collapsed: true });
     commands.ownedBrowserHide().catch(() => {});
-  }, [persistState]);
+  }, [onSetPanelOpen, persistState]);
 
   const expand = useCallback(() => {
     setCollapsed(false);
+    if (currentUrl) setVisible(true);
+    if (!previewPath && !currentUrl && filePaths[0]) {
+      onSelectFilePreviewPath?.(filePaths[0]);
+    }
+    onSetPanelOpen?.(true);
     persistState({ collapsed: false });
-  }, [persistState]);
+  }, [
+    currentUrl,
+    filePaths,
+    onSelectFilePreviewPath,
+    onSetPanelOpen,
+    persistState,
+    previewPath,
+  ]);
 
   const toggleFromHeader = useCallback((action: "toggle" | "show" = "toggle") => {
-    if (!currentUrl) return;
+    if (!hasPanelContent) return;
     if (action === "show") {
-      setVisible(true);
       expand();
       return;
     }
-    if (visible && !collapsed) {
+    if (panelOpen) {
       collapse();
     } else {
-      setVisible(true);
       expand();
     }
-  }, [collapsed, collapse, currentUrl, expand, visible]);
+  }, [collapse, expand, hasPanelContent, panelOpen]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -951,15 +1010,9 @@ export function BrowserSidebar({
   useEffect(() => {
     onPanelStateChange?.({
       hasUrl: !!currentUrl,
-      open: !!currentUrl && visible && !collapsed && !previewActive,
+      open: panelOpen,
     });
-  }, [
-    collapsed,
-    currentUrl,
-    onPanelStateChange,
-    previewActive,
-    visible,
-  ]);
+  }, [currentUrl, onPanelStateChange, panelOpen]);
 
   const answerSessionAccess = useCallback(
     async (allow: boolean) => {
@@ -992,6 +1045,116 @@ export function BrowserSidebar({
     [sessionAccessRequest, sessionAccessAnswer, updateSettings],
   );
 
+  const panelTabs = useMemo<RightPanelTab[]>(() => {
+    const tabs: RightPanelTab[] = [];
+    if (currentUrl) {
+      let label = currentTitle?.trim() || "browser";
+      if (!currentTitle) {
+        try {
+          label = new URL(currentUrl).hostname || currentUrl;
+        } catch {
+          label = currentUrl;
+        }
+      }
+      tabs.push({
+        id: BROWSER_RIGHT_PANEL_TAB_ID,
+        kind: "browser",
+        label,
+        title: currentTitle ? `${currentTitle}\n${currentUrl}` : currentUrl,
+        loading,
+      });
+    }
+    for (const path of filePaths) {
+      tabs.push({
+        id: rightPanelFileTabId(path),
+        kind: "file",
+        label: rightPanelFileTabLabel(path),
+        title: path,
+        path,
+      });
+    }
+    return tabs;
+  }, [currentTitle, currentUrl, filePaths, loading]);
+
+  const activePanelTabId = previewPath
+    ? rightPanelFileTabId(previewPath)
+    : currentUrl
+      ? BROWSER_RIGHT_PANEL_TAB_ID
+      : null;
+
+  const closeBrowserTab = useCallback(() => {
+    browserTabClosedRef.current = true;
+    const fallbackPath = previewPath ?? filePaths[0] ?? null;
+    setVisible(false);
+    setCollapsed(false);
+    setCurrentUrl(null);
+    setCurrentOwner(null);
+    setCurrentNavigationId(null);
+    setCurrentTitle(null);
+    setLoading(false);
+    setSessionAccessRequest(null);
+    setSessionAccessAnswer(null);
+    setV20CookieBlock(null);
+    persistState({ url: null });
+    commands.ownedBrowserHide().catch(() => {});
+    if (fallbackPath) {
+      onSelectFilePreviewPath?.(fallbackPath);
+    } else {
+      onSetPanelOpen?.(false);
+    }
+  }, [
+    filePaths,
+    onSelectFilePreviewPath,
+    onSetPanelOpen,
+    persistState,
+    previewPath,
+  ]);
+
+  const selectPanelTab = useCallback(
+    (tab: RightPanelTab) => {
+      if (tab.kind === "file" && tab.path) {
+        onSelectFilePreviewPath?.(tab.path);
+        return;
+      }
+      if (!currentUrl) return;
+      onSelectFilePreviewPath?.(null);
+      onSetPanelOpen?.(true);
+      setVisible(true);
+      setCollapsed(false);
+      persistState({ collapsed: false });
+    },
+    [currentUrl, onSelectFilePreviewPath, onSetPanelOpen, persistState],
+  );
+
+  const closePanelTab = useCallback(
+    (tab: RightPanelTab) => {
+      if (tab.kind === "browser") {
+        closeBrowserTab();
+        return;
+      }
+      if (!tab.path) return;
+      const closingActiveTab = tab.path === previewPath;
+      const lastFileTab = filePaths.length === 1;
+      if (closingActiveTab && lastFileTab) {
+        if (currentUrl) {
+          onSelectFilePreviewPath?.(null);
+        } else {
+          onSetPanelOpen?.(false);
+        }
+      }
+      onCloseFilePreviewPath?.(tab.path);
+    },
+    [
+      closeBrowserTab,
+      currentUrl,
+      filePaths.length,
+      onCloseFilePreviewPath,
+      onSelectFilePreviewPath,
+      onSetPanelOpen,
+      previewPath,
+    ],
+  );
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -1020,6 +1183,18 @@ export function BrowserSidebar({
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-10 w-1 rounded-full bg-border group-hover/resize:bg-foreground/60 group-hover/resize:w-1.5 transition-all" />
           </div>
 
+          <RightPanelTabStrip
+            tabs={panelTabs}
+            activeTabId={activePanelTabId}
+            onSelect={selectPanelTab}
+            onClose={closePanelTab}
+          />
+          <div
+            id="right-panel-active-content"
+            role="tabpanel"
+            aria-label={panelTabs.find((tab) => tab.id === activePanelTabId)?.label}
+            className="flex min-h-0 flex-1 flex-col"
+          >
           {previewActive ? (
             previewPath ? (
               <FilePreviewSidebar
@@ -1215,6 +1390,7 @@ export function BrowserSidebar({
               )}
             </>
           )}
+          </div>
         </div>
       )}
 

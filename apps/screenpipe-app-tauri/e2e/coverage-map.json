@@ -1210,6 +1210,27 @@
       "notes": "Listener-order regression for metadata-only sidebar stubs gaining dedup keys."
     },
     {
+      "spec": "chat-right-panel-tabs.spec.ts",
+      "platforms": [
+        "windows",
+        "macos",
+        "linux"
+      ],
+      "layers": [
+        "chat-ai",
+        "real-ui-e2e"
+      ],
+      "features": [
+        "chat",
+        "right-panel-tabs",
+        "file-preview"
+      ],
+      "criticality": "medium",
+      "confidence": "strong",
+      "ux": "real-user-flow",
+      "notes": "Multiple file previews stay open in the chat right panel, preserve selection across hide and show, and close with predictable focus fallback."
+    },
+    {
       "spec": "chat-source-file-preview.spec.ts",
       "platforms": [
         "windows",

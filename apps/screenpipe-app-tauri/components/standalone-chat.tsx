@@ -739,17 +739,22 @@ export function StandaloneChat({
     consumePendingAttachments,
     stagePendingAttachments,
   } = useNextTurnAttachments(conversationId);
-  const { filePreview, openFilePreview, closeFilePreview } =
-    useChatFilePreview(conversationId);
+  const {
+    filePreview,
+    openFilePreview,
+    closeFilePreview,
+    selectFilePreview,
+    setFilePreviewPanelOpen,
+  } = useChatFilePreview(conversationId);
   const { inspectorOpen, setInspectorOpen, outputs: inspectorOutputs, sources: inspectorSources } =
     useChatInspector(messages, pipeRunArtifactSource);
   const [browserPanelState, setBrowserPanelState] = useState({
     hasUrl: false,
     open: false,
   });
-  const filePreviewOpen = filePreview?.visible === true && !!filePreview.path;
-  const sidePanelHasContent = filePreviewOpen || browserPanelState.hasUrl;
-  const sidePanelOpen = filePreviewOpen || browserPanelState.open;
+  const sidePanelHasContent =
+    (filePreview?.paths.length ?? 0) > 0 || browserPanelState.hasUrl;
+  const sidePanelOpen = browserPanelState.open;
   const inspectorHasContent =
     inspectorOutputs.length > 0 ||
     inspectorSources.length > 0;
@@ -763,18 +768,14 @@ export function StandaloneChat({
   }, [inspectorOpen, setInspectorOpen]);
 
   const toggleBrowserPanel = useCallback(() => {
-    if (filePreviewOpen) {
-      closeFilePreview();
-      return;
-    }
-    if (browserPanelState.hasUrl) {
+    if (sidePanelHasContent) {
       window.dispatchEvent(
         new CustomEvent("screenpipe:browser-sidebar-toggle", {
           detail: { action: "toggle" },
         }),
       );
     }
-  }, [browserPanelState.hasUrl, closeFilePreview, filePreviewOpen]);
+  }, [sidePanelHasContent]);
 
   const handlePanelStateChange = useCallback(
     (nextState: { hasUrl: boolean; open: boolean }) => {
@@ -951,6 +952,7 @@ export function StandaloneChat({
     openFilePreview,
   });
   useChatE2EGlobals({
+    openFilePreview,
     setMessages,
     setConversationId,
     piSessionIdRef,
@@ -2296,6 +2298,9 @@ export function StandaloneChat({
         agentSessionId={piSessionIdRef.current}
         filePreview={filePreview}
         onReplaceFilePreviewPath={openFilePreview}
+        onCloseFilePreviewPath={closeFilePreview}
+        onSelectFilePreviewPath={selectFilePreview}
+        onSetPanelOpen={setFilePreviewPanelOpen}
         onPanelStateChange={handlePanelStateChange}
       />
       </div> {/* End of horizontal chat+browser split */}
