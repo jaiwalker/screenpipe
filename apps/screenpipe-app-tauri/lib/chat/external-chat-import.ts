@@ -62,12 +62,20 @@ function mergeImportedMessages(
   const merged: ChatMessage[] = [];
 
   for (const message of existing) {
-    if (message.importedFrom === source) {
-      const replacement = incomingById.get(message.id);
-      if (replacement) {
+    const replacement = incomingById.get(message.id);
+    if (replacement) {
+      // Early versions of external chat import did not stamp
+      // `importedFrom` on each message. A later sync therefore treated the
+      // old source message as a local continuation and appended a second copy
+      // with the same stable id. The source transcript is authoritative for
+      // an exact id match, regardless of whether the legacy marker exists.
+      if (!consumed.has(message.id)) {
         merged.push(replacement);
         consumed.add(message.id);
       }
+      continue;
+    }
+    if (message.importedFrom === source) {
       // Source messages absent from the new parse were transport metadata.
       continue;
     }

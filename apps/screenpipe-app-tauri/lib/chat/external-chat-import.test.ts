@@ -316,5 +316,7 @@ describe("scanExternalChatHistory", () => {
       "screenpipe-follow-up",
     ]);
     expect(saved.messages[0].content).toBe("fix the sidebar");
+    expect(saved.messages[0].importedFrom).toBe("codex");
+    expect(saved.messages[1].importedFrom).toBe("codex");
   });
 });
