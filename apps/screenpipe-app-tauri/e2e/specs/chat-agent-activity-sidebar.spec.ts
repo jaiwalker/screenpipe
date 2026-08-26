@@ -25,6 +25,43 @@ const LIVE_CODEX_ID = `imported-codex-${LIVE_CODEX_SESSION_ID}`;
 const LIVE_CLAUDE_SESSION_ID = "e2e-live-claude";
 const LIVE_CLAUDE_ID = `imported-claude-code-${LIVE_CLAUDE_SESSION_ID}`;
 const FIXTURE_PREFIX = "e2e-agent-sidebar-";
+const STRUCTURED_CLAUDE_ID = `${FIXTURE_PREFIX}structured-claude`;
+const STRUCTURED_ACTIVITY_TIMELINE = JSON.stringify({
+  entries: [
+    {
+      id: "call-pr-review",
+      kind: "work",
+      start_at: "2026-08-26T16:36:04Z",
+      end_at: "2026-08-26T16:41:15Z",
+      title: "Reviewed Screenpipe pull requests",
+      summary: "Reviewed release status and pull requests during a team call.",
+      evidence: [
+        {
+          kind: "screen",
+          at: "2026-08-26T16:41:09Z",
+          app_name: "Arc",
+          label: "Reviewed the one-click onboarding pull request",
+        },
+      ],
+    },
+    {
+      id: "daily-note",
+      kind: "work",
+      start_at: "2026-08-26T16:41:15Z",
+      end_at: "2026-08-26T16:43:52Z",
+      title: "Captured product strategy notes",
+      summary: "Wrote the ideal customer profile advice into the daily note.",
+      evidence: [
+        {
+          kind: "screen",
+          at: "2026-08-26T16:43:52Z",
+          app_name: "Obsidian",
+          label: "Edited the daily note in the product vault",
+        },
+      ],
+    },
+  ],
+});
 const fixtureIds = new Set<string>();
 const liveTranscriptPaths = new Set<string>();
 
@@ -131,6 +168,7 @@ function writeImportedConversation(
   offsetMs: number,
   pinned = false,
   harness: "terminal" | "cursor" | "github-copilot" | "screenpipe" = "terminal",
+  assistantContent = "Fixture reply",
 ): void {
   const now = Date.now() + offsetMs;
   fixtureIds.add(id);
@@ -151,7 +189,7 @@ function writeImportedConversation(
       importedFrom: { source, sourceId: `${source}-fixture`, importedAt: now, harness },
       messages: [
         { id: `${id}-user`, role: "user", content: title, timestamp: now },
-        { id: `${id}-assistant`, role: "assistant", content: "Fixture reply", timestamp: now + 1 },
+        { id: `${id}-assistant`, role: "assistant", content: assistantContent, timestamp: now + 1 },
       ],
     }, null, 2),
   );
@@ -390,5 +428,45 @@ describe("unified recents sidebar", function () {
     const codexHeavyRows = await $$(`[data-testid^="chat-row-${FIXTURE_PREFIX}codex-heavy-"]`);
     expect(codexHeavyRows.length).toBe(9);
     await saveScreenshot("chat-agent-activity-sidebar-codex-heavy");
+  });
+
+  it("shows Claude structured output compactly and reveals readable JSON", async () => {
+    cleanup();
+    writeImportedConversation(
+      STRUCTURED_CLAUDE_ID,
+      "Build activity timeline for Screenpipe API",
+      "claude-code",
+      0,
+      false,
+      "terminal",
+      STRUCTURED_ACTIVITY_TIMELINE,
+    );
+    await reloadFixture({ height: 1200 });
+
+    const claudeRow = await $(`[data-testid="chat-row-${STRUCTURED_CLAUDE_ID}"]`);
+    await claudeRow.waitForDisplayed({ timeout: t(10_000) });
+    await claudeRow.$("button").click();
+    await browser.waitUntil(
+      async () => (await claudeRow.getAttribute("data-current")) === "true",
+      { timeout: t(10_000), timeoutMsg: "expected structured Claude chat to become current" },
+    );
+
+    const structuredOutput = await $("[data-testid='structured-output']");
+    await structuredOutput.waitForDisplayed({ timeout: t(10_000) });
+    const toggle = await structuredOutput.$("button");
+    expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+    await saveScreenshot("chat-claude-structured-output-collapsed");
+
+    await toggle.click();
+    await browser.waitUntil(
+      async () => (await toggle.getAttribute("aria-expanded")) === "true",
+      { timeout: t(5_000), timeoutMsg: "expected structured output to expand" },
+    );
+    expect(await structuredOutput.getText()).toContain("Reviewed Screenpipe pull requests");
+    expect(await structuredOutput.getText()).toContain("Captured product strategy notes");
+    await browser.execute((element: HTMLElement) => {
+      element.scrollIntoView({ block: "start", inline: "nearest" });
+    }, structuredOutput);
+    await saveScreenshot("chat-claude-structured-output-expanded");
   });
 });
