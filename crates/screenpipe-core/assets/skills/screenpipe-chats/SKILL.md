@@ -16,7 +16,7 @@ transcript folders, guess runtime commands, or call a localhost app route.
    the chat even when the title never mentions it. Omit the query to list recent
    chats. Filter `sources` only when the user named a runtime.
 2. Show enough title, source, preview, and workspace information to distinguish
-   ambiguous results.
+   ambiguous results. Link titles as `[title](screenpipe://chat/<source>/<id>)`.
 3. Treat the returned `source` and `id` as the address. Never derive an id from
    a title or reuse a stale result after the target disappears.
 4. Read the `warnings` array. Transcript reading is bounded to the most recent
