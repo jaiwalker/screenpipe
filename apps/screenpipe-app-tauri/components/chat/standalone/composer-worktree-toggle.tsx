@@ -38,7 +38,7 @@ export function ComposerWorktreeToggle({
           if (value === true) void onToggle(true);
         }}
         data-testid="coding-workspace-checkbox"
-        aria-label="isolate in worktree"
+        aria-label="worktree"
         className="h-3.5 w-3.5"
       />
       <Label
@@ -48,7 +48,7 @@ export function ComposerWorktreeToggle({
           checkboxDisabled ? "cursor-not-allowed" : "cursor-pointer",
         )}
       >
-        isolate in worktree
+        worktree
       </Label>
       {isLoading && (
         <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />

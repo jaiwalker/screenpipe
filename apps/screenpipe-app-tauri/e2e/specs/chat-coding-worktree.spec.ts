@@ -158,7 +158,7 @@ async function openFreshChat(): Promise<void> {
     {
       timeout: t(15_000),
       timeoutMsg:
-        "a fresh chat with an enabled isolate-in-worktree checkbox did not appear",
+        "a fresh chat with an enabled worktree checkbox did not appear",
     },
   );
 }
