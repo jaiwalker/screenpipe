@@ -26,7 +26,10 @@ export function ComposerWorktreeToggle({
   const checkboxDisabled = disabled || isLoading || cannotUncheck;
 
   return (
-    <div className="flex min-h-7 items-center gap-2 px-1 pt-2">
+    <div
+      className="flex min-h-7 items-center gap-2 px-1 pt-2"
+      data-testid="coding-workspace-row"
+    >
       <Checkbox
         id="composer-worktree"
         checked={checked}
