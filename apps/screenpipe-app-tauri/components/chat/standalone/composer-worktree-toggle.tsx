@@ -27,7 +27,7 @@ export function ComposerWorktreeToggle({
 
   return (
     <div
-      className="flex min-h-7 items-center gap-2 px-1 pt-2"
+      className="flex h-7 shrink-0 items-center gap-1.5"
       data-testid="coding-workspace-row"
     >
       <Checkbox
@@ -44,7 +44,7 @@ export function ComposerWorktreeToggle({
       <Label
         htmlFor="composer-worktree"
         className={cn(
-          "text-[11px] font-medium text-muted-foreground",
+          "whitespace-nowrap text-xs font-medium text-muted-foreground",
           checkboxDisabled ? "cursor-not-allowed" : "cursor-pointer",
         )}
       >
@@ -58,7 +58,7 @@ export function ComposerWorktreeToggle({
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="inline-flex h-6 max-w-[160px] items-center gap-1 truncate rounded-md border border-border/50 px-1.5 font-mono text-[10px] text-foreground hover:bg-muted/50"
+              className="inline-flex h-6 max-w-[120px] items-center gap-1 truncate rounded-md border border-border/50 px-1.5 font-mono text-[10px] text-foreground hover:bg-muted/50"
               data-testid="coding-workspace-badge"
               title={workspace.worktreePath}
             >
@@ -101,7 +101,10 @@ export function ComposerWorktreeToggle({
         </Popover>
       )}
       {error && !workspace && (
-        <span className="truncate text-[10px] text-destructive" title={error}>
+        <span
+          className="max-w-[180px] truncate text-[10px] text-destructive"
+          title={error}
+        >
           {error}
         </span>
       )}
