@@ -147,7 +147,9 @@ async function positionCardForProof(
     // The affordance mounts after the scroll state settles, so hide it only
     // after React has rendered the final proof frame. Its behavior is covered
     // independently by the chat-scroll suite.
-    const jumpToLatest = document.querySelector<HTMLElement>('[data-testid="chat-new-content"]');
+    const jumpToLatest = document.querySelector<HTMLElement>(
+      '[data-testid="chat-jump-to-latest"], [data-testid="chat-new-content"]',
+    );
     if (jumpToLatest) jumpToLatest.style.visibility = "hidden";
   });
   await browser.waitUntil(
