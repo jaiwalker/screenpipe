@@ -81,10 +81,16 @@ describe("ChatTabStrip", () => {
     fireEvent.click(await screen.findByText("Open in split"));
     expect(useChatStore.getState().splitChatId).toBe("chat-b");
     expect(screen.getByLabelText("split pane")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Open in split")).not.toBeInTheDocument(),
+    );
 
     fireEvent.contextMenu(screen.getByRole("tab", { name: "secondary" }));
     fireEvent.click(await screen.findByText("Close split"));
     expect(useChatStore.getState().splitChatId).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByText("Close split")).not.toBeInTheDocument(),
+    );
   });
 
   it("does not resurrect a closed primary when its split neighbor becomes active", () => {

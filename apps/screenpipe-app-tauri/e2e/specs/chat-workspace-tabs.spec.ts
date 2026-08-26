@@ -74,11 +74,20 @@ async function openTabIds(): Promise<string[]> {
 
 async function openContextItem(tabId: string, label: string): Promise<void> {
   await browser.execute((id: string) => {
-    document
-      .querySelector<HTMLElement>(`[data-chat-tab-id="${id}"]`)
-      ?.dispatchEvent(
-        new MouseEvent("contextmenu", { bubbles: true, button: 2, buttons: 2 }),
-      );
+    const tab = document.querySelector<HTMLElement>(
+      `[data-chat-tab-id="${id}"]`,
+    );
+    if (!tab) return;
+    const rect = tab.getBoundingClientRect();
+    tab.dispatchEvent(
+      new MouseEvent("contextmenu", {
+        bubbles: true,
+        button: 2,
+        buttons: 2,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      }),
+    );
   }, tabId);
   await browser.waitUntil(
     async () =>
@@ -91,23 +100,30 @@ async function openContextItem(tabId: string, label: string): Promise<void> {
       )) as boolean,
     { timeout: t(5_000), interval: 100, timeoutMsg: `${label} did not appear` },
   );
-  await browser.execute((text: string) => {
-    Array.from(document.querySelectorAll<HTMLElement>("[role=menuitem]"))
-      .find((item) => item.textContent?.trim() === text)
-      ?.click();
-  }, label);
-  await browser.keys("Escape");
-  await browser.waitUntil(
-    async () =>
-      !((await browser.execute(
-        () => document.querySelectorAll<HTMLElement>("[role=menuitem]").length,
-      )) as number),
-    {
-      timeout: t(3_000),
-      interval: 100,
-      timeoutMsg: "chat tab context menu did not close",
-    },
+  const menuItem = await $(
+    `//*[@role="menuitem" and normalize-space(.)="${label}"]`,
   );
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await menuItem.moveTo();
+    await menuItem.click();
+    await browser.pause(250);
+    const state = await browser.execute(
+      (text: string) => ({
+        menuOpen: Array.from(
+          document.querySelectorAll<HTMLElement>("[role=menuitem]"),
+        ).some((item) => item.textContent?.trim() === text),
+        splitOpen: Boolean(
+          document.querySelector('[data-testid="chat-split-pane"]'),
+        ),
+      }),
+      label,
+    );
+    if (!state.menuOpen) return;
+    if (state.splitOpen) {
+      throw new Error("chat tab context menu remained open after selection");
+    }
+  }
+  throw new Error("chat tab context action was not registered");
 }
 
 describe("Chat workspace tabs and split", function () {
