@@ -261,6 +261,102 @@ describe("scanExternalChatHistory", () => {
     );
   });
 
+  it("persists a live Claude tool result when the block count stays constant", async () => {
+    const updatedAt = Date.parse("2026-08-21T12:00:00Z");
+    const id = "imported-claude-code-live-claude";
+    mocks.stat.mockResolvedValue({ size: 1024, mtime: new Date(updatedAt) });
+    mocks.readTextFile.mockResolvedValue([
+      JSON.stringify({
+        type: "user",
+        sessionId: "live-claude",
+        uuid: "u1",
+        timestamp: "2026-08-21T12:00:00Z",
+        message: { role: "user", content: [{ type: "text", text: "run check" }] },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        sessionId: "live-claude",
+        timestamp: "2026-08-21T12:00:00Z",
+        message: {
+          id: "a1",
+          role: "assistant",
+          model: "claude",
+          content: [{
+            type: "tool_use",
+            id: "call-1",
+            name: "Bash",
+            input: { command: "pwd" },
+          }],
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        sessionId: "live-claude",
+        timestamp: "2026-08-21T12:00:01Z",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "call-1", content: "/fixture" }],
+        },
+      }),
+    ].join("\n"));
+    mocks.loadConversationFile.mockResolvedValue({
+      id,
+      title: "run check",
+      titleSource: "fallback",
+      kind: "chat",
+      createdAt: updatedAt,
+      updatedAt,
+      lastUserMessageAt: updatedAt,
+      lastContentAt: updatedAt,
+      lastViewedAt: updatedAt,
+      importedFrom: {
+        source: "claude-code",
+        sourceId: "live-claude",
+        importedAt: updatedAt,
+      },
+      messages: [
+        {
+          id: `${id}-u1`,
+          role: "user",
+          content: "run check",
+          timestamp: updatedAt,
+          provider: "claude-code",
+          importedFrom: "claude-code",
+        },
+        {
+          id: `${id}-a1`,
+          role: "assistant",
+          content: "",
+          contentBlocks: [{
+            type: "tool",
+            toolCall: {
+              id: "call-1",
+              toolName: "Bash",
+              args: { command: "pwd" },
+              isRunning: false,
+            },
+          }],
+          timestamp: updatedAt,
+          model: "claude",
+          provider: "claude-code",
+          importedFrom: "claude-code",
+        },
+      ],
+    });
+
+    const result = await importExternalChatHistory([{
+      source: "claude-code",
+      path: "/fixture/live-claude.jsonl",
+      sourceId: "live-claude",
+      modifiedAt: updatedAt,
+      size: 1024,
+    }], { skipUnchanged: true });
+
+    expect(result).toMatchObject({ imported: 0, updated: 1, skipped: 0, failed: 0 });
+    const saved = mocks.saveConversationFile.mock.calls[0][0];
+    expect(saved.messages[1].contentBlocks[0].toolCall.result).toBe("/fixture");
+  });
+
   it("repairs legacy wrapper titles without losing local chat state", async () => {
     const firstAt = Date.parse("2026-08-21T12:00:00Z");
     const updatedAt = Date.parse("2026-08-21T12:01:00Z");

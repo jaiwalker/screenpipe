@@ -171,8 +171,8 @@ function importedConversationIsUnchanged(
       && message.id === candidate.id
       && message.role === candidate.role
       && message.content === candidate.content
-      && (message.contentBlocks?.length ?? 0)
-        === (candidate.contentBlocks?.length ?? 0);
+      && JSON.stringify(message.contentBlocks ?? [])
+        === JSON.stringify(candidate.contentBlocks ?? []);
   });
 }
 
@@ -194,14 +194,14 @@ function basenameWithoutJsonl(path: string): string {
   return (path.split(/[\\/]/).pop() ?? path).replace(/\.jsonl$/i, "");
 }
 
-function isScreenpipeBackgroundClaudeProject(projectName: string): boolean {
+export function isScreenpipeBackgroundClaudeProject(projectName: string): boolean {
   // Screenpipe runs Activity generation from ~/.screenpipe/pi-daily-summary.
   // Claude encodes the path separator plus the leading dot as `--` in its
   // project directory name. Do not exclude user-facing ~/.screenpipe/pi-chat.
   return projectName.toLowerCase().endsWith("--screenpipe-pi-daily-summary");
 }
 
-async function candidateForPath(
+export async function externalChatCandidateForPath(
   source: ExternalChatSource,
   path: string,
 ): Promise<ExternalChatCandidate | null> {
@@ -254,7 +254,7 @@ async function listClaudeCandidates(
       for (const entry of await readDir(projectPath)) {
         if (entry.isDirectory || !entry.name.toLowerCase().endsWith(".jsonl")) continue;
         const path = await join(projectPath, entry.name);
-        const candidate = await candidateForPath("claude-code", path);
+        const candidate = await externalChatCandidateForPath("claude-code", path);
         if (candidate && candidate.modifiedAt >= cutoffMs) {
           candidates.push({
             ...candidate,
@@ -328,7 +328,7 @@ async function listCodexCandidates(
   let inspectedCount = 0;
   for (const entry of entries) {
     const path = await join(entry.directory, entry.name);
-    const candidate = await candidateForPath("codex", path);
+    const candidate = await externalChatCandidateForPath("codex", path);
     inspectedCount += 1;
     if (!candidate || candidate.modifiedAt < cutoffMs) continue;
     candidates.push(candidate);
@@ -370,9 +370,9 @@ function summarizeSource(
 }
 
 export async function scanExternalChatHistory(
-  options: { nowMs?: number } = {},
+  options: { nowMs?: number; home?: string } = {},
 ): Promise<ExternalChatScanResult> {
-  const home = await homeDir();
+  const home = options.home ?? await homeDir();
   const nowMs = options.nowMs ?? Date.now();
   const cutoffMs = nowMs - EXTERNAL_CHAT_LOOKBACK_DAYS * MS_PER_DAY;
   const [claude, codex] = await Promise.all([
