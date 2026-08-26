@@ -20,20 +20,13 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   canOpenChatRichResult,
+  chatRichResultKindLabel,
   chatRichResultStateLabel,
   type ChatRichResult,
 } from "@/lib/chat/rich-results";
 import { cn } from "@/lib/utils";
 
 const COLLAPSED_CARD_COUNT = 3;
-
-const KIND_LABEL: Record<ChatRichResult["kind"], string> = {
-  "scheduled-task": "Scheduled task",
-  artifact: "Artifact",
-  chat: "Chat",
-  "live-view": "Live View",
-  link: "Web resource",
-};
 
 function ResultKindIcon({ result }: { result: ChatRichResult }) {
   const className = "h-5 w-5";
@@ -65,7 +58,7 @@ export function RichResultCard({
   const stateLabel = chatRichResultStateLabel(result.state);
   return (
     <section
-      aria-label={`${KIND_LABEL[result.kind]}: ${result.title}, ${stateLabel}`}
+      aria-label={`${chatRichResultKindLabel(result.kind)}: ${result.title}, ${stateLabel}`}
       data-testid={`chat-rich-result-${result.kind}`}
       data-state={result.state}
       className={cn(

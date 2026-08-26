@@ -138,17 +138,18 @@ async function positionCardForProof(
     );
     container.dispatchEvent(new Event("scroll", { bubbles: true }));
 
-    // The jump-to-latest affordance is unrelated to the result-card review
-    // and otherwise covers the centered card in a proof image. Keep the real
-    // control exercised by the chat-scroll suite; remove only this visual
-    // overlap from this fixture's screenshot frame.
-    const jumpToLatest = document.querySelector<HTMLElement>('[data-testid="chat-new-content"]');
-    if (jumpToLatest) jumpToLatest.style.visibility = "hidden";
     return true;
   }, ariaLabelPrefix, block);
   expect(positioned).toBe(true);
 
   await browser.pause(300);
+  await browser.execute(() => {
+    // The affordance mounts after the scroll state settles, so hide it only
+    // after React has rendered the final proof frame. Its behavior is covered
+    // independently by the chat-scroll suite.
+    const jumpToLatest = document.querySelector<HTMLElement>('[data-testid="chat-new-content"]');
+    if (jumpToLatest) jumpToLatest.style.visibility = "hidden";
+  });
   await browser.waitUntil(
     async () => (await browser.execute((label: string) => {
       const container = document.querySelector<HTMLElement>('[data-testid="chat-message-scroll"]');

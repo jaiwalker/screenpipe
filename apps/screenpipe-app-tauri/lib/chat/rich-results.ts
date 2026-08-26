@@ -31,6 +31,14 @@ export const CHAT_RICH_RESULT_STATES = [
 export type ChatRichResultKind = (typeof CHAT_RICH_RESULT_KINDS)[number];
 export type ChatRichResultState = (typeof CHAT_RICH_RESULT_STATES)[number];
 
+const CHAT_RICH_RESULT_KIND_LABELS: Record<ChatRichResultKind, string> = {
+  "scheduled-task": "Scheduled task",
+  artifact: "Artifact",
+  chat: "Chat",
+  "live-view": "Live View",
+  link: "Web resource",
+};
+
 export type ChatRichResult = {
   kind: ChatRichResultKind;
   state: ChatRichResultState;
@@ -240,6 +248,30 @@ export function chatRichResultStateLabel(state: ChatRichResultState): string {
     missing: "Unavailable",
     error: "Needs attention",
   } satisfies Record<ChatRichResultState, string>)[state];
+}
+
+export function chatRichResultKindLabel(kind: ChatRichResultKind): string {
+  return CHAT_RICH_RESULT_KIND_LABELS[kind];
+}
+
+/**
+ * Preserve a result's verified identity for later turns without replaying the
+ * UI directive itself. JSON encoding keeps titles and targets unambiguous in
+ * the historical transcript.
+ */
+export function formatChatRichResultsForContext(results: ChatRichResult[]): string {
+  return results
+    .map((result) => JSON.stringify({
+      type: "durable-result",
+      kind: result.kind,
+      state: result.state,
+      title: result.title,
+      ...(result.subtitle ? { subtitle: result.subtitle } : {}),
+      ...(result.id ? { id: result.id } : {}),
+      ...(result.path ? { path: result.path } : {}),
+      ...(result.url ? { url: result.url } : {}),
+    }))
+    .join("\n");
 }
 
 export function canOpenChatRichResult(result: ChatRichResult): boolean {

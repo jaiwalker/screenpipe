@@ -14,6 +14,7 @@ import type { ConnectionListItem } from "@/lib/chat/connection-suggestions";
 import type { InlineConnectStatus } from "@/lib/connections/inline-connect";
 import type { MarkdownCitationPlan } from "@/lib/chat/markdown-export";
 import {
+  canOpenChatRichResult,
   stripChatRichResultDirectives,
   type ChatRichResult,
 } from "@/lib/chat/rich-results";
@@ -217,6 +218,7 @@ export function useChatMessageActions({
   }, [messages, onDeclineConnectionAction, setMessages]);
 
   const openRichResult = useCallback(async (result: ChatRichResult) => {
+    if (!canOpenChatRichResult(result)) return;
     if (result.kind === "artifact" && result.path) {
       openFilePreview(result.path);
       return;

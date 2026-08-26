@@ -63,7 +63,7 @@ describe("chat conversation history helpers", () => {
     expect(prompt).toContain("current screenpipe session");
   });
 
-  it("keeps result-card control syntax out of future model context", () => {
+  it("keeps sanitized result identity in future model context", () => {
     const messages: Message[] = [{
       id: "result-1",
       role: "assistant",
@@ -72,6 +72,9 @@ describe("chat conversation history helpers", () => {
     }];
     const history = formatConversationHistoryLines(messages);
     expect(history).toContain("assistant: Scheduled.");
+    expect(history).toContain('"type":"durable-result"');
+    expect(history).toContain('"kind":"scheduled-task"');
+    expect(history).toContain('"id":"recheck"');
     expect(history).not.toContain("::screenpipe-result");
   });
 });

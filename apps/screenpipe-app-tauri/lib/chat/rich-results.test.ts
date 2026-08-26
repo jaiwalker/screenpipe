@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   canOpenChatRichResult,
   chatRichResultsFromToolCalls,
+  formatChatRichResultsForContext,
   parseChatRichResults,
   stripChatRichResultDirectives,
 } from "@/lib/chat/rich-results";
@@ -28,6 +29,9 @@ describe("chat rich results", () => {
       },
     ]);
     expect(canOpenChatRichResult(parsed.results[0])).toBe(true);
+    expect(formatChatRichResultsForContext(parsed.results)).toBe(
+      '{"type":"durable-result","kind":"scheduled-task","state":"created","title":"Recheck deployment","subtitle":"In 5 minutes","id":"recheck-deployment"}',
+    );
   });
 
   it("preserves examples in fenced code blocks and invalid directives as text", () => {
