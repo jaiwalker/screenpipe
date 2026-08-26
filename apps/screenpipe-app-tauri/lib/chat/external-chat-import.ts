@@ -102,8 +102,8 @@ function prepareImportedConversation(
   if (!existing) {
     return {
       ...incoming,
-      // Discovering existing history is not a notification. Only content
-      // appended after discovery should light the unread indicator.
+      // Discovering provider history is not a Screenpipe notification. The
+      // transcript does not expose the provider's real read/attention state.
       lastViewedAt: incoming.lastContentAt ?? incoming.updatedAt,
     };
   }
@@ -131,12 +131,14 @@ function prepareImportedConversation(
       existing.lastContentAt ?? 0,
       incoming.lastContentAt ?? 0,
     ) || undefined,
-    // Migrate legacy imports to "read at discovery" without swallowing a
-    // later source update: the old content watermark becomes the read point.
-    lastViewedAt:
-      existing.lastViewedAt
-      ?? existing.lastContentAt
-      ?? existing.updatedAt,
+    // JSONL transcripts do not expose Codex or Claude's real unread state, so
+    // mirror provider updates as read instead of inventing a notification from
+    // file timestamps. A newer Screenpipe-side continuation still has a later
+    // lastContentAt and therefore keeps the native unread behavior.
+    lastViewedAt: Math.max(
+      existing.lastViewedAt ?? 0,
+      incoming.lastContentAt ?? incoming.updatedAt,
+    ),
     importedFrom: incoming.importedFrom
       ? {
           ...incoming.importedFrom,
