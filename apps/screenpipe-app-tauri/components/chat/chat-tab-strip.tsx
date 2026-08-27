@@ -136,7 +136,7 @@ export function ChatTabStrip({
 
   return (
     <div
-      className="flex min-w-0 flex-1 items-center gap-1"
+      className="relative z-20 flex min-w-0 flex-1 items-center gap-1"
       data-testid="chat-tab-strip"
     >
       <div

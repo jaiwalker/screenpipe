@@ -567,7 +567,42 @@ export const useChatStore = create<ChatStore>((set) => ({
         return { currentId: id, openChatIds };
       }),
 
-    setPanelSession: (id) => set({ panelSessionId: id }),
+    setPanelSession: (id) =>
+      set((s) => {
+        if (!id) return { panelSessionId: id };
+
+        // The panel creates one empty session on mount so first-send events have
+        // an owner immediately. If another chat wins navigation before that
+        // placeholder is used, keeping both ids in the tab set paints a second
+        // unexplained "untitled" tab. Prune only disposable, inactive blanks
+        // after the visual panel switch commits. Real chats, active turns, and
+        // blanks with composer text or attachments remain untouched.
+        const disposableIds = s.openChatIds.filter((openId) => {
+          if (openId === id) return false;
+          const session = s.sessions[openId];
+          return Boolean(
+            session &&
+            !session.composerDraft &&
+            isReusableBlankChatSession(session),
+          );
+        });
+        if (disposableIds.length === 0) return { panelSessionId: id };
+
+        const disposable = new Set(disposableIds);
+        const sessions = { ...s.sessions };
+        disposableIds.forEach((disposableId) => delete sessions[disposableId]);
+        return {
+          panelSessionId: id,
+          sessions,
+          openChatIds: s.openChatIds.filter(
+            (openId) => !disposable.has(openId),
+          ),
+          splitChatId:
+            s.splitChatId && disposable.has(s.splitChatId)
+              ? null
+              : s.splitChatId,
+        };
+      }),
 
     openChat: (id) =>
       set((s) =>
