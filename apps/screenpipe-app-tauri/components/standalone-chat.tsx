@@ -71,6 +71,7 @@ import { ImageViewerDialog } from "@/components/chat/standalone/image-viewer-dia
 import { StandaloneChatHeader } from "@/components/chat/standalone/standalone-chat-header";
 import { ChatMainPane } from "@/components/chat/standalone/chat-main-pane";
 import { ChatComposer } from "@/components/chat/standalone/chat-composer";
+import { appendSelectedTextToComposer } from "@/components/chat/standalone/selected-text-actions";
 import { useChatScroll } from "@/components/chat/standalone/hooks/use-chat-scroll";
 import { useChatConnections } from "@/components/chat/standalone/hooks/use-chat-connections";
 import { useChatAttachments } from "@/components/chat/standalone/hooks/use-chat-attachments";
@@ -116,6 +117,7 @@ import {
 } from "@/lib/chat/agent-action-card";
 import {
   ensureBlankChatSession,
+  isEphemeralSideConversation,
   useChatStore,
 } from "@/lib/stores/chat-store";
 import { AGENT_TOPICS, type AgentEventEnvelope } from "@/lib/events/types";
@@ -697,7 +699,13 @@ export function StandaloneChat({
   const [conversationId, setConversationId] = useState<string | null>(
     initialSessionIdRef.current,
   );
+  const isTemporarySideConversation = useChatStore((state) =>
+    conversationId
+      ? isEphemeralSideConversation(state.sessions[conversationId])
+      : false,
+  );
   const splitChatId = useChatStore((state) => state.splitChatId);
+  const splitChatPosition = useChatStore((state) => state.splitChatPosition);
 
   // Single source of truth for the active chat id (#4719). The panel mints
   // `initialSessionIdRef` and seeds `conversationId` / `piSessionIdRef` from
@@ -1251,6 +1259,25 @@ export function StandaloneChat({
   // `handleStop` closes over stable refs, so no cleanup is needed.
   if (typeof window !== "undefined") {
     (window as any).__e2eStopChat = handleStop;
+    (window as any).__e2ePersistActiveConversation = () =>
+      saveConversation(messagesRef.current, {
+        idOverride: piSessionIdRef.current,
+        refreshHistory: false,
+        syncActiveConversation: true,
+        turnState: { isLoading: false, isStreaming: false },
+      });
+    (window as any).__e2eReadChatSession = (id: string) => {
+      const session = useChatStore.getState().sessions[id];
+      if (!session) return null;
+      return {
+        id: session.id,
+        ephemeral: session.ephemeral === true,
+        sideConversation: session.sideConversation === true,
+        sideConversationParentId: session.sideConversationParentId ?? null,
+        draft: session.draft === true,
+        messageCount: session.messageCount,
+      };
+    };
   }
 
   // Render assignment, matching openMentionConversationRef above: every handler
@@ -2015,9 +2042,31 @@ export function StandaloneChat({
     void commands.piAcpReauthenticate(currentQueueSessionId).catch(() => {});
   }, [currentQueueSessionId]);
 
+  const discardTemporarySideConversation = useCallback((id: string) => {
+    const store = useChatStore.getState();
+    if (!isEphemeralSideConversation(store.sessions[id])) return;
+    commands.piAbort(id).catch(() => {});
+    store.actions.drop(id);
+    store.actions.setSplitChat(null);
+  }, []);
+
   const activateChatTab = useCallback(
     async (id: string) => {
       const store = useChatStore.getState();
+      const temporarySideId = isEphemeralSideConversation(
+        store.sessions[conversationId ?? ""],
+      )
+        ? conversationId
+        : isEphemeralSideConversation(store.sessions[store.splitChatId ?? ""])
+          ? store.splitChatId
+          : null;
+      // Navigating to a third chat closes the temporary two-pane workspace.
+      // Promoting either pane within the pair preserves it.
+      const targetBelongsToPair =
+        id === conversationId || id === store.splitChatId;
+      if (temporarySideId && !targetBelongsToPair) {
+        discardTemporarySideConversation(temporarySideId);
+      }
       // Promoting the secondary pane swaps the former primary into its place,
       // keeping both transcripts visible while the single composer changes
       // ownership cleanly.
@@ -2030,8 +2079,106 @@ export function StandaloneChat({
         targetWindow: "home",
       });
     },
-    [conversationId],
+    [conversationId, discardTemporarySideConversation],
   );
+
+  const startDurableNewConversation = useCallback(async () => {
+    const store = useChatStore.getState();
+    const temporarySideId = isEphemeralSideConversation(
+      store.sessions[conversationId ?? ""],
+    )
+      ? conversationId
+      : isEphemeralSideConversation(store.sessions[store.splitChatId ?? ""])
+        ? store.splitChatId
+        : null;
+    if (temporarySideId) discardTemporarySideConversation(temporarySideId);
+    piStoppedIntentionallyRef.current = true;
+    await startNewConversation();
+  }, [
+    conversationId,
+    discardTemporarySideConversation,
+    piStoppedIntentionallyRef,
+    startNewConversation,
+  ]);
+
+  const pendingComposerFocusRef = useRef<{
+    value: string;
+    conversationId: string | null;
+  } | null>(null);
+  const [composerFocusRequest, setComposerFocusRequest] = useState(0);
+
+  useEffect(() => {
+    const request = pendingComposerFocusRef.current;
+    if (!request || request.conversationId !== conversationId) return;
+    const composer = inputRef.current;
+    if (!composer) return;
+    pendingComposerFocusRef.current = null;
+    composer.focus();
+    composer.setSelectionRange(request.value.length, request.value.length);
+  }, [composerFocusRequest, conversationId, inputRef]);
+
+  const focusComposerAtEnd = useCallback((
+    value: string,
+    targetConversationId: string | null = conversationId,
+  ) => {
+    pendingComposerFocusRef.current = {
+      value,
+      conversationId: targetConversationId,
+    };
+    setComposerFocusRequest((request) => request + 1);
+  }, [conversationId]);
+
+  const addSelectedTextToChat = useCallback((text: string) => {
+    const next = appendSelectedTextToComposer(inputValueRef.current, text);
+    setInput(next);
+    focusComposerAtEnd(next);
+  }, [focusComposerAtEnd, inputValueRef, setInput]);
+
+  const askSelectedTextInSideChat = useCallback(async (text: string) => {
+    const sourceConversationId = conversationId;
+    if (!sourceConversationId) {
+      addSelectedTextToChat(text);
+      return;
+    }
+
+    const existingSplitId = useChatStore.getState().splitChatId;
+    if (
+      existingSplitId &&
+      isEphemeralSideConversation(
+        useChatStore.getState().sessions[existingSplitId],
+      )
+    ) {
+      discardTemporarySideConversation(existingSplitId);
+    }
+
+    const sideChatId = crypto.randomUUID();
+    await startNewConversation(sideChatId, {
+      sideConversationParentId: sourceConversationId,
+    });
+
+    const next = appendSelectedTextToComposer("", text);
+    const store = useChatStore.getState();
+    store.actions.openChat(sourceConversationId);
+    store.actions.openChat(sideChatId);
+    // The active chat owns the sole live composer. Keep the source transcript
+    // on the left so that active composer is physically the side chat at right.
+    store.actions.setSplitChat(sourceConversationId, "left");
+    store.actions.setComposerDraft(sideChatId, {
+      input: next,
+      pastedImages: [],
+      attachedDocs: [],
+      pendingDocs: [],
+    });
+    setInput(next);
+    focusComposerAtEnd(next, sideChatId);
+  }, [
+    addSelectedTextToChat,
+    conversationId,
+    discardTemporarySideConversation,
+    focusComposerAtEnd,
+    setInput,
+    startNewConversation,
+  ]);
 
   return (
     <div ref={dropRootRef} className={cn("flex flex-col bg-background", className ?? "h-screen")} data-testid="section-home">
@@ -2042,10 +2189,8 @@ export function StandaloneChat({
             <ChatTabStrip
               activeId={conversationId}
               onActivate={activateChatTab}
-              onNewChat={async () => {
-                piStoppedIntentionallyRef.current = true;
-                await startNewConversation();
-              }}
+              onNewChat={startDurableNewConversation}
+              onClose={discardTemporarySideConversation}
             />
           ) : undefined
         }
@@ -2066,10 +2211,7 @@ export function StandaloneChat({
         renameConversation={renameConversation}
         archiveConversation={archiveConversation}
         startNewConversation={startNewConversation}
-        onNewChat={async () => {
-          piStoppedIntentionallyRef.current = true;
-          await startNewConversation();
-        }}
+        onNewChat={startDurableNewConversation}
         rightActions={
           <div className="relative z-20 flex items-center gap-1">
             <ChatInspectorPopover
@@ -2197,7 +2339,13 @@ export function StandaloneChat({
           onFillSuggestion: fillContextualHomeSuggestion,
           onRefresh: refreshVisibleSuggestions,
         }}
-        messageListProps={messageListProps}
+        messageListProps={{
+          ...messageListProps,
+          onAddSelectedTextToChat: addSelectedTextToChat,
+          onAskSelectedTextInSideChat: isTemporarySideConversation
+            ? undefined
+            : askSelectedTextInSideChat,
+        }}
       />
 
       <ChatComposer
@@ -2352,6 +2500,7 @@ export function StandaloneChat({
       {splitChatId && splitChatId !== conversationId ? (
         <ChatSplitPane
           sessionId={splitChatId}
+          side={splitChatPosition}
           onPromote={activateChatTab}
           onClose={() => useChatStore.getState().actions.setSplitChat(null)}
         />

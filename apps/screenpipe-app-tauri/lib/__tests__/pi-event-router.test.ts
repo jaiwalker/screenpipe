@@ -57,7 +57,12 @@ function piEvt(sessionId: string, event: AgentInnerEvent): AgentEventEnvelope {
 function reset() {
   vi.clearAllMocks();
   deleteCachedBrowserState("A");
-  useChatStore.setState({ sessions: {}, currentId: null, panelSessionId: null });
+  useChatStore.setState({
+    sessions: {},
+    ephemeralSideConversationIds: {},
+    currentId: null,
+    panelSessionId: null,
+  });
   // The ACP config store is a module singleton; without resetting it (and the
   // localStorage it persists to) its sessions/byAgent leak across the acp
   // describe blocks and make the suite order-dependent.
@@ -186,6 +191,27 @@ describe("pi-event-router: status mirroring for backgrounded sessions", () => {
     await vi.waitFor(() => {
       expect(routerCommandMocks.piStopIfIdle).toHaveBeenCalledWith("A");
     });
+  });
+
+  it("never persists a temporary side conversation from background or quit flushes", async () => {
+    seed("temporary-side", {
+      messages: [
+        { id: "u1", role: "user", content: "question", timestamp: 1 },
+        { id: "a1", role: "assistant", content: "answer", timestamp: 2 },
+      ],
+      messageCount: 2,
+      isLoading: true,
+      isStreaming: true,
+      ephemeral: true,
+      sideConversation: true,
+      sideConversationParentId: "source",
+    });
+    useChatStore.setState({ currentId: "source", panelSessionId: "source" });
+
+    await handlePiEvent(piEvt("temporary-side", { type: "agent_end" }));
+    await flushPendingSaves();
+
+    expect(saveConversationFile).not.toHaveBeenCalled();
   });
 
   it("stays streaming while agent_end is followed by an automatic retry", async () => {

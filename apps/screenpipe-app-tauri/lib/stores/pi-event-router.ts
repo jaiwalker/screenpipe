@@ -82,6 +82,7 @@ import type { Message } from "@/lib/chat/types";
 import { isPendingAgentActionMessage } from "@/lib/chat/message-rendering";
 import {
   getPersistedViewedAt,
+  isEphemeralSideConversationId,
   useChatStore,
   isSessionForeground,
   sessionRecordFromMeta,
@@ -954,10 +955,15 @@ const saveQueue = new Map<string, Promise<void>>();
  *  the window closes. Used by the close-on-quit hook in
  *  `mountPiEventRouter`. */
 export async function flushPendingSaves(): Promise<void> {
-  const sessions = useChatStore.getState().sessions;
+  const state = useChatStore.getState();
+  const sessions = state.sessions;
   const ids = Object.keys(sessions).filter((id) => {
     const s = sessions[id];
-    return !!s.messages && s.messages.length > 0;
+    return (
+      !isEphemeralSideConversationId(state, id) &&
+      !!s.messages &&
+      s.messages.length > 0
+    );
   });
   await Promise.all(ids.map((id) => persistBackgroundSession(id)));
   // Also await any queue tails that were already in-flight before this
@@ -991,7 +997,9 @@ async function persistBackgroundSession(
   const next = prev
     .catch(() => undefined)
     .then(async () => {
-      const session = useChatStore.getState().sessions[sid];
+      const state = useChatStore.getState();
+      if (isEphemeralSideConversationId(state, sid)) return;
+      const session = state.sessions[sid];
       if (!session) return;
       // Pipe transcripts are persisted by their dedicated writers. This guard
       // also protects close/termination flushes from overwriting a recorder

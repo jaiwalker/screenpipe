@@ -21,6 +21,7 @@ import {
   selectDisplayedChatId,
   applyChatSessionActivity,
   ensureBlankChatSession,
+  isEphemeralSideConversationId,
   type SessionRecord,
   type ChatSessionActivityPayload,
 } from "../stores/chat-store";
@@ -29,6 +30,7 @@ import { conversationDedupIdentity } from "../chat-dedup";
 function reset() {
   useChatStore.setState({
     sessions: {},
+    ephemeralSideConversationIds: {},
     openChatIds: [],
     splitChatId: null,
     currentId: null,
@@ -63,6 +65,60 @@ describe("chat-store: tab and split working set", () => {
     actions.drop("B");
     expect(useChatStore.getState().splitChatId).toBeNull();
     expect(useChatStore.getState().openChatIds).toEqual(["A"]);
+  });
+});
+
+describe("chat-store: temporary side conversations", () => {
+  beforeEach(reset);
+
+  it("never surfaces or reuses a side conversation, even after it has messages", () => {
+    const actions = useChatStore.getState().actions;
+    actions.upsert(baseRecord({
+      id: "source",
+      title: "source chat",
+      messageCount: 1,
+      messages: [{ id: "u1", role: "user", content: "source", timestamp: 1 }],
+      lastViewedAt: 10,
+    }));
+    actions.upsert(baseRecord({
+      id: "temporary-side",
+      title: "temporary side chat",
+      messageCount: 2,
+      messages: [
+        { id: "u2", role: "user", content: "question", timestamp: 2 },
+        { id: "a2", role: "assistant", content: "answer", timestamp: 3 },
+      ],
+      draft: false,
+      lastViewedAt: 20,
+      ephemeral: true,
+      sideConversation: true,
+      sideConversationParentId: "source",
+    }));
+
+    expect(selectOrderedSessions(useChatStore.getState()).map((s) => s.id)).toEqual([
+      "source",
+    ]);
+    expect(
+      selectRecentSwitcherSessions(useChatStore.getState()).map((s) => s.id),
+    ).toEqual(["source"]);
+    expect(
+      isReusableBlankChatSession(useChatStore.getState().sessions["temporary-side"]),
+    ).toBe(false);
+  });
+
+  it("keeps an id tombstone after close so late saves cannot resurrect it", () => {
+    const actions = useChatStore.getState().actions;
+    actions.upsert(baseRecord({
+      id: "temporary-side",
+      ephemeral: true,
+      sideConversation: true,
+      sideConversationParentId: "source",
+    }));
+    actions.drop("temporary-side");
+
+    const state = useChatStore.getState();
+    expect(state.sessions["temporary-side"]).toBeUndefined();
+    expect(isEphemeralSideConversationId(state, "temporary-side")).toBe(true);
   });
 });
 
