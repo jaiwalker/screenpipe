@@ -18,9 +18,6 @@
 //     hidden, one click to bring it back. The control sits next to the thing it
 //     affects instead of inside an unrelated row's menu.
 //
-// When the rollout gate is off this renders plain, non-draggable rows with no
-// menu and no disclosure, so customization behavior remains unchanged.
-
 import React from "react";
 import {
   DndContext,
@@ -78,8 +75,6 @@ export type SidebarNavListProps = {
   hiddenItems: Array<{ id: SidebarNavId; label: string }>;
   activeId: string;
   isTranslucent: boolean;
-  /** Rollout gate — false renders plain rows with no menu and no strip. */
-  customizable: boolean;
   canReset: boolean;
   onSelect: (id: SidebarNavId) => void;
   onIntent?: (id: SidebarNavId) => void;
@@ -352,7 +347,6 @@ export function SidebarNavList({
   hiddenItems,
   activeId,
   isTranslucent,
-  customizable,
   canReset,
   onSelect,
   onIntent,
@@ -367,52 +361,6 @@ export function SidebarNavList({
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-
-  if (!customizable) {
-    return (
-      <div className="space-y-0.5 shrink-0">
-        {items.map((item) => (
-          <button
-            key={item.id}
-            data-testid={`nav-${item.id}`}
-            data-announcement-anchor={`sidebar-${item.id}`}
-            onClick={() => onSelect(item.id)}
-            onMouseEnter={() => onIntent?.(item.id)}
-            onFocus={() => onIntent?.(item.id)}
-            aria-current={activeId === item.id ? "page" : undefined}
-            className={rowClassName(activeId === item.id, isTranslucent)}
-          >
-            <div
-              className={cn(
-                "transition-colors flex-shrink-0",
-                activeId === item.id
-                  ? isTranslucent
-                    ? "vibrant-sidebar-fg"
-                    : "text-signal"
-                  : isTranslucent
-                    ? "vibrant-sidebar-fg-muted"
-                    : "text-muted-foreground group-hover/navrow:text-foreground",
-              )}
-            >
-              {item.icon}
-            </div>
-            <span
-              className={cn(
-                "text-xs truncate",
-                item.trailing && "flex-1",
-                activeId === item.id && isTranslucent
-                  ? "font-semibold vibrant-sidebar-fg"
-                  : "font-medium",
-              )}
-            >
-              {item.label}
-            </span>
-            {item.trailing}
-          </button>
-        ))}
-      </div>
-    );
-  }
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;

@@ -1095,7 +1095,6 @@ function HomeContent() {
   const meetingsInToolbar =
     !meetingsInSidebar && availableSidebarIds.includes("meetings");
 
-  const sidebarCustomizable = Boolean(settings.enableSidebarCustomization);
   const persistSidebarLayout = (next: ReturnType<typeof normalizeSidebarNavLayout>) => {
     void updateSettings({ sidebarNavLayout: next });
   };
@@ -1395,8 +1394,8 @@ function HomeContent() {
                 conversation lists. */}
             <div className="pt-2 pr-2 pb-2 flex-1 flex flex-col min-h-0">
               {/* Main sections. Order and visibility are the user's — drag a
-                  row or right-click it (behind the sidebar-customization
-                  rollout gate); enterprise policy still decides eligibility. */}
+                  row or right-click it; enterprise policy still decides
+                  eligibility. */}
               <SidebarNavList
                 items={mainSections}
                 hiddenItems={hiddenSidebarIds.map((id) => ({
@@ -1405,7 +1404,6 @@ function HomeContent() {
                 }))}
                 activeId={activeSection}
                 isTranslucent={isTranslucent}
-                customizable={sidebarCustomizable}
                 canReset={!isSidebarNavLayoutDefault(sidebarLayout)}
                 onSelect={(id) => {
                   setActiveSection(id);

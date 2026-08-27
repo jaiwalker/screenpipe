@@ -27,7 +27,6 @@ function renderList(overrides: Partial<React.ComponentProps<typeof SidebarNavLis
       hiddenItems={[{ id: "meetings" as SidebarNavId, label: "Meetings" }]}
       activeId="home"
       isTranslucent={false}
-      customizable
       canReset={false}
       {...handlers}
       {...overrides}
@@ -162,24 +161,6 @@ describe("SidebarNavList", () => {
     rightClick("nav-home");
     fireEvent.click(screen.getByTestId("sidebar-reset"));
     expect(handlers.onReset).toHaveBeenCalled();
-  });
-
-  // The rollout gate must leave the pre-customization sidebar untouched: same
-  // rows, same testids, no menu, no drag handles.
-  it("renders plain rows with no menu when the gate is off", () => {
-    renderList({ customizable: false });
-    expect(screen.getByTestId("nav-home")).toBeInTheDocument();
-    rightClick("nav-home");
-    expect(screen.queryByText("Move up")).toBeNull();
-    expect(screen.queryByText("Hide from sidebar")).toBeNull();
-    expect(screen.queryByTestId("nav-home-options")).toBeNull();
-    expect(screen.queryByTestId("sidebar-hidden-strip")).toBeNull();
-  });
-
-  it("still selects sections when the gate is off", () => {
-    const handlers = renderList({ customizable: false });
-    fireEvent.click(screen.getByTestId("nav-pipes"));
-    expect(handlers.onSelect).toHaveBeenCalledWith("pipes");
   });
 
   it("renders trailing adornments such as the meeting recording dot", () => {
