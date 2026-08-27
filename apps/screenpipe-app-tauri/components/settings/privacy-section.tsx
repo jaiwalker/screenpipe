@@ -1621,6 +1621,7 @@ export function PrivacySection() {
                 className="mt-0.5"
                 checked={redactAgentSessionSecrets}
                 onChange={(e) => handleAgentLogRedactionToggle(e.target.checked)}
+                data-testid="privacy-agent-log-redaction-checkbox"
               />
               <span>
                 <span className="font-medium text-foreground">
