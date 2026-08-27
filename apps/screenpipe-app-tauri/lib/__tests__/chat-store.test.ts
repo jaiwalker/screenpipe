@@ -26,6 +26,11 @@ import {
   type ChatSessionActivityPayload,
 } from "../stores/chat-store";
 import { conversationDedupIdentity } from "../chat-dedup";
+import {
+  createEphemeralSideConversationId,
+  filterEphemeralSideConversationPresets,
+  isEphemeralSideConversationNamespaceId,
+} from "../chat/ephemeral-side-conversation";
 
 function reset() {
   useChatStore.setState({
@@ -70,6 +75,29 @@ describe("chat-store: tab and split working set", () => {
 
 describe("chat-store: temporary side conversations", () => {
   beforeEach(reset);
+
+  it("creates a reserved id that remains recognizable without store state", () => {
+    const id = createEphemeralSideConversationId();
+
+    expect(isEphemeralSideConversationNamespaceId(id)).toBe(true);
+    expect(
+      isEphemeralSideConversationId(
+        { sessions: {}, ephemeralSideConversationIds: {} },
+        id,
+      ),
+    ).toBe(true);
+    expect(isEphemeralSideConversationNamespaceId("temporary-side-chat-not-a-uuid"))
+      .toBe(false);
+  });
+
+  it("removes ACP presets because their history cannot be guaranteed ephemeral", () => {
+    const nativePreset = { id: "native", provider: "screenpipe-cloud" };
+    const acpPreset = { id: "agent", provider: "acp" };
+
+    expect(
+      filterEphemeralSideConversationPresets([nativePreset, acpPreset]),
+    ).toEqual([nativePreset]);
+  });
 
   it("never surfaces or reuses a side conversation, even after it has messages", () => {
     const actions = useChatStore.getState().actions;
@@ -119,6 +147,16 @@ describe("chat-store: temporary side conversations", () => {
     const state = useChatStore.getState();
     expect(state.sessions["temporary-side"]).toBeUndefined();
     expect(isEphemeralSideConversationId(state, "temporary-side")).toBe(true);
+  });
+
+  it("rejects a leaked namespaced disk record after in-memory state resets", () => {
+    const id = "temporary-side-chat-11111111-1111-4111-8111-111111111111";
+
+    useChatStore.getState().actions.hydrateFromDisk([
+      baseRecord({ id, messageCount: 1, draft: false }),
+    ]);
+
+    expect(useChatStore.getState().sessions[id]).toBeUndefined();
   });
 });
 

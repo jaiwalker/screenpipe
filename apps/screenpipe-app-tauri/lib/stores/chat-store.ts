@@ -24,6 +24,7 @@ import { create } from "zustand";
 import type { ConversationKind, PipeContext } from "@/lib/hooks/use-settings";
 import type { ConversationMeta } from "@/lib/chat-storage";
 import type { ChatTitleSource } from "@/lib/utils/chat-title";
+import { isEphemeralSideConversationNamespaceId } from "@/lib/chat/ephemeral-side-conversation";
 import {
   CONVERSATION_DEDUP_WINDOW_MS,
   conversationDedupIdentity,
@@ -362,6 +363,7 @@ export function isEphemeralSideConversationId(
   id: string,
 ): boolean {
   return (
+    isEphemeralSideConversationNamespaceId(id) ||
     state.ephemeralSideConversationIds[id] === true ||
     isEphemeralSideConversation(state.sessions[id])
   );
@@ -498,9 +500,10 @@ export const useChatStore = create<ChatStore>((set) => ({
         // persisted truth.
         const next: Record<string, SessionRecord> = { ...s.sessions };
         for (const r of records) {
-          // A stale save racing a just-closed side chat must not resurrect it
-          // through a disk refresh in the same app session.
-          if (s.ephemeralSideConversationIds[r.id]) continue;
+          // A stale save racing a just-closed side chat must not resurrect it.
+          // The reserved id also rejects leaked files after a renderer or app
+          // restart, when the in-memory tombstone is intentionally gone.
+          if (isEphemeralSideConversationId(s, r.id)) continue;
           const existing = next[r.id];
           if (!existing) {
             next[r.id] = r;

@@ -120,6 +120,10 @@ import {
   isEphemeralSideConversation,
   useChatStore,
 } from "@/lib/stores/chat-store";
+import {
+  createEphemeralSideConversationId,
+  filterEphemeralSideConversationPresets,
+} from "@/lib/chat/ephemeral-side-conversation";
 import { AGENT_TOPICS, type AgentEventEnvelope } from "@/lib/events/types";
 import { listenTyped, TAURI_EVENTS } from "@/lib/events/tauri-events";
 import { localFetch } from "@/lib/api";
@@ -185,10 +189,6 @@ export function StandaloneChat({
   const availableAiPresets = React.useMemo(
     () => filterAcpPresets(settings.aiPresets, acpEnabled),
     [settings.aiPresets, acpEnabled],
-  );
-  const rolloutSettings = React.useMemo(
-    () => ({ ...settings, aiPresets: availableAiPresets }) as typeof settings,
-    [settings, availableAiPresets],
   );
   // Preset the first-run summary is written with. Sourced from the
   // rollout-filtered list so it inherits the ACP gate, and passed down as a
@@ -704,6 +704,20 @@ export function StandaloneChat({
       ? isEphemeralSideConversation(state.sessions[conversationId])
       : false,
   );
+  // ACP does not define an interoperable "do not retain this session" flag.
+  // Temporary chats therefore use native Pi presets only; Rust enforces the
+  // same boundary in case a stale renderer races this filtered preset list.
+  const chatAiPresets = React.useMemo(
+    () =>
+      isTemporarySideConversation
+        ? filterEphemeralSideConversationPresets(availableAiPresets)
+        : availableAiPresets,
+    [availableAiPresets, isTemporarySideConversation],
+  );
+  const rolloutSettings = React.useMemo(
+    () => ({ ...settings, aiPresets: chatAiPresets }) as typeof settings,
+    [settings, chatAiPresets],
+  );
   const splitChatId = useChatStore((state) => state.splitChatId);
   const splitChatPosition = useChatStore((state) => state.splitChatPosition);
 
@@ -1039,7 +1053,7 @@ export function StandaloneChat({
   } = usePiSessionLifecycle({
     activePreset,
     setActivePreset: handleSetActivePreset,
-    aiPresets: settings.aiPresets,
+    aiPresets: chatAiPresets,
     isSettingsLoaded,
     shouldFreezePresetSelection: Boolean(activePipeExecution),
     userToken: settings.user?.token,
@@ -1064,7 +1078,7 @@ export function StandaloneChat({
   // first send. Must sit after usePiSessionLifecycle — it needs that hook's
   // buildProviderConfig.
   useAcpWarmup({
-    enabled: acpEnabled && isSettingsLoaded,
+    enabled: acpEnabled && isSettingsLoaded && !isTemporarySideConversation,
     activePreset,
     piInfo,
     piStartInFlightRef,
@@ -2135,6 +2149,13 @@ export function StandaloneChat({
   }, [focusComposerAtEnd, inputValueRef, setInput]);
 
   const askSelectedTextInSideChat = useCallback(async (text: string) => {
+    if (activePresetRef.current?.provider === "acp") {
+      toast({
+        title: "temporary side chat is not available with coding agents",
+        description: "coding-agent sessions cannot guarantee ephemeral history",
+      });
+      return;
+    }
     const sourceConversationId = conversationId;
     if (!sourceConversationId) {
       addSelectedTextToChat(text);
@@ -2151,7 +2172,7 @@ export function StandaloneChat({
       discardTemporarySideConversation(existingSplitId);
     }
 
-    const sideChatId = crypto.randomUUID();
+    const sideChatId = createEphemeralSideConversationId();
     await startNewConversation(sideChatId, {
       sideConversationParentId: sourceConversationId,
     });
@@ -2342,7 +2363,8 @@ export function StandaloneChat({
         messageListProps={{
           ...messageListProps,
           onAddSelectedTextToChat: addSelectedTextToChat,
-          onAskSelectedTextInSideChat: isTemporarySideConversation
+          onAskSelectedTextInSideChat:
+            isTemporarySideConversation || !activePreset || activePreset.provider === "acp"
             ? undefined
             : askSelectedTextInSideChat,
         }}

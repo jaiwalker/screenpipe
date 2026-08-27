@@ -1250,7 +1250,7 @@ export function useChatConversations(opts: UseChatConversationsOpts) {
     // steal foreground ownership after the user has already closed it.
     if (
       !store.sessions[conv.id] &&
-      store.ephemeralSideConversationIds[conv.id] === true
+      isEphemeralSideConversationId(store, conv.id)
     ) {
       return;
     }

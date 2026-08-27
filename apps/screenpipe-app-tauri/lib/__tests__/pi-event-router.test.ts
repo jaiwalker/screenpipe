@@ -176,6 +176,31 @@ describe("pi-event-router: envelope destructuring (the actual day-1 bug)", () =>
 describe("pi-event-router: status mirroring for backgrounded sessions", () => {
   beforeEach(reset);
 
+  it("does not resurrect a closed temporary side chat from a late event", async () => {
+    seed("temporary-side", {
+      ephemeral: true,
+      sideConversation: true,
+      sideConversationParentId: "source",
+    });
+    useChatStore.getState().actions.drop("temporary-side");
+
+    await handlePiEvent(piEvt("temporary-side", { type: "agent_start" }));
+
+    expect(useChatStore.getState().sessions["temporary-side"]).toBeUndefined();
+  });
+
+  it("rejects temporary side-chat events after renderer state is lost", async () => {
+    const id = "temporary-side-chat-11111111-1111-4111-8111-111111111111";
+
+    await handlePiEvent(piEvt(id, { type: "agent_start" }));
+    await handlePiEvent(piEvt(id, {
+      type: "message_update",
+      assistantMessageEvent: { type: "text_delta", delta: "late token" },
+    }));
+
+    expect(useChatStore.getState().sessions[id]).toBeUndefined();
+  });
+
   it("flips status to streaming on agent_start", async () => {
     seed("A");
     useChatStore.setState({ currentId: "B" });

@@ -150,9 +150,9 @@ async function selectAssistantText(text: string): Promise<void> {
   }
 }
 
-async function emitChatDeleted(id: string): Promise<void> {
+async function emitTauri(event: string, payload: unknown): Promise<void> {
   await browser.executeAsync(
-    (conversationId: string, done: () => void) => {
+    (eventName: string, eventPayload: unknown, done: () => void) => {
       const runtime = globalThis as unknown as {
         __TAURI__?: {
           event?: {
@@ -163,17 +163,21 @@ async function emitChatDeleted(id: string): Promise<void> {
           invoke: (command: string, args: object) => Promise<unknown>;
         };
       };
-      const payload = { id: conversationId };
       const promise = runtime.__TAURI__?.event?.emit
-        ? runtime.__TAURI__.event.emit("chat-deleted", payload)
+        ? runtime.__TAURI__.event.emit(eventName, eventPayload)
         : runtime.__TAURI_INTERNALS__?.invoke("plugin:event|emit", {
-            event: "chat-deleted",
-            payload,
+            event: eventName,
+            payload: eventPayload,
           });
       void Promise.resolve(promise).then(() => done()).catch(() => done());
     },
-    id,
+    event,
+    payload,
   );
+}
+
+async function emitChatDeleted(id: string): Promise<void> {
+  await emitTauri("chat-deleted", { id });
 }
 
 describe("Selected response side chat", function () {
@@ -442,6 +446,7 @@ describe("Selected response side chat", function () {
       },
     );
     const reloadSideChatId = sideChatId!;
+    expect(reloadSideChatId).toMatch(/^temporary-side-chat-/);
 
     await browser.execute(
       (sessionId: string, question: string, answer: string) => {
@@ -484,6 +489,34 @@ describe("Selected response side chat", function () {
     expect(
       existsSync(join(E2E_DATA_DIR, "chats", `${reloadSideChatId}.json`)),
     ).toBe(false);
+
+    // A buffered backend token may arrive after the renderer has forgotten the
+    // temporary record. The reserved id must stop the global event router from
+    // lazy-creating a durable row in this fresh renderer.
+    await emitTauri("agent_event", {
+      source: "pi",
+      sessionId: reloadSideChatId,
+      event: { type: "agent_start" },
+    });
+    await emitTauri("agent_event", {
+      source: "pi",
+      sessionId: reloadSideChatId,
+      event: {
+        type: "message_update",
+        assistantMessageEvent: {
+          type: "text_delta",
+          delta: "late temporary token",
+        },
+      },
+    });
+    await browser.pause(250);
+    const stateAfterLateEvents = await browser.execute((id: string) => {
+      return (window as any).__e2eReadChatSession?.(id) ?? null;
+    }, reloadSideChatId);
+    expect(stateAfterLateEvents).toBeNull();
+    expect(await $(`[data-testid="chat-row-${reloadSideChatId}"]`).isExisting()).toBe(
+      false,
+    );
 
     const sourceRowButton = await $(
       `[data-testid="chat-row-${SOURCE_CHAT}"] button`,

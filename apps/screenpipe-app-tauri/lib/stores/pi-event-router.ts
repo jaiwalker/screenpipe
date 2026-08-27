@@ -198,6 +198,18 @@ export async function handlePiEvent(envelope: AgentEventEnvelope) {
   if (!sid || !inner) return; // events without a session id or body can't be routed
   // Internal Pi sessions (title generation, etc.) — never routed to chat store
   if (isInternalAgentSession(sid)) return;
+  // A closed side chat can still have buffered backend events in flight. The
+  // tombstone blocks those in the creating renderer, while the reserved id
+  // namespace blocks them after reload and in other renderers that never held
+  // the temporary record. Without this guard, the lazy-create path below would
+  // resurrect the chat as a durable "untitled" history row.
+  const initialChatState = useChatStore.getState();
+  if (
+    !initialChatState.sessions[sid] &&
+    isEphemeralSideConversationId(initialChatState, sid)
+  ) {
+    return;
+  }
   // ACP adapters advertise their model/mode selectors per session. Pure
   // runtime metadata: capture it for the composer picker and stop — it must
   // not lazy-create a chat row or touch message content.
