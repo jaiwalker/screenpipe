@@ -402,6 +402,7 @@ describe("unified recents sidebar", function () {
         (await completedCodexTool.getAttribute("data-activity-state")) === "completed",
       { timeout: t(15_000), timeoutMsg: "expected Codex tool activity to finish live" },
     );
+    await saveScreenshot("chat-external-codex-live-completed");
 
     const claudePath = writeLiveClaudeUserMessage();
     const claudeRow = await $(`[data-testid="chat-row-${LIVE_CLAUDE_ID}"]`);
@@ -447,6 +448,7 @@ describe("unified recents sidebar", function () {
           .getAttribute("data-activity-state")) === "completed",
       { timeout: t(15_000), timeoutMsg: "expected Claude tool activity to finish live" },
     );
+    await saveScreenshot("chat-external-claude-live-completed");
 
     // Restore the sparse fixture before the visual/provenance scenario. The
     // reload happens only after both live-update assertions have passed.
