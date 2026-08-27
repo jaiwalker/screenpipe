@@ -1279,6 +1279,7 @@
       "crate": "screenpipe-a11y",
       "files": [
         "src/incognito/macos.rs",
+        "src/platform/macos_click_attribution_e2e.rs",
         "src/platform/macos.rs",
         "src/tree/macos.rs",
         "src/tree/macos_lines.rs",
