@@ -14,9 +14,9 @@
 //     — mirroring RowMenuItems in chat-sidebar.tsx).
 //   * Hiding a row used to make it vanish with no trace, and the only way back
 //     was right-clicking a *different* row to find "Show X". Hidden rows now
-//     have a home: a quiet disclosure under the nav listing exactly what is
-//     hidden, one click to bring it back. The control sits next to the thing it
-//     affects instead of inside an unrelated row's menu.
+//     have a home: an explicit recovery panel under the nav listing exactly
+//     what is hidden, with a named Restore action. The control sits next to the
+//     thing it affects instead of inside an unrelated row's menu.
 //
 import React from "react";
 import {
@@ -38,10 +38,10 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   ArrowDown,
   ArrowUp,
+  Eye,
   EyeOff,
   GripVertical,
   MoreHorizontal,
-  Plus,
   RotateCcw,
 } from "lucide-react";
 import {
@@ -316,9 +316,17 @@ function HiddenStrip({
 }) {
   if (hiddenItems.length === 0) return null;
   return (
-    <div className="mt-1 space-y-0.5" data-testid="sidebar-hidden-strip">
-      <p className="px-2.5 pt-1 text-[10px] uppercase tracking-wide text-muted-foreground/60">
-        Hidden
+    <div
+      className={cn(
+        "mt-2 rounded-md border p-1.5",
+        isTranslucent
+          ? "border-white/10 bg-white/5"
+          : "border-border/70 bg-muted/30",
+      )}
+      data-testid="sidebar-hidden-strip"
+    >
+      <p className="px-1 pb-1 text-[10px] font-medium text-muted-foreground">
+        Hidden sections
       </p>
       {hiddenItems.map((hidden) => (
         <button
@@ -326,16 +334,19 @@ function HiddenStrip({
           type="button"
           data-testid={`sidebar-show-${hidden.id}`}
           onClick={() => onShow(hidden.id)}
-          title={`Show ${hidden.label} in the sidebar`}
+          aria-label={`Restore ${hidden.label} to sidebar`}
           className={cn(
-            "flex w-full items-center gap-2.5 rounded-md px-2.5 py-1 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-signal motion-reduce:transition-none",
+            "group/restore flex w-full items-center gap-2 rounded-sm px-1.5 py-1.5 text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-signal motion-reduce:transition-none",
             isTranslucent
               ? "vibrant-nav-item vibrant-nav-hover"
-              : "text-muted-foreground/70 hover:bg-card/50 hover:text-foreground",
+              : "bg-background/60 text-foreground hover:bg-card",
           )}
         >
-          <Plus className="h-3.5 w-3.5 shrink-0" />
-          <span className="text-xs truncate">{hidden.label}</span>
+          <Eye className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate text-xs font-medium">{hidden.label}</span>
+          <span className="ml-auto text-[10px] text-muted-foreground group-hover/restore:text-foreground">
+            Restore
+          </span>
         </button>
       ))}
     </div>

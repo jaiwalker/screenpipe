@@ -125,7 +125,12 @@ describe("SidebarNavList", () => {
   it("gives hidden rows a visible home that restores them in one click", () => {
     const handlers = renderList();
     expect(screen.getByTestId("sidebar-hidden-strip")).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId("sidebar-show-meetings"));
+    expect(screen.getByText("Hidden sections")).toBeVisible();
+    const restoreButton = screen.getByRole("button", {
+      name: "Restore Meetings to sidebar",
+    });
+    expect(restoreButton).toHaveTextContent("Restore");
+    fireEvent.click(restoreButton);
     expect(handlers.onSetHidden).toHaveBeenCalledWith("meetings", false);
   });
 
