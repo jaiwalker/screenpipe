@@ -234,5 +234,6 @@ describe("Chat workspace tabs and split", function () {
         timeoutMsg: "new chat button did not create one interactive tab",
       },
     );
+    await saveScreenshot("chat-workspace-tabs-recovery");
   });
 });

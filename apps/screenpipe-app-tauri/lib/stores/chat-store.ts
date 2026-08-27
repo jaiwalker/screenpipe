@@ -63,6 +63,12 @@ export interface SessionDraft {
   pendingDocs: StoredPendingDoc[];
 }
 
+export interface SessionCodingWorkspace {
+  repoName: string;
+  branch: string;
+  worktreePath: string;
+}
+
 export interface SessionRecord {
   /** Pi `session_id` — also the uuid used by `commands.piStart`. */
   id: string;
@@ -131,6 +137,10 @@ export interface SessionRecord {
    *  the model selection when switching between chats. Persisted to disk
    *  so the selection survives app restart. */
   presetId?: string;
+  /** Compact, in-memory identity for a conversation-owned worktree. The
+   *  backend remains authoritative; this lets inactive tabs keep showing
+   *  which chats are isolated after the user switches away. */
+  codingWorkspace?: SessionCodingWorkspace;
 
   // ── Live session content (Phase 3) ─────────────────────────────────
   // The chat panel reads these instead of holding its own per-render
