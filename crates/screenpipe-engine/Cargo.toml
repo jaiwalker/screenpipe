@@ -61,7 +61,7 @@ sentry = { workspace = true }
 axum = { workspace = true }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service"] }
-tower = { version = "0.4", default-features = false }
+tower = { version = "0.5", default-features = false }
 tokio = { workspace = true }
 tower-http = { version = "0.5.2", features = ["cors", "trace"] }
 
@@ -149,7 +149,7 @@ env_logger = { workspace = true }
 serial_test = "3.2.0"
 tempfile = { workspace = true }
 tokio-tungstenite = { workspace = true }
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 tiktoken-rs = "0.11.0"
 wiremock = { workspace = true }
 
