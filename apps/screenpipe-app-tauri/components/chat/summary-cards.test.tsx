@@ -56,17 +56,11 @@ describe("SummaryCards", () => {
       onDeleteCustomTemplate: vi.fn(),
     };
     const { rerender } = render(
-      <SummaryCards
-        {...props}
-        userGoalCategory="work_memory"
-      />,
+      <SummaryCards {...props} userGoalCategory="work_memory" />,
     );
 
     rerender(
-      <SummaryCards
-        {...props}
-        userGoalCategory="meeting_follow_through"
-      />,
+      <SummaryCards {...props} userGoalCategory="meeting_follow_through" />,
     );
 
     const cards = screen.getAllByTestId(/^summary-card-/);
@@ -76,6 +70,138 @@ describe("SummaryCards", () => {
       "summary-card-automate-my-work",
       "summary-card-time-breakdown",
     ]);
+  });
+
+  it("keeps every built-in action directly available", () => {
+    render(
+      <SummaryCards
+        onSendMessage={vi.fn()}
+        customTemplates={[]}
+        onSaveCustomTemplate={vi.fn()}
+        onUpdateCustomTemplate={vi.fn()}
+        onDeleteCustomTemplate={vi.fn()}
+        userGoalCategory="work_memory"
+      />,
+    );
+
+    expect(screen.getAllByTestId(/^summary-card-/)).toHaveLength(4);
+    expect(screen.getByText("Meeting Prep")).toBeInTheDocument();
+    expect(screen.queryByTestId("summary-cards-more")).not.toBeInTheDocument();
+  });
+
+  it("makes available home actions visibly interactive and keyboard focusable", () => {
+    render(
+      <SummaryCards
+        onSendMessage={vi.fn()}
+        customTemplates={[]}
+        onSaveCustomTemplate={vi.fn()}
+        onUpdateCustomTemplate={vi.fn()}
+        onDeleteCustomTemplate={vi.fn()}
+        userGoalCategory="work_memory"
+      />,
+    );
+
+    for (const slug of ["day-recap", "missed-todos"]) {
+      const card = screen.getByTestId(`summary-card-${slug}`);
+      expect(card).toHaveClass("bg-card", "cursor-pointer");
+      expect(card.className).toContain("border-foreground/");
+      expect(card.className).toContain("focus-visible:ring-1");
+      expect(card.className).toContain("motion-reduce:transition-none");
+      expect(screen.getByTestId(`home-card-arrow-${slug}`)).toBeInTheDocument();
+    }
+
+    const quickAction = screen.getByRole("button", { name: "Time Breakdown" });
+    expect(quickAction).toHaveClass("bg-card", "text-foreground/75");
+    expect(quickAction.className).toContain("focus-visible:ring-1");
+  });
+
+  it("previews a card prompt on hover and keyboard focus without sending", () => {
+    const onPreviewPrompt = vi.fn();
+    const onSendMessage = vi.fn();
+    render(
+      <SummaryCards
+        onSendMessage={onSendMessage}
+        onPreviewPrompt={onPreviewPrompt}
+        customTemplates={[]}
+        onSaveCustomTemplate={vi.fn()}
+        onUpdateCustomTemplate={vi.fn()}
+        onDeleteCustomTemplate={vi.fn()}
+        userGoalCategory="work_memory"
+      />,
+    );
+
+    const card = screen.getByTestId("summary-card-day-recap");
+    fireEvent.mouseEnter(card);
+    expect(onPreviewPrompt).toHaveBeenLastCalledWith(
+      "Summarize what I worked on today",
+    );
+    expect(onSendMessage).not.toHaveBeenCalled();
+
+    fireEvent.mouseLeave(card);
+    expect(onPreviewPrompt).toHaveBeenLastCalledWith(null);
+
+    fireEvent.focus(card);
+    expect(onPreviewPrompt).toHaveBeenLastCalledWith(
+      "Summarize what I worked on today",
+    );
+    fireEvent.blur(card);
+    expect(onPreviewPrompt).toHaveBeenLastCalledWith(null);
+  });
+
+  it("keeps the user's saved templates alongside the built-in actions", () => {
+    render(
+      <SummaryCards
+        onSendMessage={vi.fn()}
+        customTemplates={[
+          {
+            id: "tpl-1",
+            title: "Client recap",
+            prompt: "recap my client work",
+            timeRange: "today",
+          } as never,
+        ]}
+        onSaveCustomTemplate={vi.fn()}
+        onUpdateCustomTemplate={vi.fn()}
+        onDeleteCustomTemplate={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Client recap")).toBeInTheDocument();
+    expect(screen.getByText("+ custom")).toBeInTheDocument();
+  });
+
+  it("dispatches every built-in home card once with its visible label", () => {
+    const onSendMessage = vi.fn();
+    render(
+      <SummaryCards
+        onSendMessage={onSendMessage}
+        customTemplates={[]}
+        onSaveCustomTemplate={vi.fn()}
+        onUpdateCustomTemplate={vi.fn()}
+        onDeleteCustomTemplate={vi.fn()}
+      />,
+    );
+
+    const cards = [
+      ["automate-my-work", "⚡ Automate My Work"],
+      ["day-recap", "📋 Day Recap"],
+      ["time-breakdown", "⏱ Time Breakdown"],
+      ["missed-todos", "✅ Missed To-Dos"],
+    ] as const;
+    for (const [slug] of cards) {
+      fireEvent.click(screen.getByTestId(`summary-card-${slug}`));
+    }
+
+    expect(onSendMessage).toHaveBeenCalledTimes(cards.length);
+    for (const [index, [, displayLabel]] of cards.entries()) {
+      expect(onSendMessage).toHaveBeenNthCalledWith(
+        index + 1,
+        expect.any(String),
+        displayLabel,
+        "home_card",
+        expect.any(String),
+      );
+    }
   });
 
   it("gives Automate My Work the installed pipe inventory instead of the static fallback prompt", () => {
@@ -134,8 +260,11 @@ describe("SummaryCards", () => {
       position: 1,
       presentation: "hero",
     });
-    expect(screen.getByRole("button", { name: /automate my work/i }).closest(".ph-no-capture"))
-      .not.toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: /automate my work/i })
+        .closest(".ph-no-capture"),
+    ).not.toBeNull();
   });
 
   describe("saved template edit-before-run (#5239)", () => {
@@ -203,7 +332,8 @@ describe("SummaryCards", () => {
 
       const customRunEvent = captureMock.mock.calls.find(
         ([event, properties]) =>
-          event === "home_card_clicked" && properties.kind === "custom_template_run",
+          event === "home_card_clicked" &&
+          properties.kind === "custom_template_run",
       );
       expect(customRunEvent).toEqual([
         "home_card_clicked",
@@ -228,7 +358,9 @@ describe("SummaryCards", () => {
           id: "custom-123",
           title: "Daily Recap",
           instructions: "Summarize my day focusing on reviews",
-          prompt: expect.stringContaining("Summarize my day focusing on reviews"),
+          prompt: expect.stringContaining(
+            "Summarize my day focusing on reviews",
+          ),
         }),
       );
       expect(onSendMessage).not.toHaveBeenCalled();

@@ -51,7 +51,7 @@ before you begin:
    ```bash
    cd apps/screenpipe-app-tauri
    bun install
-   bun tauri build --features metal
+   bun run build:tauri:dev
    ```
 
 #### sharing downloaded dependencies across worktrees
@@ -213,6 +213,59 @@ next to the released app without taking over its identity or updater settings.
 
 ## how can i contribute?
 
+### ai-assisted contributions
+
+ai assistance is welcome, but every outside contribution needs an accountable
+human driver. these rules apply to issues, pull requests, review comments, and
+replies to maintainers:
+
+- disclose the AI tool used, its autonomy level (`autocomplete`, `chat`, or
+  `agent`), and exactly what you personally verified. write `none` when no AI
+  tool was used.
+- do not use an autonomous agent to submit an outside issue, pull request, or
+  comment. the accountable contributor must personally make the submission.
+- write the problem statement, rationale, and replies to maintainers in your
+  own words. AI may help construct tests and reproductions, but it must not
+  impersonate you.
+- understand and be able to explain every material change. do not ask a model
+  to answer maintainers on your behalf.
+- never claim manual testing you did not perform. include the exact commands
+  and results, plus real end-to-end evidence where applicable.
+- provide evidence appropriate to the change:
+  - UI or behavior changes: a before/after recording.
+  - backend changes: regression tests and relevant logs or results.
+  - performance changes: reproducible before/after benchmarks.
+  - docs, CI, and pure refactors: the relevant checks and an explanation; do
+    not fabricate a video.
+- do not submit unsolicited LLM-generated reviews of another contributor's
+  pull request.
+
+use `autocomplete` when AI only supplied inline completions, `chat` when you
+asked for suggestions or code and chose what to apply, and `agent` when AI
+planned or executed multi-step work or edited files.
+
+maintainers use process labels to identify the concrete next step:
+
+- `needs-reproduction`: provide a reproducible case and exact steps.
+- `needs-tests`: add the missing regression or coverage tests.
+- `needs-evidence`: provide the required recording, logs, results, or benchmark.
+- `needs-human-explanation`: explain the rationale or material changes yourself.
+- `needs-scope-approval`: get maintainer agreement before continuing the work.
+
+you are welcome to reopen the contribution, or submit a corrected replacement
+that links the original, after addressing that request.
+
+reopening or resubmitting without addressing the stated request results in a
+seven-calendar-day contribution cooldown, beginning when a maintainer posts the
+cooldown notice. during the cooldown, you may not open or reopen issues or pull
+requests, or submit review comments in this repository. the next submission
+after that cooldown that again reopens or resubmits without addressing a
+concrete remediation request results in a repository contribution
+ban.
+
+enforcement is based on accountable ownership, accepted scope, evidence, and
+the contributor's ability to explain the work.
+
 ### reporting bugs
 
 this section guides you through submitting a bug report for screen pipe. following these guidelines helps maintainers and the community understand your report, reproduce the behavior, and find related reports.
@@ -286,6 +339,21 @@ cargo test
 
 ## other hacks
 
+### fast desktop UI loop without rebuilding rust
+
+for React/layout work, run the desktop frontend directly in a browser:
+
+```bash
+cd apps/screenpipe-app-tauri
+bun run dev:web
+```
+
+open <http://127.0.0.1:1420/home>. this uses in-memory Tauri and local-engine
+mocks. use `bun run dev:web:live` to keep the mocked Tauri shell but talk to an
+already-running local engine, or `bun run dev:tauri` for the full native app.
+the supported fixtures, API-key setup, and native-validation boundary are in
+[`apps/screenpipe-app-tauri/README.md`](apps/screenpipe-app-tauri/README.md#fast-browser-ui-development).
+
 ### running dev + prod in the same time
 
 one command i keep using to avoid having to kill my main "production" process is:
@@ -300,31 +368,16 @@ especially useful if you've done new database migrations and want to avoid break
 
 on macos, prefer `$TMPDIR` (a per-user temp dir) over `/tmp` — the system periodically sweeps `/tmp` and can wipe your dev data-dir mid-session, while `$TMPDIR` sticks around for the session. the `${TMPDIR:-/tmp}` form above uses it when set and falls back to `/tmp` otherwise.
 
-if you keep prod running 24/7 and want this loop scripted — pull, run dev, put prod back when you're done — [`scripts/dev`](scripts/dev) does it both ways: the cli on its own isolated dir+port (same idea as above) or the app via `bun tauri dev`. it also documents the apple-silicon build gotchas (full xcode, metal toolchain, `pre_build.js`). optional; macos only.
+if you keep prod running 24/7 and want this loop scripted — pull, run dev, put prod back when you're done — [`scripts/dev`](scripts/dev) does it both ways: the cli on its own isolated dir+port (same idea as above) or the app via `bun run dev:tauri`. it also documents the apple-silicon build gotchas (full xcode, metal toolchain, `pre_build.js`). optional; macos only.
 
 ### macos: keeping screen/mic/accessibility permissions across dev rebuilds
 
-macos ties tcc permissions — screen recording, microphone, accessibility — to the app's *code signature*. an unsigned or ad-hoc-signed build gets a fresh signature on every rebuild, so macos sees each rebuild as a new app and re-prompts — or silently drops the permission, which shows up as "capture suddenly returns nothing" after a rebuild.
-
-`apps/screenpipe-app-tauri/scripts/build_macos.sh` already signs the app (with an `Apple Development:` cert). if you don't have an apple developer cert, you can get the same permission-persistence with a **self-signed** code-signing cert:
-
-1. create the cert once — in Keychain Access: Certificate Assistant → Create a Certificate → name it e.g. `screenpipe dev`, Identity Type: **Self-Signed Root**, Certificate Type: **Code Signing** → Create. confirm it's usable:
-
-   ```bash
-   security find-identity -v -p codesigning
-   ```
-
-2. build, then sign with your identity — same flow as `scripts/build_macos.sh`, just your cert:
-
-   ```bash
-   cd apps/screenpipe-app-tauri
-   bun tauri build --no-sign --features metal
-   APP="src-tauri/target/release/bundle/macos/screenpipe - Development.app"
-   xattr -cr "$APP"
-   codesign --force --deep --sign "screenpipe dev" "$APP"
-   ```
-
-3. grant the permissions once. since the signature is stable across rebuilds, macos won't re-prompt and capture won't silently break — as long as you keep signing with the same identity.
+normal development does not package or sign an app. use `bun run dev:tauri` or
+`bun run build:tauri:dev`; do not add signing flags to either command. only use
+`apps/screenpipe-app-tauri/scripts/build_macos.sh` when a test specifically needs
+a stable signed `.app` identity for tcc permissions. the canonical commands and
+the reason for this separation are in
+[`docs/macos-dev-builds.md`](docs/macos-dev-builds.md).
 
 ### debugging github action
 

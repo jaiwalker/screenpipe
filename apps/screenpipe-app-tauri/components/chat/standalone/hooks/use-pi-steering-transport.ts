@@ -47,6 +47,7 @@ export function usePiSteeringTransport(
     consumePendingAttachments,
     currentQueueSessionId,
     finishQueuedAction,
+    flushStreamingMessageRender,
     inputRef,
     isLoading,
     isStreaming,
@@ -102,6 +103,7 @@ export function usePiSteeringTransport(
     void saveConversation(nextRows, {
       refreshHistory: false,
       syncActiveConversation: false,
+      turnState: { isLoading: true, isStreaming: true },
     });
     const sidNow = piSessionIdRef.current;
     if (sidNow) {
@@ -188,6 +190,12 @@ export function usePiSteeringTransport(
     const interruptedAssistantId = batch.find((item) => item.interruptedAssistantId)?.interruptedAssistantId ?? null;
     const hasActiveAssistant = Boolean(piMessageIdRef.current);
 
+    // Commit the final buffered chunk to the interrupted row before changing
+    // the stream target to the steered continuation placeholder.
+    if (hasActiveAssistant) {
+      flushStreamingMessageRender();
+    }
+
     const labelMarkers: Message[] = batch.slice(0, -1).map((item, index) => ({
       id: `${item.turnIntentId}-label`,
       role: "assistant",
@@ -214,6 +222,7 @@ export function usePiSteeringTransport(
         void saveConversation(nextRowsAfterLabels, {
           refreshHistory: false,
           syncActiveConversation: false,
+          turnState: { isLoading: true, isStreaming: true },
         });
         useChatStore.getState().actions.setMessages(sessionId, nextRowsAfterLabels as any);
       }
@@ -251,6 +260,7 @@ export function usePiSteeringTransport(
         void saveConversation(nextRowsAfterAssistant, {
           refreshHistory: false,
           syncActiveConversation: false,
+          turnState: { isLoading: true, isStreaming: true },
         });
         useChatStore.getState().actions.setMessages(sessionId, nextRowsAfterAssistant as any);
       }
@@ -270,6 +280,9 @@ export function usePiSteeringTransport(
     lastUserMessageRef.current = latest.content;
     setIsLoading(true);
     setIsStreaming(true);
+    if (hasActiveAssistant) {
+      piActiveStopRequestedRef.current = true;
+    }
 
     try {
       const result = hasActiveAssistant
@@ -286,6 +299,7 @@ export function usePiSteeringTransport(
           );
 
       if (result.status !== "ok") {
+        piActiveStopRequestedRef.current = false;
         pendingNextPiUserIntentRef.current = null;
         pendingNextPiUserDisplayRef.current = null;
         optimisticSteerRef.current = null;
@@ -294,6 +308,7 @@ export function usePiSteeringTransport(
         if (labelMarkerIds.size > 0) {
           setMessages((prev) => prev.filter((message) => !labelMarkerIds.has(message.id)));
         }
+        setMessages((prev) => prev.filter((message) => message.id !== latest.optimisticUserId));
         if (precreatedSteerAssistantId) {
           setMessages((prev) => prev.filter((message) => message.id !== precreatedSteerAssistantId));
           piMessageIdRef.current = null;
@@ -304,8 +319,17 @@ export function usePiSteeringTransport(
         setIsLoading(false);
         setIsStreaming(false);
         toast({ title: "failed to send steered message", description: result.error, variant: "destructive" });
+      } else {
+        // This redirect is internal steering, not a user stop. ACP adapters
+        // inject into the open assistant stream and do not echo a second user
+        // message_start, so their accepted command is also the transition ack.
+        piActiveStopRequestedRef.current = false;
+        if (activePreset?.provider === "acp") {
+          clearPendingSteerTransportState(sessionId);
+        }
       }
     } catch (e) {
+      piActiveStopRequestedRef.current = false;
       pendingNextPiUserIntentRef.current = null;
       pendingNextPiUserDisplayRef.current = null;
       optimisticSteerRef.current = null;
@@ -314,6 +338,7 @@ export function usePiSteeringTransport(
       if (labelMarkerIds.size > 0) {
         setMessages((prev) => prev.filter((message) => !labelMarkerIds.has(message.id)));
       }
+      setMessages((prev) => prev.filter((message) => message.id !== latest.optimisticUserId));
       if (precreatedSteerAssistantId) {
         setMessages((prev) => prev.filter((message) => message.id !== precreatedSteerAssistantId));
         piMessageIdRef.current = null;
@@ -416,6 +441,7 @@ export function usePiSteeringTransport(
       void saveConversation(nextRowsAfterOptimisticAppend, {
         refreshHistory: false,
         syncActiveConversation: false,
+        turnState: { isLoading: true, isStreaming: true },
       });
     }
     const sidNow = piSessionIdRef.current;
@@ -443,91 +469,12 @@ export function usePiSteeringTransport(
       },
     ];
     if (hadActiveReply) {
-      const sid = piSessionIdRef.current;
-      if (sid) {
-        const prepared = prepareSteerBatch(sid);
-        if (!prepared) return;
-        const { batch, latest, prompt, combinedImages } = prepared;
-
-        piActiveStopRequestedRef.current = true;
-        const interruptedAssistantId =
-          latest.interruptedAssistantId ?? null;
-
-        await commands
-          .piSteer(
-            sid,
-            prompt,
-            combinedImages.length > 0 ? combinedImages : null,
-          )
-          .then((result) => {
-            if (result.status === "ok") {
-              // Clear the flag — this stop was an internal steering redirect,
-              // not a user-initiated stop. Without this the steered response
-              // inherits stoppedByUser=true when it completes.
-              piActiveStopRequestedRef.current = false;
-            } else {
-              console.warn("[steer] piSteer returned non-ok:", result);
-              revertFailedComposerSteer(
-                batch,
-                latest,
-                interruptedAssistantId,
-                result.error ?? "steer command rejected",
-              );
-            }
-          })
-          .catch((err: unknown) => {
-            console.warn("[steer] piSteer failed, reverting", err);
-            revertFailedComposerSteer(
-              batch,
-              latest,
-              interruptedAssistantId,
-              err instanceof Error ? err.message : String(err),
-            );
-          });
-      }
+      await flushPendingSteerBatch();
       return;
     }
     if (!piMessageIdRef.current) {
       void flushPendingSteerBatch();
     }
-  }
-
-  function revertFailedComposerSteer(
-    batch: PendingSteerBatchItem[],
-    latest: PendingSteerBatchItem,
-    interruptedAssistantId: string | null,
-    errorDescription: string,
-  ) {
-    pendingNextPiUserIntentRef.current = null;
-    pendingNextPiUserDisplayRef.current = null;
-    optimisticSteerRef.current = null;
-    piActiveStopRequestedRef.current = false;
-    removeTurnIntent(latest.turnIntentId);
-
-    setAssistantInterruptedState(interruptedAssistantId, false);
-
-    const optimisticId = latest.optimisticUserId;
-    setMessages((prev) =>
-      prev.filter(
-        (message) =>
-          !(
-            message.id === optimisticId &&
-            message.role === "user" &&
-            message.intent === "steer"
-          ),
-      ),
-    );
-
-    pendingSteerBatchRef.current = [
-      ...batch,
-      ...pendingSteerBatchRef.current,
-    ];
-
-    toast({
-      title: "failed to send steered message",
-      description: errorDescription,
-      variant: "destructive",
-    });
   }
 
   async function steerQueuedPrompt(prompt: PiQueuedPrompt) {
@@ -585,6 +532,7 @@ export function usePiSteeringTransport(
         void saveConversation(nextRowsAfterQueuedSteer, {
           refreshHistory: false,
           syncActiveConversation: false,
+          turnState: { isLoading: true, isStreaming: true },
         });
         const sidNow = piSessionIdRef.current;
         if (sidNow) {

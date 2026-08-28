@@ -7,9 +7,8 @@ use image::DynamicImage;
 use libsqlite3_sys::sqlite3_auto_extension;
 use screenpipe_config::DbConfig;
 use sqlite_vec::sqlite3_vec_init;
-use sqlx::migrate::MigrateDatabase;
 use sqlx::pool::PoolConnection;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use sqlx::Column;
 use sqlx::ConnectOptions;
 use sqlx::Connection;
@@ -42,6 +41,12 @@ use crate::{
 /// Time window (in seconds) to check for similar transcriptions across devices.
 /// Transcriptions within this window are checked for cross-device duplicates.
 const DEDUP_TIME_WINDOW_SECS: i64 = 45;
+
+/// Attempts for the read-pool lookups a transcription insert performs before it
+/// submits its write. Read-pool pressure is bursty — search, timeline, the local
+/// API and pipes all share that pool — and failing the whole insert on the first
+/// stall threw away recordings the write path could have stored (CLI-SN).
+const PRE_READ_ATTEMPTS: u32 = 3;
 
 /// Similarity threshold for cross-device deduplication (0.0 to 1.0).
 /// Higher = stricter matching, lower = more aggressive deduplication.
@@ -124,13 +129,63 @@ pub struct StripTextResult {
 ///
 /// Holds an `OwnedSemaphorePermit` so writers queue in Rust memory (zero overhead)
 /// instead of each holding a pool connection while waiting for SQLite's busy_timeout.
+#[derive(Clone)]
+struct HardFaultReporter {
+    health: crate::write_queue::WriteQueueHealth,
+    persistent_failure_hook: crate::write_queue::PersistentFailureSlot,
+    close_token: tokio_util::sync::CancellationToken,
+}
+
+impl HardFaultReporter {
+    fn report_error(&self, error: &sqlx::Error) -> bool {
+        let Some(code) = crate::sqlite_error::sqlite_hard_fault_code(error) else {
+            return false;
+        };
+        self.report_code(code)
+    }
+
+    fn report_code(&self, code: i32) -> bool {
+        if !crate::sqlite_error::is_sqlite_hard_fault_code(code) {
+            return false;
+        }
+        let first_for_manager = self.health.latch_hard_fault_code(code);
+        self.close_token.cancel();
+        if first_for_manager {
+            if let Some(hook) = self.persistent_failure_hook.take_hard_fault_hook() {
+                hook();
+            }
+        }
+        true
+    }
+}
+
 pub struct ImmediateTx {
     conn: Option<PoolConnection<Sqlite>>,
     committed: bool,
     _write_permit: Option<OwnedSemaphorePermit>,
+    hard_fault_reporter: HardFaultReporter,
 }
 
 impl ImmediateTx {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        conn: PoolConnection<Sqlite>,
+        write_permit: OwnedSemaphorePermit,
+        health: crate::write_queue::WriteQueueHealth,
+        persistent_failure_hook: crate::write_queue::PersistentFailureSlot,
+    ) -> Self {
+        Self {
+            conn: Some(conn),
+            committed: false,
+            _write_permit: Some(write_permit),
+            hard_fault_reporter: HardFaultReporter {
+                health,
+                persistent_failure_hook,
+                close_token: tokio_util::sync::CancellationToken::new(),
+            },
+        }
+    }
+
     /// Access the underlying connection for executing queries.
     pub fn conn(&mut self) -> &mut PoolConnection<Sqlite> {
         self.conn.as_mut().expect("connection already taken")
@@ -139,7 +194,10 @@ impl ImmediateTx {
     /// Commit the transaction. Must be called explicitly — drop without commit = rollback.
     pub async fn commit(mut self) -> Result<(), sqlx::Error> {
         if let Some(ref mut conn) = self.conn {
-            sqlx::query("COMMIT").execute(&mut **conn).await?;
+            if let Err(error) = sqlx::query("COMMIT").execute(&mut **conn).await {
+                self.hard_fault_reporter.report_error(&error);
+                return Err(error);
+            }
         }
         self.committed = true;
         Ok(())
@@ -149,7 +207,10 @@ impl ImmediateTx {
     #[allow(dead_code)]
     pub async fn rollback(mut self) -> Result<(), sqlx::Error> {
         if let Some(ref mut conn) = self.conn {
-            sqlx::query("ROLLBACK").execute(&mut **conn).await?;
+            if let Err(error) = sqlx::query("ROLLBACK").execute(&mut **conn).await {
+                self.hard_fault_reporter.report_error(&error);
+                return Err(error);
+            }
         }
         self.committed = true; // prevent double-rollback in drop
         Ok(())
@@ -185,7 +246,28 @@ impl Drop for ImmediateTx {
                 // slot than poison the pool with a stuck transaction).
                 warn!("ImmediateTx dropped without commit — rolling back");
                 let permit = self._write_permit.take(); // Hold permit until rollback completes
+                let reporter = self.hard_fault_reporter.clone();
                 tokio::spawn(async move {
+                    // The statement that made the caller abandon this transaction
+                    // may have returned through `tx.conn()` and bypassed the manager.
+                    // SQLx does not retain that error on ImmediateTx, but SQLite does.
+                    // Inspect only this already-failing path, before ROLLBACK replaces
+                    // the connection's last extended result code.
+                    match conn.lock_handle().await {
+                        Ok(mut handle) => {
+                            // SAFETY: LockedSqliteHandle exclusively owns this live
+                            // sqlite3 handle for the duration of the FFI call.
+                            let code = unsafe {
+                                libsqlite3_sys::sqlite3_extended_errcode(
+                                    handle.as_raw_handle().as_ptr(),
+                                )
+                            };
+                            reporter.report_code(code);
+                        }
+                        Err(error) => {
+                            reporter.report_error(&error);
+                        }
+                    }
                     match sqlx::query("ROLLBACK").execute(&mut *conn).await {
                         Ok(_) => {
                             // Connection is clean — it returns to the pool when `conn`
@@ -193,6 +275,7 @@ impl Drop for ImmediateTx {
                             debug!("ImmediateTx rollback succeeded, connection returned to pool");
                         }
                         Err(e) => {
+                            reporter.report_error(&e);
                             // ROLLBACK failed — connection is likely broken.
                             // Detach as last resort so it doesn't poison the pool.
                             warn!("ImmediateTx rollback failed ({}), detaching connection", e);
@@ -235,6 +318,9 @@ pub struct DatabaseManager {
     /// Slot for the persistent-failure hook, wired by the app after construction.
     /// Shared with the drain loop so a late `set_persistent_failure_hook` takes effect.
     persistent_failure_hook: crate::write_queue::PersistentFailureSlot,
+    /// Prevents a second independently managed pool generation from opening
+    /// this physical path and invalidating macOS unix-excl's process lock.
+    manager_lease: Option<screenpipe_sqlite_coordinator::SqliteManagerLease>,
     /// Cancelled by [`DatabaseManager::close`]. Stops the WAL-maintenance task and
     /// the write-queue drain loop so no background task keeps a SQLite connection
     /// (and the shared `-shm` WAL-index mapping) alive after teardown — a leaked
@@ -361,9 +447,11 @@ async fn flush_ax_bulk(
 }
 
 mod accessibility;
+mod activity_ledger;
 mod audio;
 mod display_layout;
 mod elements;
+mod feedback;
 mod frames;
 mod maintenance;
 mod meetings;
@@ -377,11 +465,16 @@ mod tags;
 mod text_positions;
 mod write_ops;
 
-pub use self::semantic::{
-    SemanticActor, SemanticActorAlias, SemanticActorReference, SemanticCleanupResult,
-    SemanticContextQuery, SemanticFrameContext, SemanticProjectionWriteResult,
+pub use self::activity_ledger::{
+    ActivityActionDraft, ActivityActionRecord, ActivityEvidenceDraft, ActivityEvidenceRecord,
+    ActivityIntervalDraft, ActivityIntervalRecord, ActivityLedgerObservation, ActivityTaskDraft,
 };
-pub(crate) use self::text_positions::calculate_confidence;
+pub use self::semantic::{
+    SemanticActor, SemanticActorAlias, SemanticActorReference, SemanticAttachResult,
+    SemanticCleanupResult, SemanticContextQuery, SemanticFrameContext,
+    SemanticProjectionWriteResult,
+};
+pub(crate) use self::text_positions::{calculate_confidence, match_on_screen_a11y};
 pub use self::text_positions::{
     find_matching_a11y_positions, find_matching_positions, parse_all_text_positions,
 };

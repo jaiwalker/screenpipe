@@ -40,12 +40,22 @@ import {
 	evaluateDailySummaryFormat,
 } from "@/lib/daily-summary-prompt";
 import { runDailySummaryWithPi } from "@/lib/daily-summary-pi";
+import {
+	presentQuotaError,
+	QUOTA_PLAN_LABELS,
+	type QuotaErrorType,
+	type QuotaUpgradeAction,
+} from "@/lib/chat/quota-errors";
+import { formatAllowanceReset } from "@/lib/hooks/use-usage-status";
+import { openExternalUrl } from "@/lib/open-external-url";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { pickPipePreset } from "@/lib/utils/pick-pipe-preset";
 import { cn } from "@/lib/utils";
 import { commands, type AIPreset } from "@/lib/utils/tauri";
 
-const SUMMARY_CACHE_PREFIX = "screenpipe:timeline-daily-summary:pi-v1:";
+const SUMMARY_CACHE_PREFIX = "screenpipe:timeline-daily-summary:pi-v2:";
+export const TIMELINE_DISMISS_TOP_OVERLAY_EVENT =
+	"timeline-dismiss-top-overlay";
 
 type SummaryStatus = "idle" | "gathering" | "complete" | "error";
 
@@ -77,23 +87,57 @@ function cacheSummary(date: Date, summary: string) {
 	}
 }
 
-function friendlyGenerationError(error: unknown): string {
-	if (!(error instanceof Error)) return "Daily summary could not be generated.";
-	if (/401|403/.test(error.message))
-		return "Your session expired. Sign in again to continue.";
-	if (/429/.test(error.message))
-		return "AI is busy right now. Try again in a moment.";
-	if (/timed out/i.test(error.message))
-		return "The AI took too long to read this day. Try again.";
-	return "Daily summary could not be generated. Try again.";
+export type DailySummaryErrorPresentation = {
+	kind: QuotaErrorType | "auth" | "timeout" | "unknown";
+	message: string;
+	upgrade: QuotaUpgradeAction | null;
+};
+
+export function presentGenerationError(
+	error: unknown,
+): DailySummaryErrorPresentation {
+	if (!(error instanceof Error)) {
+		return {
+			kind: "unknown",
+			message: "Daily summary could not be generated.",
+			upgrade: null,
+		};
+	}
+	// Quota/rate classification first: a usage-limit body can also mention an
+	// HTTP status, and the auth branch below must not swallow it.
+	const quota = presentQuotaError(error.message);
+	if (quota.kind !== "none") return quota;
+	if (/401|403/.test(error.message)) {
+		return {
+			kind: "auth",
+			message: "Your session expired. Sign in again to continue.",
+			upgrade: null,
+		};
+	}
+	if (/timed out/i.test(error.message)) {
+		return {
+			kind: "timeout",
+			message: "The AI took too long to read this day. Try again.",
+			upgrade: null,
+		};
+	}
+	return {
+		kind: "unknown",
+		message: "Daily summary could not be generated. Try again.",
+		upgrade: null,
+	};
 }
 
 export function TimelineDailySummary({
 	currentDate,
 	embedded = false,
+	hideTrigger = false,
+	openRequest,
 }: {
 	currentDate: Date;
 	embedded?: boolean;
+	hideTrigger?: boolean;
+	openRequest?: number;
 }) {
 	const { settings, updateSettings } = useSettings();
 	const [summary, setSummary] = useState("");
@@ -102,10 +146,14 @@ export function TimelineDailySummary({
 	const [enableDialogOpen, setEnableDialogOpen] = useState(false);
 	const [isEnabling, setIsEnabling] = useState(false);
 	const [error, setError] = useState("");
+	const [errorUpgrade, setErrorUpgrade] = useState<QuotaUpgradeAction | null>(
+		null,
+	);
 	const [copied, setCopied] = useState(false);
 	const abortRef = useRef<AbortController | null>(null);
 	const triggerRef = useRef<HTMLButtonElement | null>(null);
 	const panelRef = useRef<HTMLElement | null>(null);
+	const handledOpenRequestRef = useRef<number | undefined>(undefined);
 	const dateId = format(currentDate, "yyyy-MM-dd");
 	const enhancedAI = settings?.enhancedAI ?? false;
 	const userToken = settings?.user?.token ?? "";
@@ -124,15 +172,17 @@ export function TimelineDailySummary({
 	);
 
 	useEffect(() => {
-		abortRef.current?.abort();
+		abortRef.current?.abort("selection_changed_or_unmounted");
 		const cached = readCachedSummary(currentDate);
 		setSummary(cached);
 		setStatus(cached ? "complete" : "idle");
 		setError("");
+		setErrorUpgrade(null);
 		setCopied(false);
 		setPanelOpen(false);
 
-		return () => abortRef.current?.abort();
+		return () =>
+			abortRef.current?.abort("selection_changed_or_unmounted");
 		// `dateId` deliberately represents the selected local calendar day.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [dateId]);
@@ -147,10 +197,11 @@ export function TimelineDailySummary({
 				setPanelOpen(true);
 				setStatus("error");
 				setError("No AI model is configured. Choose one in Settings.");
+				setErrorUpgrade(null);
 				return;
 			}
 
-			abortRef.current?.abort();
+			abortRef.current?.abort("superseded");
 			const controller = new AbortController();
 			abortRef.current = controller;
 			const requestedDate = new Date(currentDate);
@@ -160,6 +211,7 @@ export function TimelineDailySummary({
 			setStatus("gathering");
 			setSummary("");
 			setError("");
+			setErrorUpgrade(null);
 			setCopied(false);
 			posthog.capture("timeline_daily_summary_generation_started", {
 				selected_date: dateId,
@@ -175,6 +227,7 @@ export function TimelineDailySummary({
 					preset: dailySummaryPreset,
 					userToken: token,
 					signal: controller.signal,
+					recoverTransientRuntimeStart: true,
 				});
 				const formatFailures = evaluateDailySummaryFormat(completedSummary);
 
@@ -196,13 +249,24 @@ export function TimelineDailySummary({
 					generationError instanceof Error &&
 					generationError.name === "AbortError"
 				) {
+					posthog.capture("timeline_daily_summary_cancelled", {
+						selected_date: dateId,
+						duration_ms: Math.round(performance.now() - startedAt),
+						reason:
+							typeof controller.signal.reason === "string"
+								? controller.signal.reason
+								: "aborted",
+					});
 					return;
 				}
 				console.error("daily summary generation failed", generationError);
+				const presented = presentGenerationError(generationError);
 				setStatus("error");
-				setError(friendlyGenerationError(generationError));
+				setError(presented.message);
+				setErrorUpgrade(presented.upgrade);
 				posthog.capture("timeline_daily_summary_failed", {
 					selected_date: dateId,
+					error_kind: presented.kind,
 					reason:
 						generationError instanceof Error
 							? generationError.message.slice(0, 120)
@@ -213,17 +277,20 @@ export function TimelineDailySummary({
 		[currentDate, dailySummaryPreset, dateId, userToken],
 	);
 
-	const handleTriggerClick = () => {
+	const handleTriggerClick = useCallback(() => {
+		const cachedSummary = summary || readCachedSummary(currentDate);
 		posthog.capture("timeline_daily_summary_clicked", {
 			selected_date: dateId,
 			enhanced_ai_enabled: enhancedAI,
-			has_cached_summary: Boolean(summary),
+			has_cached_summary: Boolean(cachedSummary),
 		});
 
 		// Cached summaries are local output. Keep them readable if the user later
 		// disables Enhanced AI or signs out; only a new generation needs consent
 		// and an authenticated model session.
-		if (summary) {
+		if (cachedSummary) {
+			setSummary(cachedSummary);
+			setStatus("complete");
 			setPanelOpen(true);
 			return;
 		}
@@ -243,7 +310,17 @@ export function TimelineDailySummary({
 		}
 
 		void generate();
-	};
+	}, [currentDate, dateId, enhancedAI, generate, isGenerating, summary, userToken]);
+
+	useEffect(() => {
+		if (
+			openRequest === undefined ||
+			handledOpenRequestRef.current === openRequest
+		)
+			return;
+		handledOpenRequestRef.current = openRequest;
+		handleTriggerClick();
+	}, [handleTriggerClick, openRequest]);
 
 	const handleEnableAndGenerate = async () => {
 		if (!userToken) {
@@ -281,7 +358,7 @@ export function TimelineDailySummary({
 
 	const closePanel = useCallback(() => {
 		if (isGenerating) {
-			abortRef.current?.abort();
+			abortRef.current?.abort("panel_closed");
 			setStatus("idle");
 			setSummary("");
 		}
@@ -301,14 +378,34 @@ export function TimelineDailySummary({
 				return;
 			closePanel();
 		};
+		const handleEscape = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			event.stopPropagation();
+			// Dismiss the summary first and leave the underlying native
+			// timeline/overlay open; a second Escape can close the host window.
+			closePanel();
+		};
+		const handleNativeEscape = () => closePanel();
 
 		document.addEventListener("pointerdown", handleOutsidePointerDown, true);
-		return () =>
+		document.addEventListener("keydown", handleEscape, true);
+		window.addEventListener(
+			TIMELINE_DISMISS_TOP_OVERLAY_EVENT,
+			handleNativeEscape,
+		);
+		return () => {
 			document.removeEventListener(
 				"pointerdown",
 				handleOutsidePointerDown,
 				true,
 			);
+			document.removeEventListener("keydown", handleEscape, true);
+			window.removeEventListener(
+				TIMELINE_DISMISS_TOP_OVERLAY_EVENT,
+				handleNativeEscape,
+			);
+		};
 	}, [closePanel, panelOpen]);
 
 	const copySummary = async () => {
@@ -337,45 +434,48 @@ export function TimelineDailySummary({
 
 	return (
 		<>
-			<TooltipProvider delayDuration={200}>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<button
-							ref={triggerRef}
-							type="button"
-							data-testid="timeline-daily-summary-trigger"
-							onClick={handleTriggerClick}
-							className={cn(
-								"group relative flex h-10 w-10 shrink-0 items-center justify-center border border-border bg-background text-foreground transition-colors duration-150 hover:bg-foreground hover:text-background",
-								panelOpen && "bg-foreground text-background",
-							)}
-							aria-label={tooltipText}
-							aria-expanded={panelOpen}
-						>
-							{isGenerating ? (
-								<Loader2 className="h-4 w-4 animate-spin" />
-							) : (
-								<span className="relative">
-									<CalendarDays className="h-4 w-4" />
-									<Sparkles className="absolute -right-1.5 -top-1.5 h-2.5 w-2.5 fill-current" />
-								</span>
-							)}
-							{summary && !isGenerating && (
-								<span className="absolute -right-1 -top-1 h-2.5 w-2.5 border-2 border-background bg-foreground" />
-							)}
-						</button>
-					</TooltipTrigger>
-					<TooltipContent side="bottom" className="font-mono text-xs">
-						{tooltipText}
-					</TooltipContent>
-				</Tooltip>
-			</TooltipProvider>
+			{!hideTrigger && (
+				<TooltipProvider delayDuration={200}>
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<button
+								ref={triggerRef}
+								type="button"
+								data-testid="timeline-daily-summary-trigger"
+								onClick={handleTriggerClick}
+								className={cn(
+									"group relative flex h-10 w-10 shrink-0 items-center justify-center border border-border bg-background text-foreground transition-colors duration-150 hover:bg-foreground hover:text-background",
+									panelOpen && "bg-foreground text-background",
+								)}
+								aria-label={tooltipText}
+								aria-expanded={panelOpen}
+							>
+								{isGenerating ? (
+									<Loader2 className="h-4 w-4 animate-spin" />
+								) : (
+									<span className="relative">
+										<CalendarDays className="h-4 w-4" />
+										<Sparkles className="absolute -right-1.5 -top-1.5 h-2.5 w-2.5 fill-current" />
+									</span>
+								)}
+								{summary && !isGenerating && (
+									<span className="absolute -right-1 -top-1 h-2.5 w-2.5 border-2 border-background bg-foreground" />
+								)}
+							</button>
+						</TooltipTrigger>
+						<TooltipContent side="bottom" className="font-mono text-xs">
+							{tooltipText}
+						</TooltipContent>
+					</Tooltip>
+				</TooltipProvider>
+			)}
 
 			<AnimatePresence>
 				{panelOpen && (
 					<motion.aside
 						ref={panelRef}
 						data-testid="timeline-daily-summary-panel"
+						data-native-timeline-occluder="true"
 						className={cn(
 							"ai-panel fixed right-5 z-[150] flex max-h-[min(620px,calc(100vh-112px))] w-[min(420px,calc(100vw-32px))] flex-col overflow-hidden border border-border bg-background/95 text-foreground shadow-lg shadow-black/5 backdrop-blur-xl",
 							embedded
@@ -472,15 +572,46 @@ export function TimelineDailySummary({
 											: "Couldn’t create summary"}
 									</p>
 									<p className="mt-2 text-sm text-muted-foreground">{error}</p>
-									<Button
-										variant="outline"
-										size="sm"
-										className="mt-4"
-										onClick={retryGeneration}
-									>
-										<RefreshCw className="mr-2 h-3.5 w-3.5" />
-										Try again
-									</Button>
+									{errorUpgrade?.resetsAt &&
+										formatAllowanceReset(errorUpgrade.resetsAt) && (
+											<p className="mt-1 text-xs text-muted-foreground">
+												Limit resets{" "}
+												{formatAllowanceReset(errorUpgrade.resetsAt)}.
+											</p>
+										)}
+									<div className="mt-4 flex items-center gap-2">
+										{errorUpgrade ? (
+											<>
+												<Button
+													size="sm"
+													data-testid="daily-summary-upgrade-button"
+													onClick={() =>
+														void openExternalUrl(errorUpgrade.upgradeUrl)
+													}
+												>
+													Upgrade to{" "}
+													{QUOTA_PLAN_LABELS[errorUpgrade.requiredPlan]}
+												</Button>
+												<Button
+													variant="outline"
+													size="sm"
+													onClick={retryGeneration}
+												>
+													<RefreshCw className="mr-2 h-3.5 w-3.5" />
+													Try again
+												</Button>
+											</>
+										) : (
+											<Button
+												variant="outline"
+												size="sm"
+												onClick={retryGeneration}
+											>
+												<RefreshCw className="mr-2 h-3.5 w-3.5" />
+												Try again
+											</Button>
+										)}
+									</div>
 								</div>
 							)}
 						</div>

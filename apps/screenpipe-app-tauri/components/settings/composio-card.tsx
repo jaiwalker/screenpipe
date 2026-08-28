@@ -17,6 +17,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { useInterval } from "@/lib/hooks/use-interval";
 import { notifyConnectionsUpdated } from "@/lib/connections-events";
+import { foregroundAfterOAuth } from "@/lib/connections/foreground-oauth";
 import posthog from "posthog-js";
 import {
   COMPOSIO_API,
@@ -180,6 +181,7 @@ export function ComposioCard({
         } catch {
           setError("connected, but registering the agent tools failed — reconnect to retry");
         }
+        await foregroundAfterOAuth();
         notifyConnectionsUpdated();
         posthog.capture("connection_saved", { integration: `composio-${toolkit}` });
       }
@@ -288,9 +290,8 @@ export function ComposioCard({
     }
   };
 
-  // Option B (design round 3): the third-party fact lives in the header as a
-  // neutral "via composio" chip (rendered by connections-section); the body
-  // sells the feature and keeps the honest data-path detail one click away.
+  // Lead with the user outcome. The third-party sign-in and data path remain
+  // available one click away in the privacy disclosure below.
   const valueLine = (
     <p className="text-xs text-foreground/90">{TOOLKIT_META[toolkit].value}</p>
   );

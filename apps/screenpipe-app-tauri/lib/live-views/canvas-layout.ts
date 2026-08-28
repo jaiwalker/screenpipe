@@ -47,6 +47,28 @@ export function clampCanvasZoom(zoom: number): number {
   return Math.max(CANVAS_MIN_ZOOM, Math.min(CANVAS_MAX_ZOOM, zoom));
 }
 
+// A single NSMagnificationGestureRecognizer callback never legitimately scales
+// the canvas by more than this. Coalesced or replayed deltas are clamped here
+// so one bad frame cannot slam the viewport into a zoom limit.
+export const MAX_NATIVE_MAGNIFY_STEP = 1.25;
+
+/**
+ * Convert one `native-magnify` payload into a canvas zoom factor.
+ *
+ * AppKit defines `NSMagnificationGestureRecognizer.magnification` so that the
+ * gesture's resulting scale is `1 + magnification`, and the Rust handler
+ * resets it to 0 after every callback, so each payload is an incremental
+ * delta. Anything other than `1 + magnification` misreports how far the
+ * user's fingers actually moved.
+ */
+export function nativeMagnifyZoomFactor(magnification: number): number {
+  if (!Number.isFinite(magnification)) return 1;
+  return Math.max(
+    1 / MAX_NATIVE_MAGNIFY_STEP,
+    Math.min(MAX_NATIVE_MAGNIFY_STEP, 1 + magnification),
+  );
+}
+
 export function snapCanvasValue(value: number): number {
   return Math.round(value / CANVAS_GRID) * CANVAS_GRID;
 }
@@ -103,11 +125,88 @@ export function createCanvasDocument(
     schema: "live-view-canvas.v1",
     viewId: view.id,
     revision: 0,
-    mode: "dashboard",
+    mode: "canvas",
     viewport: { ...DEFAULT_CANVAS_VIEWPORT },
     blocks: createCanvasBlockLayout(view.slots),
     notes: [],
     arrows: [],
+    strokes: [],
+    updatedAt: "",
+  };
+}
+
+export function createTemplateCanvasDocument(
+  templateId: string,
+  view: BrainViewDefinition,
+): BrainViewCanvasDocument | null {
+  if (templateId !== "process-map") return null;
+  const available = new Set(view.slots.map((slot) => slot.id));
+  const blocks: BrainViewCanvasBlock[] = [
+    {
+      slotId: "trigger-and-outcome",
+      x: 64,
+      y: 240,
+      width: 360,
+      height: 280,
+    },
+    {
+      slotId: "observed-steps",
+      x: 480,
+      y: 240,
+      width: 360,
+      height: 280,
+    },
+    { slotId: "handoffs", x: 896, y: 240, width: 360, height: 280 },
+    { slotId: "bottlenecks", x: 896, y: 608, width: 360, height: 280 },
+    {
+      slotId: "controls-and-exceptions",
+      x: 480,
+      y: 608,
+      width: 360,
+      height: 280,
+    },
+    {
+      slotId: "improvement-path",
+      x: 64,
+      y: 608,
+      width: 360,
+      height: 280,
+    },
+  ].filter((block) => available.has(block.slotId));
+  const connections = [
+    ["trigger-and-outcome", "observed-steps", "starts"],
+    ["observed-steps", "handoffs", "moves through"],
+    ["handoffs", "bottlenecks", "reveals"],
+    ["bottlenecks", "controls-and-exceptions", "must preserve"],
+    ["controls-and-exceptions", "improvement-path", "enables"],
+  ] as const;
+  const arrows = connections
+    .filter(([fromId, toId]) => available.has(fromId) && available.has(toId))
+    .map(([fromId, toId, label], index) => ({
+      id: `process-step-${index + 1}`,
+      fromId: canvasBlockNodeId(fromId),
+      toId: canvasBlockNodeId(toId),
+      label,
+    }));
+
+  return {
+    schema: "live-view-canvas.v1",
+    viewId: view.id,
+    revision: 0,
+    mode: "canvas",
+    viewport: { x: 16, y: 8, zoom: 0.82 },
+    blocks,
+    notes: [
+      {
+        id: "process-map-guide",
+        text: "Observed workflow → handoffs → friction → controls → improvement\n\nMove the Blocks and connections until the map matches how the work actually happens.",
+        x: 64,
+        y: 64,
+        width: 776,
+        height: 128,
+      },
+    ],
+    arrows,
     strokes: [],
     updatedAt: "",
   };
@@ -138,13 +237,14 @@ export function reconcileCanvasDocument(
       validNodes.has(arrow.toId),
   );
   if (
+    document.mode === "canvas" &&
     blocks.length === document.blocks.length &&
     blocks.every((block, index) => block === document.blocks[index]) &&
     arrows.length === document.arrows.length
   ) {
     return document;
   }
-  return { ...document, blocks, arrows };
+  return { ...document, mode: "canvas", blocks, arrows };
 }
 
 export function toSaveCanvasRequest(

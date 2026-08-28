@@ -138,10 +138,10 @@ Then configure Claude Desktop:
 
 ## Enterprise team tools (`team-*`)
 
-`team-search`, `team-devices` and `team-records` query your whole org instead of
-just this machine. They are registered **only** when an enterprise admin token is
-present, and they need **two** independent settings: a token, and the base URL of
-the API that token is valid for.
+`team-search`, `team-devices`, `team-records`, and `team-frame` query your whole
+org instead of just this machine. They are registered **only** when an enterprise
+admin token is present, and they need **two** independent settings: a token, and
+the base URL of the API that token is valid for.
 
 ### 1. The token
 
@@ -242,9 +242,15 @@ Export screen recordings as video files:
 
 ### activity-summary
 Get a lightweight compressed activity overview for a time range:
-- App usage with active minutes and frame counts
-- Recent accessibility texts
-- Audio speaker summary
+- Authoritative total active minutes and server data status
+- Per-app active minutes and a bounded window/tab breakdown
+- Edited document paths plus an optional bounded parsed-context sample for identifying tasks
+- Recent accessibility text and audio context
+
+Use active-minute fields for duration. Edited paths, parsed rows, frames, text,
+and audio samples are supporting context only; their counts are not time.
+Parsed capture is experimental and may be disabled or unsupported; the base
+activity summary remains complete without it.
 
 ### list-meetings
 List detected meetings with id, duration, app, attendees, and note snippet. Pass `q` to filter by substring (title, attendees, notes) — `q` searches all meeting history, so omit the time range when looking for a person or topic. Follow up with `get-meeting` (optionally `include_transcript: true`) for the full note and speaker-attributed transcript.
@@ -303,8 +309,8 @@ List available monitors/screens for capture.
 ### list-pipes / create-pipe / run-pipe / pipe-logs
 Manage pipes — scheduled AI automations that run a markdown prompt on a schedule (e.g. "every day at 9am"). `list-pipes` shows enabled state + schedule; `create-pipe` creates one; `run-pipe` triggers a one-off test run; `pipe-logs` fetches recent execution output.
 
-### team-search / team-devices / team-records
-Team-tier tools, registered only when an enterprise admin token is configured. `team-search` runs substring search across the entire org's telemetry, `team-devices` lists enrolled devices (hostname, OS), and `team-records` dumps chronological org data for a time window. Orgs running their own query gateway must also set `SCREENPIPE_TEAM_API_URL` — see [Enterprise team tools](#enterprise-team-tools-team-) for the full precedence order.
+### team-search / team-devices / team-records / team-frame
+Team-tier tools, registered only when an enterprise admin token is configured. `team-search` runs substring search across the entire org's telemetry, `team-devices` lists enrolled devices (hostname, OS), `team-records` dumps chronological frame, parsed-app, or audio data for a time window, and `team-frame` returns one bounded PII-redacted JPEG using IDs from search or records. Orgs running their own query gateway must also set `SCREENPIPE_TEAM_API_URL` — see [Enterprise team tools](#enterprise-team-tools-team-) for the full precedence order.
 
 ## Example Queries in Claude
 

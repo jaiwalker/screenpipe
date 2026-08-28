@@ -212,7 +212,8 @@ impl SandboxedPiExecutor {
                 "--no-skills",
                 "--no-prompt-templates",
                 "--no-context-files",
-                "--no-approve",
+                // pi >= 0.7x removed `--no-approve`; `--print` mode runs
+                // without interactive approval, so the flag is unnecessary.
                 "--offline",
                 prompt.as_str(),
             ]);
@@ -268,9 +269,11 @@ impl AgentExecutor for SandboxedPiExecutor {
         shared_pid: Option<SharedPid>,
         line_tx: tokio::sync::mpsc::UnboundedSender<String>,
         _continue_session: bool,
+        _thinking_level: Option<&str>,
         pipe_system_prompt: Option<&str>,
         _mcp_server_allowlist: Option<&[String]>,
         _session_owner: Option<&str>,
+        _executor_config: Option<&serde_json::Value>,
     ) -> Result<AgentOutput> {
         let output = self
             .execute(prompt, working_dir, shared_pid, pipe_system_prompt)

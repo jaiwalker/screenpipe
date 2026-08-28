@@ -11,29 +11,44 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { SourceCitationFooter } from "@/components/chat/source-citation-footer";
 import { CollapsedSteerWorkRow } from "@/components/chat/standalone/collapsed-steer-work-row";
 import { ChatResponseFeedback } from "@/components/chat/standalone/chat-response-feedback";
+import { SelectedTextActions } from "@/components/chat/standalone/selected-text-actions";
 import {
   chatResponseValueActionProperties,
   chatTelemetryContextForResponse,
 } from "@/lib/chat/response-feedback";
 import { qualifiedValue } from "@/lib/analytics/qualified-value";
-import {
-  GridDissolveLoader,
-  MessageContent,
-  type LoaderPhase,
-} from "@/components/chat/standalone/message-content";
+import { MessageContent } from "@/components/chat/standalone/message-content";
+import { TurnStatus } from "@/components/chat/standalone/turn-status";
+import type { TurnSignals } from "@/lib/chat/turn-phase";
+import type { TurnLivenessStatus } from "@/lib/chat/turn-liveness";
 import {
   buildCollapsedSteerRenderItems,
   hasAssistantTextBody,
   getMessageIntentLabel,
   isNormalUserMessage,
   isSteeredAssistantMessage,
+  hasAssistantToolWorkBody,
   hasRenderableAssistantBody,
+  isPendingAgentActionMessage,
+  hasPendingPermissionRequest,
 } from "@/lib/chat/message-rendering";
 import { cn } from "@/lib/utils";
+import { useAcpBootLabel } from "@/lib/stores/acp-boot-state";
 import type { ContentBlock, Message } from "@/lib/chat/types";
 import type { ConnectionListItem } from "@/lib/chat/connection-suggestions";
 import type { InlineConnectStatus } from "@/lib/connections/inline-connect";
 import type { MarkdownCitationPlan } from "@/lib/chat/markdown-export";
+import type { ChatRichResult } from "@/lib/chat/rich-results";
+
+const MAX_MESSAGE_EDIT_HEIGHT_PX = 240;
+
+function resizeMessageEditTextarea(textarea: HTMLTextAreaElement) {
+  textarea.style.height = "auto";
+  const nextHeight = Math.min(textarea.scrollHeight, MAX_MESSAGE_EDIT_HEIGHT_PX);
+  textarea.style.height = `${nextHeight}px`;
+  textarea.style.overflowY =
+    textarea.scrollHeight > MAX_MESSAGE_EDIT_HEIGHT_PX ? "auto" : "hidden";
+}
 
 function messageDate(timestamp: number): Date | null {
   const date = new Date(timestamp);
@@ -61,6 +76,7 @@ export interface ChatMessageListProps {
   messages: Message[];
   isLoading: boolean;
   isStreaming: boolean;
+  turnLiveness?: TurnLivenessStatus | null;
   activeSourceFooterMessageId: string | null;
   expandedSteerWorkIds: Set<string>;
   onToggleCollapsedSteerWork: (id: string) => void;
@@ -86,13 +102,17 @@ export interface ChatMessageListProps {
   onOpenScheduleDialog: (messageId: string) => void;
   sendMessage: (message: string, displayLabel?: string, imageDataUrls?: string[]) => Promise<void>;
   openFilePreview: (path: string) => void;
+  onOpenRichResult?: (result: ChatRichResult) => void | Promise<void>;
   branchConversation: (messageId: string) => Promise<void> | void;
   connectionItems?: ConnectionListItem[];
   onOpenConnectionSetup?: (connectionId: string) => void | Promise<void>;
   onConnectConnectionAction?: (connectionId: string, block?: Extract<ContentBlock, { type: "connection_action" }>) => Promise<InlineConnectStatus | void> | InlineConnectStatus | void;
   onContinueConnectionAction?: (prompt: string, label?: string) => void | Promise<void>;
   onDismissConnectionAction?: (messageId: string, connectionId: string) => void;
+  onAnswerAgentAction?: (block: Extract<ContentBlock, { type: "agent_action" }>, selectedOptionId?: string) => Promise<boolean> | boolean;
   onAskUserReply?: (reply: string, displayLabel: string) => Promise<void> | void;
+  onAddSelectedTextToChat?: (text: string) => void;
+  onAskSelectedTextInSideChat?: (text: string) => void | Promise<void>;
   suppressSourceFooters?: boolean;
 }
 
@@ -100,6 +120,7 @@ export function ChatMessageList({
   messages,
   isLoading,
   isStreaming,
+  turnLiveness,
   activeSourceFooterMessageId,
   expandedSteerWorkIds,
   onToggleCollapsedSteerWork,
@@ -125,64 +146,101 @@ export function ChatMessageList({
   onOpenScheduleDialog,
   sendMessage,
   openFilePreview,
+  onOpenRichResult,
   branchConversation,
   connectionItems = [],
   onOpenConnectionSetup,
   onConnectConnectionAction,
   onContinueConnectionAction,
   onDismissConnectionAction,
+  onAnswerAgentAction,
   onAskUserReply,
+  onAddSelectedTextToChat,
+  onAskSelectedTextInSideChat,
   suppressSourceFooters = false,
 }: ChatMessageListProps) {
+  // Null unless an ACP agent is installing/starting. Ticks only while it is.
+  const acpBoot = useAcpBootLabel();
+  const messageBubbleRefs = React.useRef(new Map<string, HTMLDivElement>());
+  const [editBubbleWidth, setEditBubbleWidth] = React.useState<number | null>(null);
+
+  const beginEditingMessage = React.useCallback(
+    (message: Message, caretPos?: number) => {
+      const measuredWidth =
+        messageBubbleRefs.current.get(message.id)?.getBoundingClientRect().width ?? 0;
+      setEditBubbleWidth(measuredWidth > 0 ? measuredWidth : null);
+      enterEditMode(message, caretPos);
+    },
+    [enterEditMode],
+  );
+
+  const turnActive = isLoading || isStreaming;
+  const transformationActive =
+    turnActive &&
+    turnLiveness?.state !== "offline" &&
+    turnLiveness?.state !== "stalled";
+  const visibleMessages = messages.filter((message) => {
+    if (message.role !== "assistant") return true;
+    return hasRenderableAssistantBody(message) || isSteeredAssistantMessage(message);
+  });
+  // The transport-owned message id is the authoritative owner of the live
+  // turn. The visible-message fallback only covers hydration before that id
+  // reaches this surface; it must never promote an older completed answer.
+  const lastVisibleAssistantId = [...visibleMessages]
+    .reverse()
+    .find((candidate) => candidate.role === "assistant" && !isPendingAgentActionMessage(candidate))?.id;
+  const lastAssistantId = [...messages]
+    .reverse()
+    .find((candidate) => candidate.role === "assistant" && !isPendingAgentActionMessage(candidate))?.id;
+  const activeAssistantMessageId =
+    activeSourceFooterMessageId ??
+    (lastVisibleAssistantId === lastAssistantId ? lastVisibleAssistantId : undefined);
+  const activeAssistantIndex = activeAssistantMessageId
+    ? messages.findIndex((candidate) => candidate.id === activeAssistantMessageId)
+    : -1;
+  const waitingForApproval =
+    turnActive &&
+    activeAssistantIndex >= 0 &&
+    hasPendingPermissionRequest(messages.slice(activeAssistantIndex));
+
+  // A steered child keeps its parent tool receipt live. This set also lets the
+  // generic status row ask whether a visible tool group truly owns liveness,
+  // instead of disappearing merely because some historical tool block exists.
+  const steerChildActiveParentIds = new Set<string>();
+  if (turnActive && activeAssistantMessageId) {
+    const activeIdx = visibleMessages.findIndex((message) => message.id === activeAssistantMessageId);
+    const activeMessage = activeIdx >= 0 ? visibleMessages[activeIdx] : undefined;
+    if (activeMessage && isSteeredAssistantMessage(activeMessage)) {
+      for (let index = activeIdx - 1; index >= 0; index -= 1) {
+        const previous = visibleMessages[index];
+        if (previous.role === "user" && previous.intent !== "steer") break;
+        if (previous.role === "assistant" && !isSteeredAssistantMessage(previous)) {
+          steerChildActiveParentIds.add(previous.id);
+          break;
+        }
+      }
+    }
+  }
+  const hasLiveToolStatusOwner = transformationActive && visibleMessages.some(
+    (message) =>
+      message.role === "assistant" &&
+      hasAssistantToolWorkBody(message) &&
+      (message.id === activeAssistantMessageId || steerChildActiveParentIds.has(message.id)),
+  );
+
   return (
     <>
+      {onAddSelectedTextToChat ? (
+        <SelectedTextActions
+          onAddToChat={onAddSelectedTextToChat}
+          onAskInSideChat={onAskSelectedTextInSideChat}
+        />
+      ) : null}
       <AnimatePresence mode="popLayout">
         {(() => {
-          const visibleMessages = messages.filter((m) => {
-            if (m.role !== "assistant") return true;
-            if (!hasRenderableAssistantBody(m) && !isSteeredAssistantMessage(m)) return false;
-            return true;
-          });
           const renderItems = buildCollapsedSteerRenderItems(visibleMessages, {
             canCollapseSteerWork: !isLoading && !isStreaming && !activeSourceFooterMessageId,
           });
-          // Fall back to the newest visible assistant message — but only when
-          // it is also the newest assistant message overall. Right after a
-          // send, the fresh assistant row is still the invisible
-          // "Processing..." placeholder (filtered above), so the newest
-          // *visible* assistant is the previous turn's completed answer;
-          // marking that one live would hide its action bar and tick a bogus
-          // "Working for …" header on it until the first token arrives.
-          const lastVisibleAssistantId = [...visibleMessages]
-            .reverse()
-            .find((candidate) => candidate.role === "assistant")?.id;
-          const lastAssistantId = [...messages]
-            .reverse()
-            .find((candidate) => candidate.role === "assistant")?.id;
-          const activeAssistantMessageId =
-            activeSourceFooterMessageId ??
-            (lastVisibleAssistantId === lastAssistantId ? lastVisibleAssistantId : undefined);
-
-          // Find parent assistant IDs whose steered child is currently streaming.
-          // Walk backwards from the active streaming assistant to find the
-          // preceding non-steered assistant in the same turn — that's the parent
-          // whose ToolCallGroup should also show "Working".
-          const steerChildActiveParentIds = new Set<string>();
-          if ((isLoading || isStreaming) && activeAssistantMessageId) {
-            const activeIdx = visibleMessages.findIndex((m) => m.id === activeAssistantMessageId);
-            const activeMsg = activeIdx >= 0 ? visibleMessages[activeIdx] : undefined;
-            if (activeMsg && isSteeredAssistantMessage(activeMsg)) {
-              for (let j = activeIdx - 1; j >= 0; j -= 1) {
-                const prev = visibleMessages[j];
-                if (prev.role === "user" && prev.intent !== "steer") break;
-                if (prev.role === "assistant" && !isSteeredAssistantMessage(prev)) {
-                  steerChildActiveParentIds.add(prev.id);
-                  break;
-                }
-              }
-            }
-          }
-
           return renderItems.map((item) => {
             if (item.type === "collapsed-steer-work") {
               const expanded = expandedSteerWorkIds.has(item.id);
@@ -209,13 +267,15 @@ export function ChatMessageList({
             const canShowMessageActions = !item.showActionsWhenExpandedBy ||
               expandedSteerWorkIds.has(item.showActionsWhenExpandedBy);
             const hasActiveSteerChild = steerChildActiveParentIds.has(message.id);
-            const isActiveStreamingAssistantMessage =
+            const isActiveAssistantMessage =
               message.role === "assistant" &&
               (isLoading || isStreaming) &&
               (message.id === activeAssistantMessageId || hasActiveSteerChild);
+            const isActiveStreamingAssistantMessage =
+              isActiveAssistantMessage && transformationActive;
             const shouldShowAssistantActions = message.role !== "assistant" || hasAssistantTextBody(message);
             const shouldShowMessageActionBar =
-              canShowMessageActions && !isActiveStreamingAssistantMessage && shouldShowAssistantActions;
+              canShowMessageActions && !isActiveAssistantMessage && shouldShowAssistantActions;
             const nextAssistant = visibleMessages
               .slice(messageIndex + 1)
               .find((candidate) => candidate.role === "assistant");
@@ -249,7 +309,11 @@ export function ChatMessageList({
             return [
               <motion.div
                 key={message.id}
-                initial={{ opacity: 0, y: 10 }}
+                // Keep restored/disk-hydrated messages paint-safe. Under heavy
+                // WebKit pressure an entry animation may never advance its
+                // first frame; starting at opacity 0 then leaves a complete
+                // transcript present in the DOM but visually blank.
+                initial={{ y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: 0.2 }}
@@ -265,7 +329,7 @@ export function ChatMessageList({
                   className={cn(
                     "group/message flex flex-col min-w-0",
                     message.role === "user"
-                      ? (editingMessageId === message.id ? "items-end w-full" : "items-end max-w-[82%]")
+                      ? "items-end max-w-[82%]"
                       : "items-start w-full"
                   )}
                 >
@@ -281,6 +345,10 @@ export function ChatMessageList({
                   ) : null}
                   {hideSupersededSteerBody ? null : (
                     <div
+                      ref={(node) => {
+                        if (node) messageBubbleRefs.current.set(message.id, node);
+                        else messageBubbleRefs.current.delete(message.id);
+                      }}
                       onMouseDown={(e) => {
                         if (!canEditMessage || editingMessageId === message.id) return;
                         pendingCaretRef.current = caretOffsetFromClick(e, message.content);
@@ -296,23 +364,41 @@ export function ChatMessageList({
                           pendingCaretRef.current = null;
                           return;
                         }
-                        enterEditMode(message, pendingCaretRef.current ?? undefined);
+                        beginEditingMessage(message, pendingCaretRef.current ?? undefined);
                       }}
                       className={cn(
-                        "relative rounded-xl text-sm overflow-hidden max-w-full transition-all",
+                        "relative rounded-lg text-sm overflow-hidden max-w-full transition-all",
                         message.role === "user"
                           ? "bg-muted/60 text-foreground px-4 py-3"
                           : "bg-background text-foreground py-1 w-full",
                         canEditMessage && editingMessageId !== message.id && "cursor-text",
-                        editingMessageId === message.id && message.role === "user" && "w-full"
+                        editingMessageId === message.id &&
+                          message.role === "user" &&
+                          "min-w-[min(12rem,100%)]"
                       )}
+                      style={
+                        editingMessageId === message.id && message.role === "user" && editBubbleWidth
+                          ? { width: editBubbleWidth, maxWidth: "100%" }
+                          : undefined
+                      }
+                      data-testid="chat-message-bubble"
+                      data-editing={editingMessageId === message.id ? "true" : "false"}
+                      data-selected-text-actions-target={
+                        message.role === "assistant" ? "true" : undefined
+                      }
                     >
                       {editingMessageId === message.id ? (
-                        <div className="flex flex-col gap-2 w-full min-w-0">
+                        <div
+                          className="flex flex-col gap-2 w-full min-w-0"
+                          data-testid="chat-message-editor"
+                        >
                           <textarea
+                            aria-label="Edit message"
                             ref={(el) => {
                               editTextareaRef.current = el;
-                              if (el && pendingCaretRef.current != null) {
+                              if (!el) return;
+                              resizeMessageEditTextarea(el);
+                              if (pendingCaretRef.current != null) {
                                 const pos = pendingCaretRef.current;
                                 pendingCaretRef.current = null;
                                 el.focus({ preventScroll: true });
@@ -320,7 +406,10 @@ export function ChatMessageList({
                               }
                             }}
                             value={editDraft}
-                            onChange={(e) => onEditDraftChange(e.target.value)}
+                            onChange={(e) => {
+                              resizeMessageEditTextarea(e.currentTarget);
+                              onEditDraftChange(e.target.value);
+                            }}
                             onBlur={() => commitEditedMessage(message, editDraft)}
                             onKeyDown={(e) => {
                               if (e.key === "Escape") {
@@ -332,8 +421,8 @@ export function ChatMessageList({
                                 (e.currentTarget as HTMLTextAreaElement).blur();
                               }
                             }}
-                            rows={Math.min(10, Math.max(1, editDraft.split("\n").length))}
-                            className="block w-full min-w-0 resize-none bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none leading-relaxed"
+                            rows={1}
+                            className="block w-full min-w-0 resize-none overflow-y-hidden bg-transparent text-foreground placeholder:text-muted-foreground focus:outline-none leading-relaxed"
                           />
                           <div className="flex items-center justify-end gap-2">
                             <button
@@ -366,6 +455,7 @@ export function ChatMessageList({
                         <MessageContent
                           message={message}
                           isGenerating={isActiveStreamingAssistantMessage}
+                          waitingForApproval={isActiveStreamingAssistantMessage && waitingForApproval}
                           deferSourceFooter={
                             suppressSourceFooters ||
                             citationPlan.deferredMessageIds.has(message.id) ||
@@ -380,12 +470,17 @@ export function ChatMessageList({
                           onImageClick={onOpenImageViewer}
                           onRetry={(prompt) => sendMessage(prompt)}
                           onOpenViewerPath={openFilePreview}
+                          onOpenRichResult={onOpenRichResult}
                           connectionItems={connectionItems}
                           onOpenConnectionSetup={onOpenConnectionSetup}
                           onConnectConnectionAction={onConnectConnectionAction}
                           onContinueConnectionAction={onContinueConnectionAction}
                           onDismissConnectionAction={onDismissConnectionAction}
+                          onAnswerAgentAction={onAnswerAgentAction}
                           onAskUserReply={onAskUserReply}
+                          onSendPrompt={(prompt, displayLabel) =>
+                            sendMessage(prompt, displayLabel)
+                          }
                         />
                       )}
                     </div>
@@ -441,7 +536,7 @@ export function ChatMessageList({
                               onMouseUp={(e) => e.stopPropagation()}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                enterEditMode(message);
+                                beginEditingMessage(message);
                               }}
                               className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground"
                               title="Edit"
@@ -543,39 +638,51 @@ export function ChatMessageList({
         {isLoading && (() => {
           const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
           const blocks = lastAssistant?.contentBlocks;
-          // Once a tool group exists, it owns the live status and completion
-          // receipt. A second generic loader makes completed work look like it
-          // is still running and adds technical-looking visual noise.
-          if (blocks?.some((block) => block.type === "tool")) return null;
-          let loaderPhase: LoaderPhase = "analyzing";
-          let toolName: string | undefined;
+          // A pending permission/sign-in card already states the turn is blocked
+          // on the user ("needs your approval"); a generic status row below it
+          // is both redundant and wrong (the agent is waiting, not working).
+          if (lastAssistant && isPendingAgentActionMessage(lastAssistant)) return null;
+          // Suppress the fallback only when the active turn's visible tool
+          // group is actually rendering its live state. Historical tool blocks
+          // cannot erase the only indication that a newer turn is still active.
+          if (hasLiveToolStatusOwner) return null;
 
+          // One row, one phase. The ACP boot label is a phase of this row
+          // rather than a second loader mounted beside it: a cold npx fetch can
+          // run minutes, and the user should see the agent named and counting
+          // in the same place the rest of the turn reports from.
+          const boot = acpBoot ?? null;
+          const booting = Boolean(boot) && !(blocks && blocks.length > 0);
+          let streaming = false;
           if (blocks && blocks.length > 0) {
             const lastBlock = blocks[blocks.length - 1];
-            if (lastBlock.type === "tool" && lastBlock.toolCall.isRunning) {
-              loaderPhase = "tool";
-              toolName = lastBlock.toolCall.toolName;
-            } else if (lastBlock.type === "text" && lastBlock.text) {
-              loaderPhase = "streaming";
-            }
+            if (lastBlock.type === "text" && lastBlock.text) streaming = true;
           }
+
+          const signals: TurnSignals = {
+            active: true,
+            booting,
+            bootLabel: boot,
+            streaming,
+            liveness: turnLiveness,
+          };
 
           return (
             <motion.div
-              initial={{ opacity: 0, y: 5 }}
+              key="turn-status"
+              // A sibling WKWebView can be background-throttled while it
+              // hydrates this turn. Starting at opacity 0 would keep the row
+              // invisible until WebKit schedules the entrance frame. Liveness
+              // feedback must be visible immediately in every view.
+              initial={false}
               animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -5 }}
               transition={{ duration: 0.15 }}
-              className={cn(
-                "w-fit self-start",
-                loaderPhase === "streaming" || loaderPhase === "analyzing"
-                  ? "px-2 py-1"
-                  : "px-3 py-2 border border-border/50"
-              )}
+              className="w-fit self-start px-2 py-1"
             >
-              <GridDissolveLoader
-                phase={loaderPhase}
-                toolName={toolName}
+              <TurnStatus
+                signals={signals}
+                turnKey={lastAssistant?.id ?? "pending-turn"}
+                startedAt={lastAssistant?.timestamp ?? null}
               />
             </motion.div>
           );

@@ -5,7 +5,7 @@
 /**
  * Shared helpers for search-window e2e specs.
  *
- * Pairs with the `search-fixture` seed (src-tauri/src/e2e_seed.rs): when the
+ * Pairs with the `search-fixture` seed (src-tauri/src/e2e/seeds.rs): when the
  * app is launched with `SCREENPIPE_E2E_SEED=...,search-fixture`, known
  * searchable frames are inserted so `/search/keyword` returns real results.
  */
@@ -21,9 +21,15 @@ export const HAS_SEARCH_FIXTURE = E2E_SEED_FLAGS.includes("search-fixture");
  * Open the Search window, type `query`, and wait for the first result card.
  * Assumes the search fixture is seeded (see HAS_SEARCH_FIXTURE).
  */
-export async function openSearch(query: string): Promise<void> {
+export async function openSearch(
+  query: string,
+  timelineOrigin?: "home" | "main" | "main-window",
+): Promise<void> {
   await openHomeWindow();
-  await invokeOrThrow("open_search_window", { query: null });
+  await invokeOrThrow("open_search_window", {
+    query: null,
+    timelineOrigin: timelineOrigin ?? null,
+  });
   await waitForWindowHandle("search", t(20_000));
   await browser.switchToWindow("search");
 

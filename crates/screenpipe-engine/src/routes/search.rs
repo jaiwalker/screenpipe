@@ -11,6 +11,7 @@ use axum::{
 use oasgen::{oasgen, OaSchema};
 use screenpipe_core::pipes::permissions::PipePermissions;
 
+use super::request_origin::ExplicitApiClient;
 use super::response_format::{
     is_passthrough, parse_fields, parse_format, render_list, rows_from, OutputFormat,
 };
@@ -45,10 +46,8 @@ impl<S: Send + Sync> FromRequestParts<S> for OptionalPipePerms {
 
 impl oasgen::OaParameter for OptionalPipePerms {}
 
-use chrono::{DateTime, Utc};
-use screenpipe_db::{
-    ContentType, DatabaseManager, Order, SearchResult, SemanticContextQuery, SemanticFrameContext,
-};
+use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use screenpipe_db::{ContentType, Order, SearchResult, SemanticContextQuery, SemanticFrameContext};
 use screenpipe_semantic::{IdentityQuality, SemanticKind};
 
 use futures::stream::{self, StreamExt};
@@ -69,6 +68,7 @@ use tokio::{
 use tracing::{debug, error, warn};
 
 use crate::analytics;
+use crate::history_access::HistoryAccessPolicy;
 use crate::server::AppState;
 use crate::video_utils::extract_frame;
 
@@ -103,6 +103,18 @@ impl SearchContentType {
             Self::Accessibility => Some(ContentType::Accessibility),
             Self::Memory => Some(ContentType::Memory),
             Self::Parsed => None,
+        }
+    }
+
+    fn permission_name(&self) -> Option<&'static str> {
+        match self {
+            Self::All => None,
+            Self::OCR => Some("ocr"),
+            Self::Audio => Some("audio"),
+            Self::Input => Some("input"),
+            Self::Accessibility => Some("accessibility"),
+            Self::Memory => Some("memory"),
+            Self::Parsed => Some("parsed"),
         }
     }
 }
@@ -228,6 +240,109 @@ pub(crate) struct PaginationQuery {
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_number_from_string")]
     offset: u32,
+}
+
+fn validate_pipe_search_permissions(
+    permissions: &PipePermissions,
+    query: &SearchQuery,
+) -> Result<(), String> {
+    if permissions.has_content_type_restrictions() {
+        let Some(content_type) = query.content_type.permission_name() else {
+            return Err(
+                "content_type must be specified explicitly when Pipe content permissions are active"
+                    .to_string(),
+            );
+        };
+        if !permissions.is_content_type_allowed(content_type) {
+            return Err(format!(
+                "content type \"{content_type}\" is not permitted for this Pipe"
+            ));
+        }
+    }
+
+    if let Some(app_name) = query.app_name.as_deref() {
+        if !permissions.is_app_allowed(app_name) {
+            return Err(format!(
+                "access to app \"{app_name}\" is not permitted for this Pipe"
+            ));
+        }
+    }
+    if let Some(window_name) = query.window_name.as_deref() {
+        if !permissions.is_window_allowed(window_name) {
+            return Err(format!(
+                "access to window \"{window_name}\" is not permitted for this Pipe"
+            ));
+        }
+    }
+    if query.include_related && permissions.has_data_restrictions() {
+        return Err(
+            "include_related is unavailable when Pipe data permissions are active".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
+fn pipe_can_access_content_item(permissions: &PipePermissions, item: &ContentItem) -> bool {
+    let (app_name, window_name, content_type, timestamp) = match item {
+        ContentItem::OCR(content) => (
+            Some(content.app_name.as_str()),
+            Some(content.window_name.as_str()),
+            if content
+                .text_source
+                .as_deref()
+                .is_some_and(|source| source.eq_ignore_ascii_case("accessibility"))
+            {
+                "accessibility"
+            } else {
+                "ocr"
+            },
+            Some(content.timestamp),
+        ),
+        ContentItem::Audio(content) => (None, None, "audio", Some(content.timestamp)),
+        ContentItem::UI(content) => (
+            Some(content.app_name.as_str()),
+            Some(content.window_name.as_str()),
+            "accessibility",
+            Some(content.timestamp),
+        ),
+        ContentItem::Input(content) => (
+            content.app_name.as_deref(),
+            content.window_title.as_deref(),
+            "input",
+            Some(content.timestamp),
+        ),
+        ContentItem::Memory(content) => (
+            None,
+            None,
+            "memory",
+            DateTime::parse_from_rfc3339(&content.created_at)
+                .ok()
+                .map(|timestamp| timestamp.with_timezone(&Utc)),
+        ),
+        ContentItem::Parsed(content) => (
+            Some(content.app_name.as_str()),
+            Some(content.window_name.as_str()),
+            "parsed",
+            Some(content.timestamp),
+        ),
+    };
+
+    let timestamp = match timestamp {
+        Some(timestamp) => timestamp,
+        None if permissions.time_range.is_some() || permissions.days.is_some() => return false,
+        None => Utc::now(),
+    };
+
+    let local_timestamp = timestamp.with_timezone(&Local);
+    permissions.is_item_allowed(
+        app_name,
+        window_name,
+        content_type,
+        local_timestamp.hour(),
+        local_timestamp.minute(),
+        local_timestamp.weekday(),
+    )
 }
 
 pub(crate) fn deserialize_number_from_string<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -403,6 +518,7 @@ fn group_related_tags(rows: Vec<(String, i64)>) -> std::collections::HashMap<Str
 
 pub struct SearchCacheEntry {
     json_body: Bytes,
+    result_count: usize,
 }
 
 const SEARCH_CACHE_MAX_ITEMS: usize = 200;
@@ -427,7 +543,39 @@ fn build_search_cache_entry(response: &SearchResponse) -> Option<SearchCacheEntr
     }
     Some(SearchCacheEntry {
         json_body: Bytes::from(json_body),
+        result_count: response.data.len(),
     })
+}
+
+fn capture_direct_api_search_value(client: &ExplicitApiClient, result_count: usize) {
+    if client.is_direct_api() && result_count > 0 {
+        analytics::capture_event_nonblocking(
+            "qualified_value_event",
+            crate::qualified_value::api_outcome_properties(
+                crate::qualified_value::ApiOutcomeKind::SearchResult,
+            ),
+        );
+    }
+}
+
+fn parsed_parser_profiles(content_items: &[ContentItem]) -> Vec<String> {
+    let mut parser_ids = Vec::new();
+    for item in content_items {
+        let ContentItem::Parsed(content) = item else {
+            continue;
+        };
+        if parser_ids
+            .iter()
+            .any(|parser_id| parser_id == &content.parser_id)
+        {
+            continue;
+        }
+        parser_ids.push(content.parser_id.clone());
+        if parser_ids.len() == 16 {
+            break;
+        }
+    }
+    parser_ids
 }
 
 /// Middle-truncate a string to at most `max_chars` characters.
@@ -496,6 +644,7 @@ pub fn search_result_to_content_item(
             focused: ocr.focused,
             device_name: ocr.device_name.clone(),
             text_source: ocr.text_source.clone(),
+            event_source: ocr.capture_trigger.clone(),
         }),
         SearchResult::Audio(audio) => {
             let transcription = truncate(audio.transcription.clone());
@@ -533,6 +682,7 @@ pub fn search_result_to_content_item(
             offset_index: ui.offset_index,
             frame_name: ui.frame_name.clone(),
             browser_url: ui.browser_url.clone(),
+            event_source: ui.capture_trigger.clone(),
         }),
         SearchResult::Input(input) => ContentItem::Input(InputContent {
             id: input.id,
@@ -818,12 +968,67 @@ fn try_acquire_search_permit(semaphore: Arc<Semaphore>) -> Option<OwnedSemaphore
     semaphore.try_acquire_owned().ok()
 }
 
+/// Apply the live account history policy to a search range.
+///
+/// Returns `true` when the requested range ends wholly before the accessible
+/// boundary. Callers can then return an empty result without touching the DB.
+fn apply_search_history_access(
+    policy: &HistoryAccessPolicy,
+    start_time: &mut Option<DateTime<Utc>>,
+    end_time: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(cutoff) = policy.cutoff(now) else {
+        return false;
+    };
+
+    *start_time = Some(start_time.map_or(cutoff, |start| start.max(cutoff)));
+    end_time.is_some_and(|end| end < cutoff)
+}
+
+fn apply_search_query_history_access(
+    policy: &HistoryAccessPolicy,
+    query: &mut SearchQuery,
+    now: DateTime<Utc>,
+) -> bool {
+    let wholly_before_cutoff =
+        apply_search_history_access(policy, &mut query.start_time, query.end_time, now);
+    if policy.is_restricted() {
+        // `related_tags` currently aggregates across all retained data and has
+        // no time-bound form. Omit it rather than leak older tag associations.
+        query.include_related = false;
+    }
+    wholly_before_cutoff
+}
+
+fn empty_search_response(
+    query: &SearchQuery,
+    format: OutputFormat,
+    fields: &Option<Vec<String>>,
+) -> Response<Body> {
+    render_search(
+        format,
+        fields,
+        &SearchResponse {
+            data: Vec::new(),
+            pagination: PaginationInfo {
+                limit: query.pagination.limit,
+                offset: query.pagination.offset,
+                total: 0,
+            },
+            cloud: None,
+            related: None,
+        },
+    )
+}
+
 // Update the search function
 #[oasgen]
 pub(crate) async fn search(
     Query(mut query): Query<SearchQuery>,
     State(state): State<Arc<AppState>>,
     OptionalPipePerms(pipe_perms): OptionalPipePerms,
+    api_client: ExplicitApiClient,
 ) -> Result<Response<Body>, (StatusCode, JsonResponse<serde_json::Value>)> {
     // Presentation-only: parsed up front so a bad `format` 400s before any
     // DB work. Only the default JSON representation is cached; alternate
@@ -833,16 +1038,53 @@ pub(crate) async fn search(
     let fields = parse_fields(&query.fields);
     let cacheable_render = is_passthrough(format, &fields);
 
-    // Server-authoritative privacy filter: if the request comes from a
+    let pipe_data_restricted = pipe_perms
+        .as_ref()
+        .map(|permissions| permissions.has_data_restrictions())
+        .unwrap_or(false);
+    let history_restricted = state.history_access.is_restricted();
+
+    // Server-authoritative permission validation and privacy filter: if the request comes from a
     // pipe whose manifest declares `privacy_filter: true`, force PII
     // redaction regardless of what the request payload says. The pipe's
     // LLM agent has no schema-level way to bypass this — the permissions
     // are looked up from the bearer token by `pipe_permissions_middleware`.
     if let Some(perms) = &pipe_perms {
+        validate_pipe_search_permissions(perms, &query).map_err(|message| {
+            (
+                StatusCode::FORBIDDEN,
+                JsonResponse(json!({ "error": message })),
+            )
+        })?;
         if perms.privacy_filter {
             query.filter_pii = true;
         }
     }
+
+    let parsed_search = query.content_type == SearchContentType::Parsed;
+    if !parsed_search && (query.frame_id.is_some() || query.actor_id.is_some()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({
+                "error": "frame_id and actor_id require content_type=parsed",
+            })),
+        ));
+    }
+    if parsed_search && query.tags.as_ref().is_some_and(|tags| !tags.is_empty()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            JsonResponse(json!({
+                "error": "tags are not supported for content_type=parsed",
+            })),
+        ));
+    }
+
+    let wholly_before_history_cutoff =
+        apply_search_query_history_access(&state.history_access, &mut query, Utc::now());
+    if wholly_before_history_cutoff {
+        return Ok(empty_search_response(&query, format, &fields));
+    }
+
     debug!(
         "received search request: query='{}', content_type={:?}, limit={}, offset={}, start_time={:?}, end_time={:?}, app_name={:?}, window_name={:?}, min_length={:?}, max_length={:?}, speaker_ids={:?}, frame_name={:?}, browser_url={:?}, focused={:?}",
         query.q.as_deref().unwrap_or(""),
@@ -863,9 +1105,10 @@ pub(crate) async fn search(
 
     // Check cache first (only for queries without frame extraction)
     let cache_key = compute_search_cache_key(&query);
-    if !query.include_frames && cacheable_render {
+    if !history_restricted && !query.include_frames && cacheable_render && !pipe_data_restricted {
         if let Some(cached) = state.search_cache.get(&cache_key).await {
             debug!("search cache hit for key {}", cache_key);
+            capture_direct_api_search_value(&api_client, cached.result_count);
             return Ok(render_cached_search(&cached));
         }
     }
@@ -885,23 +1128,6 @@ pub(crate) async fn search(
     let query_str = query.q.as_deref().unwrap_or("");
 
     let tags = query.tags.as_deref().unwrap_or(&[]);
-    let parsed_search = query.content_type == SearchContentType::Parsed;
-    if !parsed_search && (query.frame_id.is_some() || query.actor_id.is_some()) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            JsonResponse(json!({
-                "error": "frame_id and actor_id require content_type=parsed",
-            })),
-        ));
-    }
-    if parsed_search && !tags.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            JsonResponse(json!({
-                "error": "tags are not supported for content_type=parsed",
-            })),
-        ));
-    }
 
     enum SearchPage {
         Standard(Vec<SearchResult>),
@@ -993,7 +1219,7 @@ pub(crate) async fn search(
         }
     };
 
-    let (results, total) = match database_result {
+    let (results, mut total) = match database_result {
         Ok(result) => result,
         Err(error) => {
             if let Some(response) = classified_search_database_response(&error) {
@@ -1074,6 +1300,16 @@ pub(crate) async fn search(
             })
             .collect(),
     };
+
+    if let Some(permissions) = &pipe_perms {
+        content_items.retain(|item| pipe_can_access_content_item(permissions, item));
+        if pipe_data_restricted {
+            // The unrestricted DB count can reveal denied rows. A fully accurate
+            // restricted count requires pushing every rule into SQL, so return
+            // only the visible page size until that exists.
+            total = content_items.len() as _;
+        }
+    }
 
     deduplicate_ocr_and_ui(&mut content_items);
 
@@ -1223,15 +1459,26 @@ pub(crate) async fn search(
 
     debug!("search completed: found {} results", total);
 
+    let response_non_empty = !content_items.is_empty();
+    let parsed_parser_profiles = if parsed_search {
+        parsed_parser_profiles(&content_items)
+    } else {
+        Vec::new()
+    };
+
     // Track search analytics
     analytics::capture_event_nonblocking(
         "search_performed",
         serde_json::json!({
             "query_length": query.q.as_ref().map(|q| q.len()).unwrap_or(0),
             "content_type": format!("{:?}", query.content_type),
+            "request_source": api_client.source_label(),
             "has_date_filter": query.start_time.is_some() || query.end_time.is_some(),
             "has_app_filter": query.app_name.is_some(),
             "result_count": total,
+            "non_empty": response_non_empty,
+            "parsed_non_empty": parsed_search && response_non_empty,
+            "parsed_parser_profiles": parsed_parser_profiles,
             "limit": query.pagination.limit,
             "offset": query.pagination.offset,
         }),
@@ -1262,10 +1509,12 @@ pub(crate) async fn search(
         related,
     };
 
+    capture_direct_api_search_value(&api_client, response.data.len());
+
     // Cache the result (only for queries without frame extraction). Cache hits
     // serve the pre-serialized JSON bytes directly for the common response
     // shape, avoiding repeated deep clones of text-heavy search payloads.
-    if !query.include_frames && cacheable_render {
+    if !history_restricted && !query.include_frames && cacheable_render && !pipe_data_restricted {
         if let Some(cache_entry) = build_search_cache_entry(&response) {
             let rendered = render_cached_search(&cache_entry);
             state
@@ -1281,25 +1530,30 @@ pub(crate) async fn search(
 
 #[oasgen]
 pub(crate) async fn keyword_search_handler(
-    Query(query): Query<KeywordSearchRequest>,
+    Query(mut query): Query<KeywordSearchRequest>,
     State(state): State<Arc<AppState>>,
 ) -> Result<JsonResponse<Value>, (StatusCode, JsonResponse<Value>)> {
+    if apply_search_history_access(
+        &state.history_access,
+        &mut query.start_time,
+        query.end_time,
+        Utc::now(),
+    ) {
+        return Ok(JsonResponse(json!([])));
+    }
+
     if query.group {
-        // Lightweight query: skips text/text_json columns (no OCR blob reads,
-        // no JSON parsing). max_per_app=30 ensures app diversity via ROW_NUMBER.
-        // FTS subquery capped at 5000 to limit scan. Typically <200ms.
-        let matches = state
+        let groups = state
             .db
-            .search_for_grouping(
+            .search_grouped_matches(
                 &query.query,
-                500,
-                0,
+                query.limit,
+                query.offset,
                 query.start_time,
                 query.end_time,
                 query.fuzzy_match,
                 query.order,
                 query.app_names,
-                Some(30),
             )
             .await
             .map_err(|e| {
@@ -1309,14 +1563,11 @@ pub(crate) async fn keyword_search_handler(
                 )
             })?;
 
-        let filtered: Vec<_> = matches
+        let filtered: Vec<_> = groups
             .into_iter()
-            .filter(|m| !is_screenpipe_app(&m.app_name))
+            .filter(|group| !is_screenpipe_app(&group.representative.app_name))
             .collect();
-
-        let groups = DatabaseManager::cluster_search_matches(filtered, 120);
-
-        Ok(JsonResponse(json!(groups)))
+        Ok(JsonResponse(json!(filtered)))
     } else {
         let matches = state
             .db
@@ -1439,6 +1690,144 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use screenpipe_core::pipes::permissions::PermissionRule;
+
+    fn restricted_pipe_permissions(
+        allow_rules: Vec<PermissionRule>,
+        deny_rules: Vec<PermissionRule>,
+    ) -> PipePermissions {
+        PipePermissions {
+            pipe_name: "test-pipe".to_string(),
+            allow_rules,
+            deny_rules,
+            use_default_allowlist: true,
+            time_range: None,
+            days: None,
+            pipe_token: Some("sp_pipe_test".to_string()),
+            pipe_dir: None,
+            privacy_filter: false,
+        }
+    }
+
+    fn search_query(content_type: SearchContentType, app_name: Option<&str>) -> SearchQuery {
+        SearchQuery {
+            q: None,
+            pagination: PaginationQuery {
+                limit: 20,
+                offset: 0,
+            },
+            content_type,
+            order: Order::Descending,
+            input_context_only: false,
+            start_time: None,
+            end_time: None,
+            app_name: app_name.map(str::to_string),
+            window_name: None,
+            frame_id: None,
+            actor_id: None,
+            frame_name: None,
+            include_frames: false,
+            min_length: None,
+            max_length: None,
+            speaker_ids: None,
+            focused: None,
+            on_screen: None,
+            browser_url: None,
+            speaker_name: None,
+            include_cloud: false,
+            max_content_length: None,
+            device_name: None,
+            machine_id: None,
+            filter_pii: false,
+            tags: None,
+            include_related: false,
+            format: None,
+            fields: None,
+        }
+    }
+
+    fn fixed_now() -> DateTime<Utc> {
+        "2026-08-24T20:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn restricted_search_clamps_missing_and_old_starts() {
+        let policy = HistoryAccessPolicy::last_24_hours();
+        let cutoff = fixed_now() - chrono::Duration::hours(24);
+
+        let mut missing = None;
+        assert!(!apply_search_history_access(
+            &policy,
+            &mut missing,
+            None,
+            fixed_now(),
+        ));
+        assert_eq!(missing, Some(cutoff));
+
+        let mut old = Some(fixed_now() - chrono::Duration::days(30));
+        assert!(!apply_search_history_access(
+            &policy,
+            &mut old,
+            None,
+            fixed_now(),
+        ));
+        assert_eq!(old, Some(cutoff));
+    }
+
+    #[test]
+    fn restricted_search_preserves_recent_start_and_marks_wholly_old_ranges_empty() {
+        let policy = HistoryAccessPolicy::last_24_hours();
+        let recent = fixed_now() - chrono::Duration::hours(2);
+        let mut start = Some(recent);
+        assert!(!apply_search_history_access(
+            &policy,
+            &mut start,
+            Some(fixed_now()),
+            fixed_now(),
+        ));
+        assert_eq!(start, Some(recent));
+
+        let mut old_start = Some(fixed_now() - chrono::Duration::days(7));
+        assert!(apply_search_history_access(
+            &policy,
+            &mut old_start,
+            Some(fixed_now() - chrono::Duration::days(2)),
+            fixed_now(),
+        ));
+    }
+
+    #[test]
+    fn unrestricted_search_preserves_range_and_related_tags() {
+        let policy = HistoryAccessPolicy::unrestricted();
+        let old = fixed_now() - chrono::Duration::days(30);
+        let mut query = search_query(SearchContentType::All, None);
+        query.start_time = Some(old);
+        query.end_time = Some(fixed_now() - chrono::Duration::days(29));
+        query.include_related = true;
+
+        assert!(!apply_search_query_history_access(
+            &policy,
+            &mut query,
+            fixed_now(),
+        ));
+        assert_eq!(query.start_time, Some(old));
+        assert!(query.include_related);
+    }
+
+    #[test]
+    fn restricted_search_suppresses_all_time_related_tag_expansion() {
+        let policy = HistoryAccessPolicy::last_24_hours();
+        let mut query = search_query(SearchContentType::All, None);
+        query.tags = Some(vec!["project:atlas".to_string()]);
+        query.include_related = true;
+
+        assert!(!apply_search_query_history_access(
+            &policy,
+            &mut query,
+            fixed_now(),
+        ));
+        assert!(!query.include_related);
+    }
 
     #[derive(Debug)]
     struct InterruptedDatabaseError;
@@ -1493,6 +1882,7 @@ mod tests {
             focused: None,
             device_name: "test-device".to_string(),
             text_source: Some("ocr".to_string()),
+            event_source: None,
         }
     }
 
@@ -1508,6 +1898,7 @@ mod tests {
             offset_index: 0,
             frame_name: None,
             browser_url: None,
+            event_source: None,
         }
     }
 
@@ -1523,6 +1914,65 @@ mod tests {
             created_at: Utc::now().to_rfc3339(),
             updated_at: Utc::now().to_rfc3339(),
         }
+    }
+
+    #[test]
+    fn pipe_search_rejects_broad_and_denied_content_types() {
+        let permissions = restricted_pipe_permissions(
+            vec![],
+            vec![PermissionRule::Content {
+                value: "input".to_string(),
+            }],
+        );
+
+        assert!(validate_pipe_search_permissions(
+            &permissions,
+            &search_query(SearchContentType::All, None)
+        )
+        .unwrap_err()
+        .contains("specified explicitly"));
+        assert!(validate_pipe_search_permissions(
+            &permissions,
+            &search_query(SearchContentType::Input, None)
+        )
+        .unwrap_err()
+        .contains("not permitted"));
+        assert!(validate_pipe_search_permissions(
+            &permissions,
+            &search_query(SearchContentType::OCR, None)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn pipe_search_rejects_denied_app_filters_and_rows() {
+        let permissions = restricted_pipe_permissions(
+            vec![PermissionRule::App {
+                value: "slack".to_string(),
+            }],
+            vec![],
+        );
+
+        assert!(validate_pipe_search_permissions(
+            &permissions,
+            &search_query(SearchContentType::OCR, Some("1Password"))
+        )
+        .unwrap_err()
+        .contains("not permitted"));
+
+        let mut denied = test_ocr(1, "denied.mp4");
+        denied.app_name = "1Password".to_string();
+        assert!(!pipe_can_access_content_item(
+            &permissions,
+            &ContentItem::OCR(denied)
+        ));
+
+        let mut allowed = test_ocr(2, "allowed.mp4");
+        allowed.app_name = "Slack".to_string();
+        assert!(pipe_can_access_content_item(
+            &permissions,
+            &ContentItem::OCR(allowed)
+        ));
     }
 
     #[test]
@@ -1563,6 +2013,7 @@ mod tests {
                 focused: Some(true),
                 device_name: "test-device".to_string(),
                 text_source: Some("ocr".to_string()),
+                capture_trigger: Some("typing_pause".to_string()),
             })
         };
 
@@ -1571,12 +2022,35 @@ mod tests {
             None,
         );
         let lightweight_projection = search_result_to_content_item(&make_result(""), None);
+        let full_json = serde_json::to_value(full_projection).unwrap();
+        let lightweight_json = serde_json::to_value(lightweight_projection).unwrap();
 
         assert_eq!(
-            serde_json::to_value(full_projection).unwrap(),
-            serde_json::to_value(lightweight_projection).unwrap(),
+            full_json, lightweight_json,
             "the HTTP search shape must not expose OCR bounding-box JSON"
         );
+        assert_eq!(full_json["content"]["event_source"], "typing_pause");
+    }
+
+    #[test]
+    fn accessibility_event_source_is_observable_in_search_response() {
+        let result = SearchResult::UI(screenpipe_db::UiContent {
+            id: 42,
+            text: "visible text".to_string(),
+            timestamp: Utc::now(),
+            app_name: "test".to_string(),
+            window_name: "test window".to_string(),
+            initial_traversal_at: None,
+            file_path: "frame.jpg".to_string(),
+            offset_index: 0,
+            frame_name: Some("display-1".to_string()),
+            browser_url: None,
+            capture_trigger: Some("visual_change".to_string()),
+        });
+
+        let json = serde_json::to_value(search_result_to_content_item(&result, None)).unwrap();
+
+        assert_eq!(json["content"]["event_source"], "visual_change");
     }
 
     #[test]

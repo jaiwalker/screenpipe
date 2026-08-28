@@ -24,14 +24,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use screenpipe_resource::ResourceGovernor;
+use screenpipe_resource::{ResourceGovernor, WorkSliceConfig, WorkSliceController};
+use screenpipe_sqlite_coordinator::SqliteWritePool;
 use sqlx::SqlitePool;
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
-use crate::{Pipeline, Redactor};
+use crate::{DatabaseErrorHook, Pipeline, Redactor};
 
 pub use columns::{keys as column_keys, RedactColumns};
 pub use tables::{TargetTable, ALL_TARGET_TABLES};
@@ -48,11 +49,19 @@ pub use tables::{TargetTable, ALL_TARGET_TABLES};
 /// place, just shadowed by a redacted copy).
 #[derive(Clone)]
 pub struct WorkerConfig {
-    /// How many rows to redact per database round-trip. Also the width of
-    /// each CPU burst: the redactor runs this many inferences back-to-back
-    /// before the worker measures process CPU and cools down. Keep this small:
-    /// latency is irrelevant for a background reconciliation worker.
+    /// Maximum rows to redact per database round-trip. The adaptive batch
+    /// controller may use fewer rows to keep one uninterrupted work slice
+    /// near [`Self::target_batch_duration`].
     pub batch_size: u32,
+    /// Rows in the first work slice for each table. Starting below
+    /// [`Self::batch_size`] prevents a fresh backlog from immediately issuing
+    /// the largest allowed burst before the worker has timing evidence.
+    pub initial_batch_size: u32,
+    /// Target wall time for one uninterrupted redaction work slice. A slow
+    /// slice shrinks the next batch; several fast slices grow it back toward
+    /// [`Self::batch_size`]. This bounds peaks while retaining backlog
+    /// throughput on faster machines.
+    pub target_batch_duration: Duration,
     /// Lower bound on the post-batch cooldown (and the minimum yield for a
     /// tiny batch). The actual cooldown is derived from measured process CPU.
     pub idle_between_batches: Duration,
@@ -62,9 +71,9 @@ pub struct WorkerConfig {
     /// than `poll_interval`: a multi-core batch may need tens of seconds of
     /// rest to average below the process CPU target.
     pub max_cpu_cooldown: Duration,
-    /// Shared process resource governor. `Some` by default so all production
-    /// background workers coordinate through one CPU lane. Tests may set this
-    /// to `None` when they need deterministic, unthrottled completion.
+    /// Shared process resource governor. `Some` by default so participating
+    /// production background workers coordinate through one CPU lane. Tests
+    /// may set this to `None` for deterministic, unthrottled completion.
     pub resource_governor: Option<Arc<ResourceGovernor>>,
     /// Tables to reconcile. Default: all of [`ALL_TARGET_TABLES`]
     /// (frames:full_text, audio, accessibility, ui_events, elements).
@@ -92,6 +101,8 @@ impl Default for WorkerConfig {
     fn default() -> Self {
         Self {
             batch_size: 16,
+            initial_batch_size: 4,
+            target_batch_duration: Duration::from_millis(250),
             idle_between_batches: Duration::from_millis(50),
             poll_interval: Duration::from_secs(5),
             max_cpu_cooldown: Duration::from_secs(60),
@@ -117,21 +128,42 @@ pub struct WorkerStatus {
 #[derive(Clone)]
 pub struct Worker {
     pool: SqlitePool,
+    writer: SqliteWritePool,
     redactor: Arc<dyn Redactor>,
     cfg: WorkerConfig,
     status: Arc<Mutex<WorkerStatus>>,
     paused: Arc<std::sync::atomic::AtomicBool>,
+    database_error_hook: Option<DatabaseErrorHook>,
 }
 
 impl Worker {
     pub fn new(pool: SqlitePool, redactor: Arc<dyn Redactor>, cfg: WorkerConfig) -> Self {
+        let writer = SqliteWritePool::standalone(pool.clone());
+        Self::new_with_writer(pool, writer, redactor, cfg)
+    }
+
+    pub fn new_with_writer(
+        pool: SqlitePool,
+        writer: SqliteWritePool,
+        redactor: Arc<dyn Redactor>,
+        cfg: WorkerConfig,
+    ) -> Self {
         Self {
             pool,
+            writer,
             redactor,
             cfg,
             status: Arc::new(Mutex::new(WorkerStatus::default())),
             paused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            database_error_hook: None,
         }
+    }
+
+    /// Route typed SQLx failures to the database owner. Non-database errors
+    /// never invoke this hook.
+    pub fn with_database_error_hook(mut self, hook: DatabaseErrorHook) -> Self {
+        self.database_error_hook = Some(hook);
+        self
     }
 
     pub fn pause(&self) {
@@ -200,13 +232,18 @@ impl Worker {
         // recovered. Detect it so we log once and back off hard instead of
         // pinning a CPU core retrying every 2s (what users see as a sudden
         // screenpipe CPU spike).
-        fn is_db_corruption<E: std::fmt::Display + ?Sized>(e: &E) -> bool {
+        fn is_db_hard_fault<E: std::fmt::Display + ?Sized>(e: &E) -> bool {
             let msg = e.to_string().to_lowercase();
             msg.contains("malformed")             // database disk image is malformed
                 || msg.contains("disk image")
                 || msg.contains("(code: 11)")     // SQLITE_CORRUPT
                 || msg.contains("not a database") // SQLITE_NOTADB
                 || msg.contains("(code: 26)")
+                || msg.contains("disk i/o error") // SQLITE_IOERR
+                || msg.contains("(code: 10)")
+                || msg.contains("(code: 522)")    // SQLITE_IOERR_SHORT_READ
+                || msg.contains("disk is full")   // SQLITE_FULL
+                || msg.contains("(code: 13)")
         }
         let mut corruption_logged = false;
 
@@ -237,6 +274,23 @@ impl Worker {
             .map(|_| Pipeline::regex_only());
         let mut session_seen: HashMap<PathBuf, SystemTime> = HashMap::new();
         let mut last_session_scan: Option<std::time::Instant> = None;
+        // Keep independent timing feedback per table. Full-text rows, audio
+        // transcripts, and multi-column UI events have very different costs;
+        // one global batch size would let a cheap surface train an expensive
+        // surface back up to a bursty limit.
+        let mut batch_sizers: Vec<WorkSliceController> = self
+            .cfg
+            .tables
+            .iter()
+            .map(|_| {
+                WorkSliceController::new(WorkSliceConfig {
+                    max_units: self.cfg.batch_size,
+                    initial_units: self.cfg.initial_batch_size,
+                    target_duration: self.cfg.target_batch_duration,
+                    ..WorkSliceConfig::default()
+                })
+            })
+            .collect();
 
         loop {
             if self.paused.load(std::sync::atomic::Ordering::SeqCst) {
@@ -253,7 +307,7 @@ impl Worker {
             self.set_paused(false).await;
 
             let mut any_work = false;
-            for table in &self.cfg.tables {
+            for (table_index, table) in self.cfg.tables.iter().enumerate() {
                 // Permanently skip a target whose table/column isn't in this
                 // schema — see `is_missing_object` and the Err arm below.
                 if disabled.contains(table) {
@@ -275,13 +329,14 @@ impl Worker {
 
                 // Race the table work against shutdown so a long redact batch
                 // doesn't hold us through tokio teardown.
+                let batch_limit = batch_sizers[table_index].current_units();
                 let batch_start = std::time::Instant::now();
                 let result = match shutdown.as_ref() {
                     Some(n) => tokio::select! {
-                        _r = self.process_one(*table) => Some(_r),
+                        _r = self.process_one(*table, batch_limit) => Some(_r),
                         _ = n.notified() => None,
                     },
-                    None => Some(self.process_one(*table).await),
+                    None => Some(self.process_one(*table, batch_limit).await),
                 };
                 match result {
                     None => {
@@ -293,6 +348,8 @@ impl Worker {
                         corruption_logged = false; // DB readable again
 
                         let worked = batch_start.elapsed();
+                        let target_slice = batch_sizers[table_index].target_duration();
+                        let next_batch_limit = batch_sizers[table_index].observe(worked);
                         let cpu_sample = cpu_permit.as_ref().map(|permit| {
                             permit.finish(
                                 worked,
@@ -305,7 +362,10 @@ impl Worker {
                             .unwrap_or(self.cfg.idle_between_batches);
                         debug!(
                             table = ?table,
-                            rows = n,
+                            work_units = n,
+                            batch_limit,
+                            next_batch_limit,
+                            target_slice_ms = target_slice.as_millis(),
                             active_cpu_percent = cpu_sample.and_then(|sample| sample.active_cpu_percent),
                             idle_cpu_percent = cpu_sample.and_then(|sample| sample.idle_cpu_percent),
                             worked_ms = worked.as_millis(),
@@ -332,6 +392,7 @@ impl Worker {
                             let mut s = self.status.lock().await;
                             s.last_error = Some(e.to_string());
                         }
+                        crate::notify_database_error(self.database_error_hook.as_ref(), &e);
                         if is_missing_object(&e) {
                             // Non-transient and scoped to this one target: the
                             // table or a column it reads isn't in this schema
@@ -349,7 +410,7 @@ impl Worker {
                             disabled.push(*table);
                             continue;
                         }
-                        if is_db_corruption(&e) {
+                        if is_db_hard_fault(&e) {
                             // Non-transient: the DB is corrupt and every table
                             // shares it, so retrying now just spins a core.
                             // Log once, back off 5 min, and skip the rest of
@@ -358,7 +419,7 @@ impl Worker {
                                 error!(
                                     table = ?table,
                                     error = %e,
-                                    "database corruption detected — backing off reconciliation \
+                                    "database hard fault detected — backing off reconciliation \
                                      (retrying every 5 min); recover the DB to clear this"
                                 );
                                 corruption_logged = true;
@@ -432,21 +493,21 @@ impl Worker {
     /// (screenpipe/website#291); `UiEvents` gets the multi-column
     /// per-row path (issue #4115); everything else uses the generic
     /// single-column path.
-    async fn process_one(&self, table: TargetTable) -> Result<u32, anyhow::Error> {
+    async fn process_one(&self, table: TargetTable, batch_size: u32) -> Result<u32, anyhow::Error> {
         let cols = self.cfg.columns;
         match table {
-            TargetTable::FullText => self.process_frames_fulltext().await,
-            TargetTable::UiEvents => self.process_ui_events().await,
+            TargetTable::FullText => self.process_frames_fulltext(batch_size).await,
+            TargetTable::UiEvents => self.process_ui_events(batch_size).await,
             // Elements is multi-column too: `text` PLUS the `properties` JSON
             // (the a11y value/placeholder/help_text of the control).
-            TargetTable::Elements => self.process_elements().await,
+            TargetTable::Elements => self.process_elements(batch_size).await,
             // Single-column targets gated by the per-column config.
             TargetTable::AudioTranscription if !cols.audio_transcription => Ok(0),
             // `Accessibility` is the fallback pass for `frames.accessibility_text`
             // (the primary path is propagation in process_frames_fulltext);
             // both honor the same toggle.
             TargetTable::Accessibility if !cols.accessibility_text => Ok(0),
-            other => self.process_table(other).await,
+            other => self.process_table(other, batch_size).await,
         }
     }
 
@@ -465,14 +526,14 @@ impl Worker {
     /// redactable field). Malformed `properties` → warn + skip that blob but
     /// still redact `text` and stamp, so a corrupt blob never busy-loops.
     /// The watermark is stamped per row regardless, marking clean rows done.
-    async fn process_elements(&self) -> Result<u32, anyhow::Error> {
+    async fn process_elements(&self, batch_size: u32) -> Result<u32, anyhow::Error> {
         let cols = self.cfg.columns;
         // Nothing in this table is enabled → don't even fetch.
         if !cols.element_text && !cols.element_properties {
             return Ok(0);
         }
         let fields = cols.a11y_json_fields();
-        let rows = tables::fetch_unredacted_elements(&self.pool, self.cfg.batch_size).await?;
+        let rows = tables::fetch_unredacted_elements(&self.pool, batch_size).await?;
         if rows.is_empty() {
             return Ok(0);
         }
@@ -578,8 +639,9 @@ impl Worker {
                 None
             };
 
+            let writer = self.writer.lock().await?;
             tables::write_redacted_element(
-                &self.pool,
+                writer.pool(),
                 row.id,
                 text_out.as_deref(),
                 props_out.as_deref(),
@@ -607,13 +669,12 @@ impl Worker {
     /// call, then scattered back to their rows. The watermark is stamped per
     /// row regardless of whether anything changed, so a row with no PII is
     /// marked done and never re-fetched. Returns the number of rows processed.
-    async fn process_ui_events(&self) -> Result<u32, anyhow::Error> {
+    async fn process_ui_events(&self, batch_size: u32) -> Result<u32, anyhow::Error> {
         let active = self.cfg.columns.ui_event_columns();
         if active.is_empty() {
             return Ok(0);
         }
-        let rows =
-            tables::fetch_unredacted_ui_events(&self.pool, &active, self.cfg.batch_size).await?;
+        let rows = tables::fetch_unredacted_ui_events(&self.pool, &active, batch_size).await?;
         if rows.is_empty() {
             return Ok(0);
         }
@@ -694,7 +755,8 @@ impl Worker {
         }
 
         for (row, redacted) in rows.iter().zip(outputs_by_row.iter()) {
-            tables::write_redacted_ui_events(&self.pool, &active, row.id, redacted).await?;
+            let writer = self.writer.lock().await?;
+            tables::write_redacted_ui_events(writer.pool(), &active, row.id, redacted).await?;
         }
 
         let n = rows.len() as u32;
@@ -718,9 +780,8 @@ impl Worker {
     /// (still no second detection on `full_text`) when the redactor can't
     /// yield a value map (the span-less enclave). Returns the number of
     /// column writes performed.
-    async fn process_frames_fulltext(&self) -> Result<u32, anyhow::Error> {
-        let rows =
-            tables::fetch_unredacted_frames_fulltext(&self.pool, self.cfg.batch_size).await?;
+    async fn process_frames_fulltext(&self, batch_size: u32) -> Result<u32, anyhow::Error> {
+        let rows = tables::fetch_unredacted_frames_fulltext(&self.pool, batch_size).await?;
         if rows.is_empty() {
             return Ok(0);
         }
@@ -761,8 +822,9 @@ impl Worker {
                     // they're warned + skipped inside the helper, unfixable by
                     // retry, so they must not wedge full_text).
                     writes += self.propagate_frame_derived(row, &map).await?;
+                    let writer = self.writer.lock().await?;
                     tables::write_redacted(
-                        &self.pool,
+                        writer.pool(),
                         TargetTable::FullText,
                         row.id,
                         &map.apply(&row.full_text),
@@ -787,8 +849,9 @@ impl Worker {
                     // accessibility_text is left to the Accessibility pass
                     // (it has its own model-pass fallback target).
                     let out = self.redactor.redact(&row.full_text).await?;
+                    let writer = self.writer.lock().await?;
                     tables::write_redacted(
-                        &self.pool,
+                        writer.pool(),
                         TargetTable::FullText,
                         row.id,
                         &out.redacted,
@@ -827,8 +890,9 @@ impl Worker {
         if cols.accessibility_text {
             if let Some(acc) = row.accessibility_text.as_deref() {
                 if !acc.is_empty() && row.accessibility_redacted_at.is_none() {
+                    let writer = self.writer.lock().await?;
                     tables::write_redacted(
-                        &self.pool,
+                        writer.pool(),
                         TargetTable::Accessibility,
                         row.id,
                         &map.apply(acc),
@@ -849,7 +913,8 @@ impl Worker {
                         &cols.a11y_json_fields(),
                     ) {
                         Ok(Some(json)) => {
-                            tables::write_redacted_tree(&self.pool, row.id, &json).await?;
+                            let writer = self.writer.lock().await?;
+                            tables::write_redacted_tree(writer.pool(), row.id, &json).await?;
                             writes += 1;
                         }
                         // Ok(None) means the map was empty — impossible here
@@ -869,7 +934,9 @@ impl Worker {
         if cols.window_name {
             if let Some(wn) = row.window_name.as_deref() {
                 if !wn.is_empty() && row.window_name_redacted_at.is_none() {
-                    tables::write_redacted_window_name(&self.pool, row.id, &map.apply(wn)).await?;
+                    let writer = self.writer.lock().await?;
+                    tables::write_redacted_window_name(writer.pool(), row.id, &map.apply(wn))
+                        .await?;
                     writes += 1;
                 }
             }
@@ -881,7 +948,9 @@ impl Worker {
         if cols.browser_url {
             if let Some(url) = row.browser_url.as_deref() {
                 if !url.is_empty() && row.browser_url_redacted_at.is_none() {
-                    tables::write_redacted_browser_url(&self.pool, row.id, &map.apply(url)).await?;
+                    let writer = self.writer.lock().await?;
+                    tables::write_redacted_browser_url(writer.pool(), row.id, &map.apply(url))
+                        .await?;
                     writes += 1;
                 }
             }
@@ -901,7 +970,8 @@ impl Worker {
             if !tj.is_empty() && row.text_json_redacted_at.is_none() {
                 match crate::ocr_json::redact_ocr_text_json(tj, map) {
                     Ok(Some(json)) => {
-                        tables::write_redacted_text_json(&self.pool, row.id, &json).await?;
+                        let writer = self.writer.lock().await?;
+                        tables::write_redacted_text_json(writer.pool(), row.id, &json).await?;
                         writes += 1;
                     }
                     // Ok(None) means the map was empty — impossible here
@@ -949,13 +1019,15 @@ impl Worker {
                     .await
                     {
                         Ok(Some(json)) => {
-                            tables::write_redacted_tree(&self.pool, row.id, &json).await?;
+                            let writer = self.writer.lock().await?;
+                            tables::write_redacted_tree(writer.pool(), row.id, &json).await?;
                             writes += 1;
                         }
                         // No redactable text → stamp the verbatim blob so the
                         // row isn't re-scanned for the tree forever.
                         Ok(None) => {
-                            tables::write_redacted_tree(&self.pool, row.id, tree).await?;
+                            let writer = self.writer.lock().await?;
+                            tables::write_redacted_tree(writer.pool(), row.id, tree).await?;
                             writes += 1;
                         }
                         Err(crate::tree_json::TreeRedactError::Json(e)) => warn!(
@@ -976,7 +1048,9 @@ impl Worker {
             if let Some(wn) = row.window_name.as_deref() {
                 if !wn.is_empty() && row.window_name_redacted_at.is_none() {
                     let out = self.redactor.redact(wn).await?;
-                    tables::write_redacted_window_name(&self.pool, row.id, &out.redacted).await?;
+                    let writer = self.writer.lock().await?;
+                    tables::write_redacted_window_name(writer.pool(), row.id, &out.redacted)
+                        .await?;
                     writes += 1;
                 }
             }
@@ -986,7 +1060,9 @@ impl Worker {
             if let Some(url) = row.browser_url.as_deref() {
                 if !url.is_empty() && row.browser_url_redacted_at.is_none() {
                     let out = self.redactor.redact(url).await?;
-                    tables::write_redacted_browser_url(&self.pool, row.id, &out.redacted).await?;
+                    let writer = self.writer.lock().await?;
+                    tables::write_redacted_browser_url(writer.pool(), row.id, &out.redacted)
+                        .await?;
                     writes += 1;
                 }
             }
@@ -1009,13 +1085,15 @@ impl Worker {
                 .await
                 {
                     Ok(Some(json)) => {
-                        tables::write_redacted_text_json(&self.pool, row.id, &json).await?;
+                        let writer = self.writer.lock().await?;
+                        tables::write_redacted_text_json(writer.pool(), row.id, &json).await?;
                         writes += 1;
                     }
                     // No redactable text → stamp the verbatim blob so the
                     // row isn't re-scanned for text_json forever.
                     Ok(None) => {
-                        tables::write_redacted_text_json(&self.pool, row.id, tj).await?;
+                        let writer = self.writer.lock().await?;
+                        tables::write_redacted_text_json(writer.pool(), row.id, tj).await?;
                         writes += 1;
                     }
                     Err(crate::tree_json::TreeRedactError::Json(e)) => warn!(
@@ -1035,8 +1113,12 @@ impl Worker {
 
     /// Pull a batch of un-redacted rows for one table, redact them,
     /// write back. Returns the number of rows processed.
-    async fn process_table(&self, table: TargetTable) -> Result<u32, anyhow::Error> {
-        let rows = tables::fetch_unredacted(&self.pool, table, self.cfg.batch_size).await?;
+    async fn process_table(
+        &self,
+        table: TargetTable,
+        batch_size: u32,
+    ) -> Result<u32, anyhow::Error> {
+        let rows = tables::fetch_unredacted(&self.pool, table, batch_size).await?;
         if rows.is_empty() {
             return Ok(0);
         }
@@ -1054,7 +1136,8 @@ impl Worker {
         }
 
         for (row, out) in rows.iter().zip(outputs.iter()) {
-            tables::write_redacted(&self.pool, table, row.id, &out.redacted).await?;
+            let writer = self.writer.lock().await?;
+            tables::write_redacted(writer.pool(), table, row.id, &out.redacted).await?;
         }
 
         let n = rows.len() as u32;

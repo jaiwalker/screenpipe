@@ -1,3 +1,4 @@
+<h1 align="center"><a href="https://screenpipe.com/how-to-install?download=1">DOWNLOAD SCREENPIPE</a></h1>
 
 <img width="1500" height="500" alt="image" src="https://github.com/user-attachments/assets/058a44b8-fcad-4a37-92d8-830167dbd400" />
 
@@ -13,20 +14,14 @@
 
 
 
-<p align="center">screenpipe remembers how you actually work</p>
-<p align="center">It captures what you see, say, and do, locally, 24/7, then turns real work into searchable memory, SOPs, and automations for AI agents.</p>
+<p align="center">Screenpipe remembers how you actually work</p>
+<p align="center">Record your screen continuously locally and provide context to your agents (Claude, Codex, Openclaw, Hermes, Runner...)</p>
 
 
 
 
 <p align="center">
 <a align="center" href="https://trendshift.io/repositories/20386" target="_blank"><img align="center" src="https://trendshift.io/api/badge/repositories/20386" alt="screenpipe%2Fscreenpipe | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
-</p>
-
-<p align="center">
-  <a href="https://screenpi.pe/onboarding" target="_blank">
-    <img src="https://img.shields.io/badge/download-desktop%20app-black?style=for-the-badge" alt="download">
-  </a>
 </p>
 
 <p align="center">
@@ -55,17 +50,9 @@ https://github.com/user-attachments/assets/70fe94eb-6d2a-47ca-b7c3-c8ead13a5b7f
 
 ---
 
-## news
-
-- 06/10 - **we updated our license to keep screenpipe sustainable** — more funding, more shipping, better product
-- 05/29 - **we released an [alpha version of our AI PII model](https://screenpipe.github.io/screenleak/) outperforming Google, Microsoft, and OpenAI models** on computer recording data and running at 9ms on consumer device
-- 05/14 - **we joined YC S26** 
-
-
-
 ## what is this?
 
-screenpipe turns your computer into a personal AI that knows everything you've done. record. search. automate. all local, all private, all yours
+screenpipe capture all your computer work locally and power your agents
 
 ```
 ┌─────────────────────────────────────────┐
@@ -74,13 +61,14 @@ screenpipe turns your computer into a personal AI that knows everything you've d
 ```
 
 - **remember everything** - never forget what you saw, heard, or did
-- **run agents that work based on what you do** - pipes are agents triggered by your work activity
+- **run agents that work based on what you do** generate agents, skills, and automations based on what you do
 
 <img width="360" height="311" alt="image" src="https://github.com/user-attachments/assets/cfbf0fd3-84ef-4feb-8c6d-2779d67058a7" />
 
 - **search with ai** - find anything using natural language
 - **100% local** - your data lives on your machine only
 - **source-available** - inspect, modify, audit ([LICENSE.md](LICENSE.md))
+  **company brain** - share knowledge with your team without turning it into surveillance
 
 <p align="center">
    <a href ="https://screenpi.pe">
@@ -91,7 +79,7 @@ screenpipe turns your computer into a personal AI that knows everything you've d
 
 ## install
 
-[download the desktop app](https://screenpi.pe/onboarding) — all features, auto-updates
+[download the desktop app](https://screenpipe.com/how-to-install?download=1) — all features, auto-updates
 
 or run the CLI:
 
@@ -108,6 +96,23 @@ claude mcp add screenpipe -- npx -y screenpipe-mcp@latest
 ```
 
 then ask claude `what did i see in the last 5 mins?` or `summarize today conversations` or `create a pipe that updates linear every time i work on task X`
+
+<details>
+<summary>🤖 CLI-only setup for coding agents</summary>
+
+If Claude Code, Codex, Gemini CLI, Cursor, or another coding agent is working from this repository, give it this instruction:
+
+> Read the [screenpipe CLI skill](crates/screenpipe-core/assets/skills/screenpipe-cli/SKILL.md) before operating screenpipe. Set up always-on local capture, verify capture freshness and storage, then query my history without relying on the desktop app.
+
+To install the screenpipe skills and MCP configuration into every supported agent detected on your computer, run:
+
+```bash
+npx screenpipe setup
+```
+
+The skill covers the recorder-first service default, explicit API-only server mode, human and JSON status, local search, safe read-only SQLite access, pipes, and connections.
+
+</details>
 
 
 ## specs
@@ -133,7 +138,7 @@ then ask claude `what did i see in the last 5 mins?` or `summarize today convers
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, maintainers, and how to submit PRs. AI/vibe-coded PRs welcome!
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, maintainers, and how to submit PRs.
 
 Thanks to all contributors:
 
@@ -150,6 +155,8 @@ Thanks to all contributors:
 - [Português BR (Brazilian Portuguese)](docs/translations/README-pt_BR.md)
 - [Deutsch (German)](docs/translations/README-de.md)
 - [Українська (Ukrainian)](docs/translations/README-uk.md)
+- [한국어 (Korean)](docs/translations/README-ko.md)
+- [Русский (Russian)](docs/translations/README-ru.md)
 
 Want to translate screenpipe into another language? See [`docs/translations/`](docs/translations/README.md).
 
@@ -341,7 +348,7 @@ Screen frames, audio, transcripts, and the search index are stored locally by de
 
 - Product analytics is enabled by default through PostHog. It uses a stable installation identifier and, when you sign in, may associate account details such as your email with app, hostname, operating-system, hardware, and other device or feature metadata.
 - Sentry receives crash and error diagnostics while telemetry is enabled.
-- If you choose cloud transcription, hosted AI, or cloud sync, the audio, prompts and selected context, or synced data needed for that feature is processed remotely by the configured service.
+- If you choose cloud transcription, screenpipe cloud AI, or cloud sync, the audio, prompts and selected context, or synced data needed for that feature is processed remotely by the configured service.
 
 You can disable telemetry in **Settings → Privacy → Analytics**, then apply the settings change. To keep capture and AI processing local, leave cloud sync off and select local transcription and a local AI provider such as Ollama.
 

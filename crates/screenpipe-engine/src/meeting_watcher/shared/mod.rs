@@ -5,6 +5,7 @@
 //! Cross-platform meeting-detection logic, split by responsibility.
 
 pub(crate) mod calendar;
+pub(crate) mod events;
 pub(crate) mod ignore;
 pub(crate) mod profiles;
 pub(crate) mod scanner;
@@ -16,6 +17,8 @@ pub(crate) use calendar::*;
 pub(crate) use ignore::*;
 pub(crate) use profiles::*;
 pub(crate) use scanner::*;
+// signal_match's items are macOS/test-gated, so the glob is empty elsewhere.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(unused_imports))]
 pub(crate) use signal_match::*;
 pub(crate) use state::*;
 pub(crate) use telemetry::*;

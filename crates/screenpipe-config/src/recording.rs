@@ -4,7 +4,27 @@
 
 //! The core recording settings type shared across all screenpipe components.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Older desktop builds persisted a single selected monitor as a string, while
+/// current builds persist an array. Accept both shapes so an upgrade preserves
+/// the user's selection instead of rejecting the entire settings store.
+fn deserialize_monitor_ids<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        Vec(Vec<String>),
+        String(String),
+    }
+
+    Ok(match StringOrVec::deserialize(deserializer)? {
+        StringOrVec::Vec(ids) => ids,
+        StringOrVec::String(id) => vec![id],
+    })
+}
 
 /// Custom vocabulary entry for transcription biasing and word replacement.
 #[derive(Clone, Debug, Default, Serialize, PartialEq)]
@@ -107,6 +127,87 @@ impl SemanticContextMode {
     }
 }
 
+/// One strict hostname rule used by browser capture allowlists and blocklists.
+///
+/// `domain` is normalized by the capture policy before matching. The rule
+/// always matches the domain itself; `include_subdomains` extends the match to
+/// descendant hosts, except descendants rooted at `excluded_subdomains`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct DomainRule {
+    pub domain: String,
+    #[serde(default)]
+    pub include_subdomains: bool,
+    #[serde(default)]
+    pub excluded_subdomains: Vec<String>,
+}
+
+/// A browser URL block rule.
+///
+/// Strings are the legacy `ignoredUrls` format and keep their historical
+/// domain matching behavior. Structured rules provide explicit exact-domain,
+/// subdomain, and exception semantics without introducing a second setting.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(untagged)]
+pub enum UrlRule {
+    Legacy(String),
+    Structured(DomainRule),
+}
+
+fn invalid_domain_rule() -> DomainRule {
+    DomainRule {
+        domain: String::new(),
+        include_subdomains: false,
+        excluded_subdomains: Vec::new(),
+    }
+}
+
+/// Preserve malformed structured policies as an invalid sentinel. The runtime
+/// policy compiler recognizes the empty hostname and fails capture closed;
+/// rejecting the whole settings store here could make a caller fall back to
+/// defaults and accidentally widen capture.
+fn deserialize_domain_rules_fail_closed<'de, D>(
+    deserializer: D,
+) -> Result<Vec<DomainRule>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let Some(values) = value.as_array() else {
+        return Ok(vec![invalid_domain_rule()]);
+    };
+    Ok(values
+        .iter()
+        .map(|value| {
+            serde_json::from_value::<DomainRule>(value.clone())
+                .unwrap_or_else(|_| invalid_domain_rule())
+        })
+        .collect())
+}
+
+/// Accept both the historical string array and structured rules in the same
+/// `ignoredUrls` field. Invalid structured values become a sentinel so the
+/// runtime fails capture closed instead of silently discarding a privacy rule.
+fn deserialize_url_rules_fail_closed<'de, D>(deserializer: D) -> Result<Vec<UrlRule>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let Some(values) = value.as_array() else {
+        return Ok(vec![UrlRule::Structured(invalid_domain_rule())]);
+    };
+
+    Ok(values
+        .iter()
+        .map(|value| {
+            serde_json::from_value::<UrlRule>(value.clone())
+                .unwrap_or_else(|_| UrlRule::Structured(invalid_domain_rule()))
+        })
+        .collect())
+}
+
 /// The single source of truth for recording/capture configuration.
 ///
 /// Used by:
@@ -168,20 +269,13 @@ pub struct RecordingSettings {
     #[serde(rename = "useSystemDefaultAudio")]
     pub use_system_default_audio: bool,
 
-    /// Experimental: capture System Audio via the CoreAudio Process Tap API
-    /// (macOS 14.4+) instead of ScreenCaptureKit. The tap sidesteps SCK's
-    /// display-enumeration failures after sleep/wake and the GPU/compositor
-    /// wake overhead, but it cannot see audio rendered through a
-    /// VoiceProcessing AudioUnit (Zoom / Google Meet / Microsoft Teams all
-    /// use one for echo cancellation), so on meeting audio it silently
-    /// captures zeroed buffers even though tap creation succeeds.
-    ///
-    /// Default `false` (see `default_experimental_coreaudio_system_audio`).
-    /// SCK captures at the display compositor, which does see VoiceProcessing
-    /// output, so it is the right default for anyone on calls. Users who hit
-    /// SCK's sleep/wake display-enumeration bug can still opt in; when the tap
-    /// is on and creation fails (permission, macOS <14.4, OS quirk), stream.rs
-    /// falls back to the SCK path automatically. Ignored on non-macOS platforms.
+    /// Capture System Audio via the CoreAudio Process Tap API on macOS 14.4+
+    /// instead of ScreenCaptureKit. The Rust deserialization default remains
+    /// `false` for headless/non-desktop callers, while desktop settings migration
+    /// V3 enables it automatically. Initial tap creation failures fall back to
+    /// SCK; runtime failures disconnect the stream so the device manager can
+    /// reconstruct it through the same backend-selection path. Ignored on
+    /// non-macOS platforms.
     #[serde(
         rename = "experimentalCoreaudioSystemAudio",
         default = "default_experimental_coreaudio_system_audio"
@@ -299,7 +393,7 @@ pub struct RecordingSettings {
     pub disable_timeline: bool,
 
     /// Specific monitor IDs to capture.
-    #[serde(rename = "monitorIds")]
+    #[serde(rename = "monitorIds", deserialize_with = "deserialize_monitor_ids")]
     pub monitor_ids: Vec<String>,
 
     /// Capture from all connected monitors.
@@ -406,10 +500,10 @@ pub struct RecordingSettings {
 
     /// Override `UiRecorderConfig::capture_scroll`.
     /// None = engine default (false). When true, scroll wheel events are
-    /// recorded into `ui_events` so the `ScrollBurstTracker` can fire a
-    /// `ScrollStop` trigger at burst-end and link the last scroll row to
-    /// the resulting frame. Off by default — wheel ticks fire at ~60Hz
-    /// and inflate the table fast.
+    /// recorded into `ui_events` so the `ScrollBurstTracker` can retain every
+    /// correlation ID, fire a `ScrollStop` trigger at burst-end, and link every
+    /// persisted scroll row in the settled burst to the resulting frame. Off by
+    /// default — wheel ticks fire at ~60Hz and inflate the table fast.
     #[serde(rename = "captureScroll", default)]
     pub capture_scroll: Option<bool>,
 
@@ -444,9 +538,23 @@ pub struct RecordingSettings {
     #[serde(rename = "includedWindows")]
     pub included_windows: Vec<String>,
 
-    /// URLs to exclude from capture.
-    #[serde(rename = "ignoredUrls", default)]
-    pub ignored_urls: Vec<String>,
+    /// Browser URLs to exclude from capture. Existing string entries remain
+    /// supported; new entries can use explicit structured domain rules.
+    #[serde(
+        rename = "ignoredUrls",
+        default,
+        deserialize_with = "deserialize_url_rules_fail_closed"
+    )]
+    pub ignored_urls: Vec<UrlRule>,
+
+    /// Strict browser hostname allowlist. When non-empty, native apps and
+    /// browser windows without a positively detected matching URL are skipped.
+    #[serde(
+        rename = "includedUrls",
+        default,
+        deserialize_with = "deserialize_domain_rules_fail_closed"
+    )]
+    pub included_urls: Vec<DomainRule>,
 
     /// Automatically detect and skip incognito / private browsing windows.
     #[serde(rename = "ignoreIncognitoWindows")]
@@ -656,7 +764,9 @@ pub struct RecordingSettings {
     #[serde(rename = "useChineseMirror")]
     pub use_chinese_mirror: bool,
 
-    /// Enable anonymous analytics (PostHog).
+    /// Enable product analytics (PostHog). Events carry only a random device
+    /// ID when signed out; when signed in they are linked to the account,
+    /// including its email. Never includes recordings, audio, or OCR text.
     #[serde(rename = "analyticsEnabled")]
     pub analytics_enabled: bool,
 
@@ -796,6 +906,7 @@ impl Default for RecordingSettings {
             ignored_windows: vec![],
             included_windows: vec![],
             ignored_urls: vec![],
+            included_urls: vec![],
             ignore_incognito_windows: true,
             enhanced_incognito_detection: false,
             pause_on_drm_content: false,
@@ -848,13 +959,10 @@ fn default_audio_capture_mode() -> String {
     "always".to_string()
 }
 
-/// Default `false` — the Process Tap can't see audio rendered through
-/// VoiceProcessing AudioUnits (Zoom / Google Meet / Microsoft Teams all
-/// use one for echo cancellation), so for meeting audio it silently
-/// captures zeroed buffers even though the tap creation succeeds. SCK
-/// captures at the display compositor which *does* see VoiceProcessing
-/// output, so it's the right default for every user who uses call apps.
-/// Users who hit SCK's sleep/wake display-enumeration bug can still opt in.
+/// Default `false` for deserialization outside the desktop settings lifecycle.
+/// The desktop's V3 migration enables Process Tap on supported macOS installs;
+/// keeping this fallback false prevents old/headless configs from silently
+/// changing capture backends without that migration.
 fn default_experimental_coreaudio_system_audio() -> bool {
     false
 }
@@ -948,6 +1056,73 @@ mod tests {
         assert!(!settings.macos_input_vpio_enabled);
         assert_eq!(settings.aec_mode, AecMode::Off);
         assert_eq!(settings.effective_aec_flags(), (false, false, false));
+        assert!(settings.ignored_urls.is_empty());
+        assert!(settings.included_urls.is_empty());
+    }
+
+    #[test]
+    fn structured_domain_rules_deserialize_and_round_trip() {
+        let settings: RecordingSettings = serde_json::from_str(
+            r#"{
+                "ignoredUrls": ["legacy.example", {
+                    "domain": "admin.worktrace.ai",
+                    "includeSubdomains": true,
+                    "excludedSubdomains": []
+                }],
+                "includedUrls": [{
+                    "domain": "worktrace.ai",
+                    "includeSubdomains": true,
+                    "excludedSubdomains": ["abc.worktrace.ai"]
+                }]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            settings.ignored_urls[0],
+            UrlRule::Legacy("legacy.example".to_string())
+        );
+        assert_eq!(
+            settings.ignored_urls[1],
+            UrlRule::Structured(DomainRule {
+                domain: "admin.worktrace.ai".to_string(),
+                include_subdomains: true,
+                excluded_subdomains: vec![],
+            })
+        );
+        assert_eq!(settings.included_urls[0].domain, "worktrace.ai");
+        assert_eq!(
+            settings.included_urls[0].excluded_subdomains,
+            vec!["abc.worktrace.ai"]
+        );
+
+        let round_trip: RecordingSettings =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert_eq!(round_trip.included_urls[0].domain, "worktrace.ai");
+    }
+
+    #[test]
+    fn malformed_domain_rule_survives_as_fail_closed_sentinel() {
+        let json = r#"{"includedUrls":[{"domain":"worktrace.ai","includeSubdomains":"yes"}]}"#;
+        let settings = serde_json::from_str::<RecordingSettings>(json).unwrap();
+        assert_eq!(settings.included_urls, vec![invalid_domain_rule()]);
+
+        let wrong_shape =
+            serde_json::from_str::<RecordingSettings>(r#"{"includedUrls":"worktrace.ai"}"#)
+                .unwrap();
+        assert_eq!(wrong_shape.included_urls, vec![invalid_domain_rule()]);
+
+        let malformed_block = serde_json::from_str::<RecordingSettings>(
+            r#"{"ignoredUrls":["legacy.example",{"domain":12}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            malformed_block.ignored_urls,
+            vec![
+                UrlRule::Legacy("legacy.example".to_string()),
+                UrlRule::Structured(invalid_domain_rule())
+            ]
+        );
     }
 
     #[test]
@@ -1025,6 +1200,27 @@ mod tests {
         let json = r#"{"unknownFutureField": true, "port": 4040}"#;
         let settings: RecordingSettings = serde_json::from_str(json).unwrap();
         assert_eq!(settings.port, 4040);
+    }
+
+    #[test]
+    fn legacy_scalar_monitor_id_deserializes_as_single_selection() {
+        let mut json = serde_json::to_value(RecordingSettings::default()).unwrap();
+        json["monitorIds"] = serde_json::json!(r"\\.\DISPLAY1_3840x2160_0,0");
+
+        let settings: RecordingSettings = serde_json::from_value(json).unwrap();
+
+        assert_eq!(
+            settings.monitor_ids,
+            vec![r"\\.\DISPLAY1_3840x2160_0,0".to_string()]
+        );
+    }
+
+    #[test]
+    fn malformed_monitor_id_shape_still_fails_deserialization() {
+        let mut json = serde_json::to_value(RecordingSettings::default()).unwrap();
+        json["monitorIds"] = serde_json::json!({"id": "DISPLAY1"});
+
+        assert!(serde_json::from_value::<RecordingSettings>(json).is_err());
     }
 
     #[test]

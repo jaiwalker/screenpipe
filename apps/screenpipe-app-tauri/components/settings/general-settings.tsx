@@ -4,7 +4,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { LockedSetting } from "@/components/enterprise-locked-setting";
+import { LockedSetting, ManagedSwitch } from "@/components/enterprise-locked-setting";
 import { useSettings } from "@/lib/hooks/use-settings";
 import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Settings } from "@/lib/hooks/use-settings";
+import { Settings, type UpdateChannel } from "@/lib/hooks/use-settings";
 import { getVersion } from "@tauri-apps/api/app";
 import { commands } from "@/lib/utils/tauri";
 import { useOnboarding } from "@/lib/hooks/use-onboarding";
@@ -39,7 +39,7 @@ export const searchIndex: SettingsField[] = [
   { label: "Auto-start", keywords: ["autostart", "launch", "startup"] },
   { label: "Auto-update", keywords: ["updates"] },
   { label: "Check for updates", keywords: ["version"] },
-  { label: "Auto-Update Pipes" },
+  { label: "Auto-update scheduled tasks", keywords: ["pipes", "store", "tasks"] },
   { label: "Reset Onboarding", keywords: ["setup"] },
   { label: "Your goal", keywords: ["onboarding", "purpose", "personalization"] },
 ];
@@ -51,9 +51,14 @@ import {
   describeEnterpriseUpdateMode,
   normalizeEnterpriseAppUpdatePolicy,
 } from "@/lib/enterprise/app-update-policy";
+import { getRemoteAutoUpdatePolicy } from "@/lib/desktop-remote-control";
+import { useEnterpriseBuildStatus } from "@/lib/hooks/use-is-enterprise-build";
+import { useExperimentalFeaturesEnabled } from "@/lib/experimental-features";
 
 export default function GeneralSettings() {
   const { isManagedDeployment } = useManagedPolicy();
+  const enterpriseBuild = useEnterpriseBuildStatus();
+  const experimentalFeaturesEnabled = useExperimentalFeaturesEnabled();
   const { settings, updateSettings } = useSettings();
   const resetOnboarding = useOnboarding((state) => state.resetOnboarding);
   const { toast } = useToast();
@@ -63,6 +68,11 @@ export default function GeneralSettings() {
   const userGoal =
     normalizeUserGoalCategory(settings.userGoalCategory) ??
     DEFAULT_USER_GOAL_CATEGORY;
+  const autoUpdateRemotePolicy = getRemoteAutoUpdatePolicy(settings);
+  const autoUpdateForcedByRemote =
+    enterpriseBuild.resolved &&
+    !enterpriseBuild.isEnterprise &&
+    autoUpdateRemotePolicy.forceEnabled;
 
   const handleUserGoalChange = async (category: UserGoalCategory) => {
     try {
@@ -240,7 +250,8 @@ export default function GeneralSettings() {
                   <p className="text-xs text-muted-foreground">Start in the background when you log in</p>
                 </div>
               </div>
-              <Switch
+              <ManagedSwitch
+                settingKey="autoStartEnabled"
                 id="auto-start-toggle"
                 checked={settings?.autoStartEnabled ?? false}
                 onCheckedChange={handleAutoStartChange}
@@ -259,17 +270,54 @@ export default function GeneralSettings() {
                   <RefreshCw className="h-4 w-4 text-muted-foreground shrink-0" />
                   <div>
                     <h3 className="text-sm font-medium text-foreground">Auto-update</h3>
-                    <p className="text-xs text-muted-foreground">Restart automatically when an update is downloaded. Off: a &quot;restart to update&quot; banner appears instead.</p>
+                    <p className="text-xs text-muted-foreground">
+                      {autoUpdateForcedByRemote
+                        ? "Required temporarily so this installation receives reliability fixes."
+                        : "Restart automatically when an update is downloaded. Off: a \"restart to update\" banner appears instead."}
+                    </p>
                   </div>
                 </div>
                 <Switch
                   id="auto-update-toggle"
-                  checked={settings?.autoUpdate ?? false}
+                  checked={settings?.autoUpdate ?? true}
+                  disabled={autoUpdateForcedByRemote}
                   onCheckedChange={(checked) =>
                     handleSettingsChange({ autoUpdate: checked })
                   }
                   className="ml-4"
                 />
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {!isManagedDeployment && experimentalFeaturesEnabled && (
+          <Card className="border-border bg-card">
+            <CardContent className="px-3 py-2.5">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center space-x-2.5">
+                  <FlaskConical className="h-4 w-4 text-muted-foreground shrink-0" />
+                  <div>
+                    <h3 className="text-sm font-medium text-foreground">Release channel</h3>
+                    <p className="text-xs text-muted-foreground">
+                      Pre-release receives new public builds before Standard.
+                    </p>
+                  </div>
+                </div>
+                <Select
+                  value={settings?.updateChannel ?? "stable"}
+                  onValueChange={(value: UpdateChannel) =>
+                    handleSettingsChange({ updateChannel: value })
+                  }
+                >
+                  <SelectTrigger className="w-[140px] h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="stable">Standard</SelectItem>
+                    <SelectItem value="pre-release">Pre-release</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </CardContent>
           </Card>
@@ -336,8 +384,8 @@ export default function GeneralSettings() {
               <div className="flex items-center space-x-2.5">
                 <RefreshCw className="h-4 w-4 text-muted-foreground shrink-0" />
                 <div>
-                  <h3 className="text-sm font-medium text-foreground">Auto-Update Pipes</h3>
-                  <p className="text-xs text-muted-foreground">Update store pipes you haven&apos;t modified</p>
+                  <h3 className="text-sm font-medium text-foreground">Auto-update scheduled tasks</h3>
+                  <p className="text-xs text-muted-foreground">Keep tasks you installed from the Store up to date, unless you&apos;ve edited them</p>
                 </div>
               </div>
               <Switch

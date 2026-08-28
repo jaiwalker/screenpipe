@@ -5,7 +5,7 @@
 use axum::{
     body::{Body, Bytes},
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
     response::{Json as JsonResponse, Response},
 };
 use image::{codecs::jpeg::JpegEncoder, DynamicImage, GenericImageView};
@@ -13,7 +13,7 @@ use lru::LruCache;
 use oasgen::{oasgen, OaSchema};
 
 use chrono::{DateTime, Utc};
-use screenpipe_db::TextPosition;
+use screenpipe_db::{OcrTextBlock, TextPosition};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -21,10 +21,16 @@ use std::{
     collections::hash_map::DefaultHasher,
     hash::{Hash, Hasher},
     num::NonZeroUsize,
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Weak,
+    },
     time::{Duration, Instant, UNIX_EPOCH},
 };
-use tokio::fs::File;
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt},
+};
 use tokio_util::io::ReaderStream;
 use tracing::{debug, error};
 
@@ -32,12 +38,51 @@ use crate::{server::AppState, video_utils::extract_frame_from_video};
 
 use tokio::time::timeout;
 
+fn history_forbidden() -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::FORBIDDEN,
+        JsonResponse(json!({
+            "error": "this content is outside the available 24-hour history",
+            "code": "history_access_limited"
+        })),
+    )
+}
+
+async fn require_frame_history_access(
+    state: &Arc<AppState>,
+    frame_id: i64,
+) -> Result<(), (StatusCode, JsonResponse<Value>)> {
+    if !state.history_access.is_restricted() {
+        return Ok(());
+    }
+    if let Some(timestamp) = state
+        .db
+        .get_frame_timestamp(frame_id)
+        .await
+        .map_err(|error| {
+            error!(%error, frame_id, "frame history lookup failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": "frame history lookup failed" })),
+            )
+        })?
+    {
+        if !state.history_access.allows(timestamp, Utc::now()) {
+            return Err(history_forbidden());
+        }
+    }
+    Ok(())
+}
+
 const DEFAULT_THUMBNAIL_WIDTH: u32 = 384;
 const DEFAULT_THUMBNAIL_QUALITY: u8 = 75;
 const MIN_THUMBNAIL_WIDTH: u32 = 64;
 const MAX_THUMBNAIL_WIDTH: u32 = 1920;
 const MIN_THUMBNAIL_QUALITY: u8 = 20;
 const MAX_THUMBNAIL_QUALITY: u8 = 95;
+const DEFAULT_PREVIEW_SAMPLE_LIMIT: usize = 6;
+const MAX_PREVIEW_SAMPLE_LIMIT: usize = 8;
+const MAX_PREVIEW_RANGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ThumbnailFormat {
@@ -148,6 +193,11 @@ pub struct FrameThumbnailQuery {
     /// JPEG quality from 20 through 95.
     #[serde(default = "default_thumbnail_quality")]
     pub quality: u8,
+    /// Whether a missing/corrupt exact frame may return nearby pixels.
+    /// Timeline callers keep the historical default; truth-sensitive callers
+    /// such as search can opt out with `fallback=false`.
+    #[serde(default = "default_frame_fallback")]
+    pub fallback: bool,
 }
 
 #[derive(Debug, Deserialize, OaSchema)]
@@ -157,6 +207,352 @@ pub struct FrameDataQuery {
     /// such as enterprise export and search can opt out with `fallback=false`.
     #[serde(default = "default_frame_fallback")]
     pub fallback: bool,
+}
+
+#[derive(Debug, Deserialize, OaSchema)]
+pub struct FramePreviewSamplesQuery {
+    #[serde(deserialize_with = "super::time::deserialize_flexible_datetime")]
+    pub start_time: DateTime<Utc>,
+    #[serde(deserialize_with = "super::time::deserialize_flexible_datetime")]
+    pub end_time: DateTime<Utc>,
+    pub app_name: String,
+    pub browser_domain: Option<String>,
+    #[serde(default = "default_preview_sample_limit")]
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Serialize, OaSchema, PartialEq, Eq)]
+pub struct FramePreviewSample {
+    pub frame_id: i64,
+    pub timestamp: DateTime<Utc>,
+    pub source: FramePreviewSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_chunk_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub video_offset_seconds: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, OaSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FramePreviewSource {
+    Snapshot,
+    Video,
+}
+
+#[derive(Debug, Serialize, OaSchema)]
+pub struct FramePreviewSamplesResponse {
+    pub frames: Vec<FramePreviewSample>,
+}
+
+fn default_preview_sample_limit() -> usize {
+    DEFAULT_PREVIEW_SAMPLE_LIMIT
+}
+
+fn normalize_browser_domain(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_end_matches('.');
+    if trimmed.is_empty() || trimmed.len() > 253 || trimmed.contains('/') {
+        return None;
+    }
+    let parsed = url::Url::parse(&format!("https://{trimmed}")).ok()?;
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+    parsed
+        .host_str()
+        .map(str::to_lowercase)
+        .map(|host| host.strip_prefix("www.").unwrap_or(&host).to_string())
+        .filter(|host| !host.is_empty())
+}
+
+fn browser_url_matches_domain(value: Option<&str>, domain: &str) -> bool {
+    value
+        .and_then(|value| url::Url::parse(value).ok())
+        .and_then(|url| url.host_str().map(str::to_lowercase))
+        .map(|host| host.strip_prefix("www.").unwrap_or(&host) == domain)
+        .unwrap_or(false)
+}
+
+fn evenly_sample_preview_frames<T: Clone>(candidates: Vec<T>, limit: usize) -> Vec<T> {
+    if candidates.len() <= limit {
+        return candidates;
+    }
+    if limit == 1 {
+        return candidates.into_iter().take(1).collect();
+    }
+
+    let last = candidates.len() - 1;
+    (0..limit)
+        .map(|index| candidates[index * last / (limit - 1)].clone())
+        .collect()
+}
+
+fn first_preview_frame_per_bucket(candidates: Vec<FramePreviewSample>) -> Vec<FramePreviewSample> {
+    let mut last_bucket = None;
+    candidates
+        .into_iter()
+        .filter(|candidate| {
+            let bucket = candidate.timestamp.timestamp().div_euclid(10);
+            if last_bucket == Some(bucket) {
+                false
+            } else {
+                last_bucket = Some(bucket);
+                true
+            }
+        })
+        .collect()
+}
+
+fn preview_bad_request(message: impl Into<String>) -> (StatusCode, JsonResponse<Value>) {
+    (
+        StatusCode::BAD_REQUEST,
+        JsonResponse(json!({ "error": message.into() })),
+    )
+}
+
+fn validate_frame_preview_query(
+    query: &FramePreviewSamplesQuery,
+) -> Result<(String, Option<String>), String> {
+    if query.start_time >= query.end_time {
+        return Err("start_time must be before end_time".to_string());
+    }
+    let range = query.end_time - query.start_time;
+    if range
+        .to_std()
+        .map_or(true, |range| range > MAX_PREVIEW_RANGE)
+    {
+        return Err("preview sample ranges are limited to 24 hours".to_string());
+    }
+    if !(1..=MAX_PREVIEW_SAMPLE_LIMIT).contains(&query.limit) {
+        return Err(format!(
+            "limit must be between 1 and {MAX_PREVIEW_SAMPLE_LIMIT}"
+        ));
+    }
+    let app_name = query.app_name.trim();
+    if app_name.is_empty() || app_name.len() > 256 {
+        return Err("app_name must be 1 to 256 characters".to_string());
+    }
+    let browser_domain = match query.browser_domain.as_deref() {
+        Some(value) => Some(
+            normalize_browser_domain(value)
+                .ok_or_else(|| "browser_domain must be a valid host".to_string())?,
+        ),
+        None => None,
+    };
+    Ok((app_name.to_string(), browser_domain))
+}
+
+/// Return a bounded set of frame references for a short UI preview. Snapshot
+/// references use the existing thumbnail path. Compacted references point at
+/// the existing MP4 and an offset so the browser can decode them directly;
+/// this route never extracts frames or generates preview media.
+#[oasgen]
+pub async fn get_frame_preview_samples(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<FramePreviewSamplesQuery>,
+) -> Result<JsonResponse<FramePreviewSamplesResponse>, (StatusCode, JsonResponse<Value>)> {
+    let (app_name, browser_domain) =
+        validate_frame_preview_query(&query).map_err(preview_bad_request)?;
+    let start_time = state
+        .history_access
+        .clamp_start(Some(query.start_time), Utc::now())
+        .unwrap_or(query.start_time);
+    if start_time >= query.end_time {
+        return Ok(JsonResponse(FramePreviewSamplesResponse {
+            frames: Vec::new(),
+        }));
+    }
+
+    let candidates = state
+        .db
+        .get_frame_preview_candidates(
+            start_time,
+            query.end_time,
+            &app_name,
+            browser_domain.as_deref(),
+        )
+        .await
+        .map_err(|error| {
+            error!(%error, "frame preview sample query failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": "frame preview sample query failed" })),
+            )
+        })?;
+    let candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|(_, _, browser_url, _, _, _)| {
+            browser_domain
+                .as_deref()
+                .is_none_or(|domain| browser_url_matches_domain(browser_url.as_deref(), domain))
+        })
+        .collect();
+    // Bound filesystem validation even for a 24-hour range. Sampling extra
+    // candidates lets a missing/stale source be skipped without turning hover
+    // into thousands of metadata calls.
+    let candidates = evenly_sample_preview_frames(candidates, (query.limit * 4).min(32));
+    let mut frames = Vec::with_capacity(query.limit);
+    for (frame_id, timestamp, _, source_path, video_chunk_id, video_offset_seconds) in candidates {
+        if !tokio::fs::metadata(&source_path)
+            .await
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            continue;
+        }
+        frames.push(FramePreviewSample {
+            frame_id,
+            timestamp,
+            source: if video_chunk_id.is_some() {
+                FramePreviewSource::Video
+            } else {
+                FramePreviewSource::Snapshot
+            },
+            video_chunk_id,
+            video_offset_seconds: video_offset_seconds.map(|offset| format!("{offset:.6}")),
+        });
+    }
+    let frames = first_preview_frame_per_bucket(frames);
+
+    Ok(JsonResponse(FramePreviewSamplesResponse {
+        frames: evenly_sample_preview_frames(frames, query.limit),
+    }))
+}
+
+fn parse_single_byte_range(value: &str, file_len: u64) -> Option<(u64, u64)> {
+    let value = value.strip_prefix("bytes=")?;
+    if value.contains(',') || file_len == 0 {
+        return None;
+    }
+    let (start, end) = value.split_once('-')?;
+    if start.is_empty() {
+        let suffix_len = end.parse::<u64>().ok()?.min(file_len);
+        return Some((file_len - suffix_len, file_len - 1));
+    }
+    let start = start.parse::<u64>().ok()?;
+    if start >= file_len {
+        return None;
+    }
+    let end = if end.is_empty() {
+        file_len - 1
+    } else {
+        end.parse::<u64>().ok()?.min(file_len - 1)
+    };
+    (start <= end).then_some((start, end))
+}
+
+/// Serve an already-compacted MP4 with byte-range support for browser-native
+/// preview decoding. No frame extraction or transcoding occurs on this path.
+#[oasgen]
+pub async fn get_frame_preview_media(
+    State(state): State<Arc<AppState>>,
+    Path(video_chunk_id): Path<i64>,
+    headers: HeaderMap,
+) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    if let Some((start, _end)) = state
+        .db
+        .get_video_chunk_time_range(video_chunk_id)
+        .await
+        .map_err(|error| {
+            error!(%error, "preview media history lookup failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": "preview media history lookup failed" })),
+            )
+        })?
+    {
+        if !state.history_access.allows(start, Utc::now()) {
+            return Err(history_forbidden());
+        }
+    }
+    let Some(file_path) = state
+        .db
+        .get_video_chunk_path(video_chunk_id)
+        .await
+        .map_err(|error| {
+            error!(%error, "preview media lookup failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": "preview media lookup failed" })),
+            )
+        })?
+    else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({ "error": "preview media not found" })),
+        ));
+    };
+
+    let mut file = File::open(&file_path).await.map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            JsonResponse(json!({ "error": "preview media not found" })),
+        )
+    })?;
+    let file_len = file
+        .metadata()
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                JsonResponse(json!({ "error": "preview media not found" })),
+            )
+        })?
+        .len();
+
+    let requested_range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let (status, start, end) = match requested_range {
+        Some(value) => match parse_single_byte_range(value, file_len) {
+            Some((start, end)) => (StatusCode::PARTIAL_CONTENT, start, end),
+            None => {
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(header::CONTENT_RANGE, format!("bytes */{file_len}"))
+                    .body(Body::empty())
+                    .map_err(|error| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            JsonResponse(json!({ "error": error.to_string() })),
+                        )
+                    });
+            }
+        },
+        None => (StatusCode::OK, 0, file_len.saturating_sub(1)),
+    };
+    file.seek(std::io::SeekFrom::Start(start))
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({ "error": error.to_string() })),
+            )
+        })?;
+    let content_len = end.saturating_sub(start) + 1;
+    let body = Body::from_stream(ReaderStream::new(file.take(content_len)));
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, content_len)
+        .header(header::CACHE_CONTROL, "no-store");
+    if status == StatusCode::PARTIAL_CONTENT {
+        builder = builder.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{file_len}"),
+        );
+    }
+    builder.body(body).map_err(|error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            JsonResponse(json!({ "error": error.to_string() })),
+        )
+    })
 }
 
 fn default_frame_fallback() -> bool {
@@ -191,6 +587,7 @@ pub async fn get_frame_thumbnail(
     Path(frame_id): Path<i64>,
     Query(query): Query<FrameThumbnailQuery>,
 ) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    require_frame_history_access(&state, frame_id).await?;
     if !(MIN_THUMBNAIL_WIDTH..=MAX_THUMBNAIL_WIDTH).contains(&query.width) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -253,10 +650,19 @@ pub async fn get_frame_thumbnail(
     let result = timeout(Duration::from_secs(10), async {
         match thumbnail_for_candidate(&state, &primary, query.width, query.quality).await {
             Ok(result) => return Ok(result),
-            Err(error) => debug!(
-                "Thumbnail source failed for frame {} ({}), trying nearby frames",
-                frame_id, error
-            ),
+            Err(error) => {
+                if !query.fallback {
+                    debug!(
+                        "Exact thumbnail source failed for frame {} ({}), fallback disabled",
+                        frame_id, error
+                    );
+                    return Err(());
+                }
+                debug!(
+                    "Thumbnail source failed for frame {} ({}), trying nearby frames",
+                    frame_id, error
+                );
+            }
         }
 
         const SEARCH_LIMIT: i32 = 3;
@@ -300,7 +706,11 @@ pub async fn get_frame_thumbnail(
         Ok(Err(())) => Err((
             StatusCode::NOT_FOUND,
             JsonResponse(json!({
-                "error": "Frame thumbnail unavailable and no nearby frame available",
+                "error": if query.fallback {
+                    "Frame thumbnail unavailable and no nearby frame available"
+                } else {
+                    "Exact frame thumbnail unavailable"
+                },
                 "error_type": if primary.is_snapshot { "snapshot_missing" } else { "frame_unavailable" },
                 "frame_id": frame_id
             })),
@@ -482,6 +892,7 @@ pub async fn get_frame_data(
     Path(frame_id): Path<i64>,
     Query(query): Query<FrameDataQuery>,
 ) -> Result<Response<Body>, (StatusCode, JsonResponse<Value>)> {
+    require_frame_history_access(&state, frame_id).await?;
     let start_time = Instant::now();
 
     match timeout(Duration::from_secs(5), async {
@@ -857,6 +1268,10 @@ pub async fn get_next_valid_frame(
     // a non-zero size too, but must never become an FFmpeg input.
     let mut skipped = 0;
     for (frame_id, file_path, _offset_index, timestamp, _is_snapshot) in candidates {
+        if !state.history_access.allows(timestamp, Utc::now()) {
+            skipped += 1;
+            continue;
+        }
         if matches!(tokio::fs::metadata(&file_path).await, Ok(metadata) if metadata.is_file()) {
             return Ok(JsonResponse(NextValidFrameResponse {
                 frame_id,
@@ -891,6 +1306,7 @@ pub async fn get_frame_metadata(
     State(state): State<Arc<AppState>>,
     Path(frame_id): Path<i64>,
 ) -> Result<JsonResponse<FrameMetadataResponse>, (StatusCode, JsonResponse<Value>)> {
+    require_frame_history_access(&state, frame_id).await?;
     match state.db.get_frame_timestamp(frame_id).await {
         Ok(Some(timestamp)) => Ok(JsonResponse(FrameMetadataResponse {
             frame_id,
@@ -959,6 +1375,7 @@ pub async fn get_frame_context(
     State(state): State<Arc<AppState>>,
     Path(frame_id): Path<i64>,
 ) -> Result<JsonResponse<FrameContextResponse>, (StatusCode, JsonResponse<Value>)> {
+    require_frame_history_access(&state, frame_id).await?;
     // Try to get accessibility data; gracefully handle missing columns (pre-migration DBs)
     let (a11y_text, a11y_tree_json) = match state.db.get_frame_accessibility_data(frame_id).await {
         Ok(data) => data,
@@ -1157,6 +1574,15 @@ pub struct FrameTextQuery {
     pub query: Option<String>,
 }
 
+/// Optional controls for on-demand frame OCR.
+#[derive(Debug, Deserialize, OaSchema)]
+pub struct FrameOcrQuery {
+    /// Whether newly generated OCR should be cached on the frame.
+    /// Existing callers retain the historical persistent default; read-only
+    /// verification callers can explicitly disable database writes.
+    pub persist: Option<bool>,
+}
+
 /// Get OCR text positions with bounding boxes for a specific frame.
 /// Falls back to accessibility tree node bounds when no OCR data exists.
 /// Both OCR and accessibility bounds are normalized to 0-1 relative to the
@@ -1167,6 +1593,7 @@ pub async fn get_frame_text_data(
     Path(frame_id): Path<i64>,
     Query(params): Query<FrameTextQuery>,
 ) -> Result<JsonResponse<FrameTextResponse>, (StatusCode, JsonResponse<Value>)> {
+    require_frame_history_access(&state, frame_id).await?;
     // Get OCR data (bounding boxes from Apple Vision)
     let mut text_positions = match state.db.get_frame_text_positions(frame_id).await {
         Ok(tp) => tp,
@@ -1268,15 +1695,53 @@ pub async fn get_frame_text_data(
     }))
 }
 
+/// Counts on-demand OCR jobs actually executing, for diagnosing CPU contention
+/// between search verification and capture.
+///
+/// Incremented/decremented *inside* the blocking closure, not around the
+/// `.await`. That distinction is the point: when a search is aborted the
+/// handler future is dropped, but the blocking task keeps running to
+/// completion. Counting around the await would report the client's view (jobs
+/// it is still waiting for); counting inside reports the machine's view (jobs
+/// burning CPU, including abandoned ones). With the shared permit held across
+/// the closure this should never exceed 1 — a higher value means the permit
+/// was released before the work finished.
+static ON_DEMAND_OCR_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Decrements the in-flight count on drop so a panicking OCR call cannot leak
+/// the counter upward.
+struct OcrInflightGuard;
+
+impl OcrInflightGuard {
+    fn enter(frame_id: i64) -> Self {
+        let inflight = ON_DEMAND_OCR_INFLIGHT.fetch_add(1, Ordering::SeqCst) + 1;
+        debug!(
+            "on-demand ocr start frame={} inflight={}",
+            frame_id, inflight
+        );
+        Self
+    }
+}
+
+impl Drop for OcrInflightGuard {
+    fn drop(&mut self) {
+        let inflight = ON_DEMAND_OCR_INFLIGHT.fetch_sub(1, Ordering::SeqCst) - 1;
+        debug!("on-demand ocr end inflight={}", inflight);
+    }
+}
+
 /// Run on-demand OCR on a frame that has no stored bounding boxes.
-/// Loads the snapshot JPEG, runs Apple Vision OCR, stores the result,
-/// and returns the text positions. Subsequent GET requests will hit the
-/// cached DB row. If OCR data already exists, returns it without re-running.
+/// Loads the snapshot JPEG, runs platform OCR, and returns the text positions.
+/// Results are stored by default so subsequent GET requests hit the cached DB
+/// row; callers using the result only for verification can set `persist=false`.
+/// If OCR data already exists, returns it without re-running.
 #[oasgen]
 pub async fn run_frame_ocr(
     State(state): State<Arc<AppState>>,
     Path(frame_id): Path<i64>,
+    Query(params): Query<FrameOcrQuery>,
 ) -> Result<JsonResponse<FrameTextResponse>, (StatusCode, JsonResponse<Value>)> {
+    require_frame_history_access(&state, frame_id).await?;
     // Check if OCR data already exists — avoid redundant work
     match state.db.get_frame_text_positions(frame_id).await {
         Ok(existing) if !existing.is_empty() => {
@@ -1287,6 +1752,16 @@ pub async fn run_frame_ocr(
         }
         _ => {}
     }
+
+    // Everything below is expensive: a video-backed frame is extracted with
+    // ffmpeg and then OCR'd, and search fires these in bursts while capture is
+    // also OCR'ing. Take the shared capture permit for the whole span so the
+    // two producers cannot add up. Acquired *after* the stored-positions check
+    // above so cache hits stay fully concurrent.
+    let ocr_permit = screenpipe_capture::ocr_semaphore()
+        .acquire()
+        .await
+        .expect("OCR semaphore is never closed");
 
     // Resolve image path from DB
     let (file_path, offset_index, is_snapshot) = match state.db.get_frame(frame_id).await {
@@ -1331,8 +1806,11 @@ pub async fn run_frame_ocr(
             }
         }
     } else {
-        // Legacy video-chunk frame — extract via ffmpeg
-        match extract_frame_from_video(&file_path, offset_index, "95").await {
+        // Legacy video-chunk frame — extract via ffmpeg. The quality arg is
+        // mjpeg's -q:v scale (2-31, LOWER is better) — "2" is best quality
+        // for OCR. ("95" here was a percent-scale mixup that ffmpeg clamped
+        // to 31, the WORST quality, silently degrading on-demand OCR.)
+        match extract_frame_from_video(&file_path, offset_index, "2").await {
             Ok(temp_path) => match tokio::task::spawn_blocking({
                 let p = temp_path.clone();
                 move || image::open(&p)
@@ -1359,9 +1837,18 @@ pub async fn run_frame_ocr(
         }
     };
 
-    // Run OCR on the image
+    // Run OCR on the image.
+    //
+    // The permit is *moved into* the blocking closure rather than held by this
+    // handler. Aborting a search drops the handler future, but the blocking
+    // task is not cancellable and runs to completion — releasing the permit on
+    // drop would hand the slot to the next request while this OCR still owns a
+    // CPU. Moving it in means the slot frees when the work actually ends, so
+    // abandoned requests stay bounded too.
     #[cfg(target_os = "macos")]
     let ocr_result = tokio::task::spawn_blocking(move || {
+        let _permit = ocr_permit;
+        let _watch = OcrInflightGuard::enter(frame_id);
         let (text, json, _confidence) = screenpipe_screen::perform_ocr_apple(&image, &[]);
         (text, json)
     })
@@ -1369,16 +1856,27 @@ pub async fn run_frame_ocr(
     .unwrap_or_else(|_| (String::new(), "[]".to_string()));
 
     #[cfg(target_os = "windows")]
-    let ocr_result = match screenpipe_screen::perform_ocr_windows(&image, &[]).await {
-        Ok((text, json, _confidence)) => (text, json),
-        Err(e) => {
-            error!("Windows on-demand OCR failed: {}", e);
-            (String::new(), "[]".to_string())
+    let ocr_result = {
+        // Windows OCR is async, so there is no orphaned blocking task to
+        // outlive the permit: dropping the handler cancels this future and
+        // releases the slot, which is correct. `perform_ocr_windows` also
+        // serializes internally; holding this permit too is what extends the
+        // bound to cover frame extraction.
+        let _permit = ocr_permit;
+        let _watch = OcrInflightGuard::enter(frame_id);
+        match screenpipe_screen::perform_ocr_windows(&image, &[]).await {
+            Ok((text, json, _confidence)) => (text, json),
+            Err(e) => {
+                error!("Windows on-demand OCR failed: {}", e);
+                (String::new(), "[]".to_string())
+            }
         }
     };
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let ocr_result = tokio::task::spawn_blocking(move || {
+        let _permit = ocr_permit;
+        let _watch = OcrInflightGuard::enter(frame_id);
         let (text, json, _confidence) = screenpipe_screen::perform_ocr_tesseract(&image, vec![]);
         (text, json)
     })
@@ -1386,38 +1884,50 @@ pub async fn run_frame_ocr(
     .unwrap_or_else(|_| (String::new(), "[]".to_string()));
 
     let (ocr_text, ocr_text_json) = ocr_result;
+    let blocks: Vec<OcrTextBlock> = serde_json::from_str(&ocr_text_json).unwrap_or_default();
+    let text_positions = screenpipe_db::parse_all_text_positions(&blocks);
 
-    // Store in DB for future reads (ignore errors — the result is still returned)
-    if !ocr_text.is_empty() {
-        #[cfg(target_os = "macos")]
-        let engine = Arc::new(screenpipe_db::OcrEngine::AppleNative);
-        #[cfg(target_os = "windows")]
-        let engine = Arc::new(screenpipe_db::OcrEngine::WindowsNative);
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let engine = Arc::new(screenpipe_db::OcrEngine::Tesseract);
-        if let Err(e) = state
-            .db
-            .insert_ocr_text(frame_id, &ocr_text, &ocr_text_json, engine)
-            .await
-        {
-            debug!(
-                "Failed to cache on-demand OCR for frame {}: {}",
-                frame_id, e
-            );
-        }
-    }
-
-    // Parse and return
-    let text_positions = state
-        .db
-        .get_frame_text_positions(frame_id)
-        .await
-        .unwrap_or_default();
+    persist_on_demand_ocr(
+        &state.db,
+        frame_id,
+        &ocr_text,
+        &ocr_text_json,
+        params.persist.unwrap_or(true),
+    )
+    .await;
 
     Ok(JsonResponse(FrameTextResponse {
         frame_id,
         text_positions,
     }))
+}
+
+async fn persist_on_demand_ocr(
+    db: &screenpipe_db::DatabaseManager,
+    frame_id: i64,
+    ocr_text: &str,
+    ocr_text_json: &str,
+    persist: bool,
+) {
+    if !persist || ocr_text.is_empty() {
+        return;
+    }
+
+    #[cfg(target_os = "macos")]
+    let engine = Arc::new(screenpipe_db::OcrEngine::AppleNative);
+    #[cfg(target_os = "windows")]
+    let engine = Arc::new(screenpipe_db::OcrEngine::WindowsNative);
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let engine = Arc::new(screenpipe_db::OcrEngine::Tesseract);
+    if let Err(e) = db
+        .insert_ocr_text(frame_id, ocr_text, ocr_text_json, engine)
+        .await
+    {
+        debug!(
+            "Failed to cache on-demand OCR for frame {}: {}",
+            frame_id, e
+        );
+    }
 }
 
 pub(crate) async fn serve_file(path: &str) -> Result<Response, (StatusCode, JsonResponse<Value>)> {
@@ -1458,6 +1968,126 @@ pub use super::content::FrameContent;
 
 /// extract_high_quality_frame re-export for video export
 pub use crate::video_utils::extract_high_quality_frame as extract_hq_frame;
+
+#[cfg(test)]
+mod ocr_tests {
+    use super::*;
+    use chrono::Utc;
+    use screenpipe_db::DatabaseManager;
+
+    #[tokio::test]
+    async fn read_only_ocr_preserves_canonical_text_and_search_index() {
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        let canonical_text = "canonicalaccessibilitytoken from the accessibility tree";
+        let frame_id = db
+            .insert_snapshot_frame(
+                "read-only-ocr-device",
+                Utc::now(),
+                "unused-read-only-ocr-snapshot.jpg",
+                Some("Safari"),
+                Some("Accessibility-only frame"),
+                None,
+                true,
+                Some("test"),
+                Some(canonical_text),
+                Some("accessibility"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let generated_ocr = "different visible screenshot text";
+        let generated_json = serde_json::to_string(&vec![OcrTextBlock {
+            conf: "0.99".to_string(),
+            left: "0.1".to_string(),
+            top: "0.2".to_string(),
+            width: "0.3".to_string(),
+            height: "0.04".to_string(),
+            text: generated_ocr.to_string(),
+            ..Default::default()
+        }])
+        .unwrap();
+
+        persist_on_demand_ocr(&db, frame_id, generated_ocr, &generated_json, false).await;
+
+        let (full_text, text_json, text_source): (Option<String>, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT full_text, text_json, text_source FROM frames WHERE id = ?1")
+                .bind(frame_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        let searchable: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM frames_fts \
+             WHERE rowid = ?1 AND frames_fts MATCH ?2",
+        )
+        .bind(frame_id)
+        .bind("\"canonicalaccessibilitytoken\"*")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(full_text.as_deref(), Some(canonical_text));
+        assert!(text_json.is_none());
+        assert_eq!(text_source.as_deref(), Some("accessibility"));
+        assert_eq!(searchable, 1);
+    }
+
+    /// Counterpart to the read-only test above. Without it, a regression that
+    /// turned `persist_on_demand_ocr` into a no-op would leave that test green
+    /// while proving nothing: it would pass because nothing writes, not because
+    /// `persist=false` suppressed a write that would otherwise happen.
+    #[tokio::test]
+    async fn persisting_ocr_writes_when_the_caller_opts_in() {
+        let db = DatabaseManager::new("sqlite::memory:", Default::default())
+            .await
+            .unwrap();
+        let canonical_text = "canonicalaccessibilitytoken from the accessibility tree";
+        let frame_id = db
+            .insert_snapshot_frame(
+                "persisting-ocr-device",
+                Utc::now(),
+                "unused-persisting-ocr-snapshot.jpg",
+                Some("Safari"),
+                Some("Accessibility-only frame"),
+                None,
+                true,
+                Some("test"),
+                Some(canonical_text),
+                Some("accessibility"),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let generated_ocr = "different visible screenshot text";
+        let generated_json = serde_json::to_string(&vec![OcrTextBlock {
+            conf: "0.99".to_string(),
+            left: "0.1".to_string(),
+            top: "0.2".to_string(),
+            width: "0.3".to_string(),
+            height: "0.04".to_string(),
+            text: generated_ocr.to_string(),
+            ..Default::default()
+        }])
+        .unwrap();
+
+        persist_on_demand_ocr(&db, frame_id, generated_ocr, &generated_json, true).await;
+
+        let (full_text, text_json): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT full_text, text_json FROM frames WHERE id = ?1")
+                .bind(frame_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+
+        assert_eq!(full_text.as_deref(), Some(generated_ocr));
+        assert!(text_json.is_some());
+    }
+}
 
 #[cfg(test)]
 mod thumbnail_tests {
@@ -1541,6 +2171,120 @@ mod thumbnail_tests {
             height: 1,
             cached_at: Instant::now(),
         }
+    }
+
+    fn preview_query() -> FramePreviewSamplesQuery {
+        FramePreviewSamplesQuery {
+            start_time: "2026-08-20T10:00:00Z".parse().unwrap(),
+            end_time: "2026-08-20T11:00:00Z".parse().unwrap(),
+            app_name: "Arc".to_string(),
+            browser_domain: Some("www.GitHub.com".to_string()),
+            limit: 6,
+        }
+    }
+
+    #[test]
+    fn preview_sample_query_is_bounded_and_normalizes_domains() {
+        let (app_name, domain) = validate_frame_preview_query(&preview_query()).unwrap();
+        assert_eq!(app_name, "Arc");
+        assert_eq!(domain.as_deref(), Some("github.com"));
+
+        let mut invalid = preview_query();
+        invalid.limit = 9;
+        assert!(validate_frame_preview_query(&invalid)
+            .unwrap_err()
+            .contains("limit"));
+        invalid = preview_query();
+        invalid.end_time = invalid.start_time + chrono::Duration::hours(25);
+        assert!(validate_frame_preview_query(&invalid)
+            .unwrap_err()
+            .contains("24 hours"));
+        invalid = preview_query();
+        invalid.browser_domain = Some("github.com/path".to_string());
+        assert!(validate_frame_preview_query(&invalid)
+            .unwrap_err()
+            .contains("valid host"));
+        invalid = preview_query();
+        invalid.browser_domain = Some("github.com@evil.test".to_string());
+        assert!(validate_frame_preview_query(&invalid)
+            .unwrap_err()
+            .contains("valid host"));
+    }
+
+    #[test]
+    fn preview_domain_matching_is_exact() {
+        assert!(browser_url_matches_domain(
+            Some("https://www.github.com/screenpipe/screenpipe"),
+            "github.com"
+        ));
+        assert!(!browser_url_matches_domain(
+            Some("https://github.com.evil.test/github.com"),
+            "github.com"
+        ));
+        assert!(!browser_url_matches_domain(
+            Some("not a url with github.com"),
+            "github.com"
+        ));
+    }
+
+    #[test]
+    fn preview_sampling_preserves_first_and_last_frames() {
+        let candidates = (0..10)
+            .map(|index| FramePreviewSample {
+                frame_id: index,
+                timestamp: Utc::now() + chrono::Duration::seconds(index),
+                source: FramePreviewSource::Snapshot,
+                video_chunk_id: None,
+                video_offset_seconds: None,
+            })
+            .collect();
+        let sampled = evenly_sample_preview_frames(candidates, 3);
+        assert_eq!(
+            sampled
+                .into_iter()
+                .map(|frame| frame.frame_id)
+                .collect::<Vec<_>>(),
+            vec![0, 4, 9]
+        );
+    }
+
+    #[test]
+    fn preview_candidates_keep_only_one_frame_per_ten_seconds() {
+        let start = "2026-08-20T10:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let candidates = [0, 5, 10, 19]
+            .into_iter()
+            .enumerate()
+            .map(|(frame_id, seconds)| FramePreviewSample {
+                frame_id: frame_id as i64,
+                timestamp: start + chrono::Duration::seconds(seconds),
+                source: FramePreviewSource::Snapshot,
+                video_chunk_id: None,
+                video_offset_seconds: None,
+            })
+            .collect();
+
+        assert_eq!(
+            first_preview_frame_per_bucket(candidates)
+                .into_iter()
+                .map(|frame| frame.frame_id)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+    }
+
+    #[test]
+    fn preview_media_range_parser_is_bounded() {
+        assert_eq!(parse_single_byte_range("bytes=0-99", 1_000), Some((0, 99)));
+        assert_eq!(
+            parse_single_byte_range("bytes=900-", 1_000),
+            Some((900, 999))
+        );
+        assert_eq!(
+            parse_single_byte_range("bytes=-100", 1_000),
+            Some((900, 999))
+        );
+        assert_eq!(parse_single_byte_range("bytes=1000-", 1_000), None);
+        assert_eq!(parse_single_byte_range("bytes=0-1,4-5", 1_000), None);
     }
 
     #[test]

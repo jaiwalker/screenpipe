@@ -26,10 +26,21 @@ import {
   flushMcpTelemetry,
   initMcpTelemetry,
 } from "./telemetry";
-import { createMcpQualifiedValueReporter } from "./qualified-value";
+import {
+  createMcpQualifiedValueReporter,
+  resolveMcpClient,
+} from "./qualified-value";
 import { discoverTeamApiBase, discoverTeamToken } from "./team-config";
+import { teamFrameContent, teamFramePath } from "./team-frame";
 import { PKG_VERSION } from "./version";
 import { formatForElementPurpose } from "./element-format";
+import { buildActivitySummaryResult } from "./activity-summary-tool";
+import {
+  localContextDayStarts,
+  normalizeTime,
+  normalizeTimeFields,
+} from "./time-normalization";
+import { resolveScreenpipeApiBase } from "./api-base";
 
 initMcpTelemetry({ transport: "stdio" });
 
@@ -58,14 +69,11 @@ for (let i = 0; i < args.length; i++) {
 // screenpipe (e.g. an agent on a VPS reading a synced copy of your data),
 // not just localhost. Priority:
 //   1. --screenpipe-url / --screenpipe-api-url flag
-//   2. SCREENPIPE_API_URL env (set by `screenpipe agent setup --api-url`)
-//   3. --screenpipe-host (+ --port) → http://host:port
-//   4. default http://localhost:<port>
-const SCREENPIPE_API = (
-  baseOverride ||
-  process.env.SCREENPIPE_API_URL ||
-  `http://${host}:${port}`
-).replace(/\/+$/, "");
+//   2. SCREENPIPE_LOCAL_API_URL / PORT from the launching desktop instance
+//   3. SCREENPIPE_API_URL env (set by `screenpipe agent setup --api-url`)
+//   4. --screenpipe-host (+ --port) → http://host:port
+//   5. default http://localhost:<port>
+const SCREENPIPE_API = resolveScreenpipeApiBase({ baseOverride, host, port });
 
 // Discover the local API key, in priority order:
 //
@@ -388,7 +396,7 @@ const TOOLS: Tool[] = [
       properties: {
         q: {
           type: "string",
-          description: "Full-text search query. Omit to return all content in time range. Avoid for audio — transcriptions are noisy, q filters too aggressively.",
+          description: "Full-text search query. Omit to return all content in time range. Avoid for audio — transcriptions are noisy, q filters too aggressively. For an attached activity episode, its generated title/summary are labels, not query terms: use the exact time range and artifact anchors with q omitted.",
         },
         content_type: {
           type: "string",
@@ -401,11 +409,11 @@ const TOOLS: Tool[] = [
         offset: { type: "integer", description: "Pagination offset. Use when results say 'use offset=N for more'.", default: 0 },
         start_time: {
           type: "string",
-          description: "Accepted: ISO 8601 ('2024-01-15T10:00:00Z'), 'Nh ago' / 'Nd ago' / 'Nw ago', 'now', 'yesterday', 'today', or bare 'YYYY-MM-DD'. Always provide to avoid scanning entire history.",
+          description: "Accepted: ISO 8601 ('2024-01-15T10:00:00Z'), relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD'). Always provide to avoid scanning entire history.",
         },
         end_time: {
           type: "string",
-          description: "ISO 8601 UTC or relative (e.g. 'now'). Defaults to now.",
+          description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD'). Defaults to now.",
         },
         app_name: { type: "string", description: "Filter by app name (e.g. 'Google Chrome', 'Slack', 'zoom.us'). Case-sensitive." },
         window_name: { type: "string", description: "Filter by window title substring" },
@@ -439,6 +447,36 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "synced-devices",
+    description:
+      "List this signed-in user's Screenpipe devices that have uploaded Data Sync records, including each device name and last sync time. " +
+      "USE WHEN: the user asks what devices are available, names another device, or asks a cross-device question and you need the exact device_name filter. " +
+      "This never accepts an account or bucket identifier; the local app forwards the signed-in user's identity.",
+    annotations: { title: "Synced Devices", readOnlyHint: true, openWorldHint: true, idempotentHint: true },
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "search-synced-content",
+    description:
+      "Search Data Sync records from this signed-in user's devices. Results include device name, device ID, and timestamp for attribution. " +
+      "USE WHEN: the user asks about another/named device, asks across devices, or local search does not cover the requested machine. " +
+      "For the current machine only, use search-content. Start with a narrow time range and limit=10.",
+    annotations: { title: "Search Synced Content", readOnlyHint: true, openWorldHint: true, idempotentHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        q: { type: "string", description: "Case-insensitive substring query. Omit to return all matching records in the window." },
+        device_name: { type: "string", description: "Exact device name from synced-devices." },
+        device_id: { type: "string", description: "Exact device ID from synced-devices." },
+        app_name: { type: "string", description: "Exact app name, case-insensitive." },
+        since: { type: "string", description: "ISO 8601 lower bound." },
+        until: { type: "string", description: "ISO 8601 upper bound." },
+        since_hours_ago: { type: "number", description: "Alternative relative time window in hours." },
+        limit: { type: "integer", description: "Max results (default 50, max 200).", default: 50 },
+      },
+    },
+  },
+  {
     name: "list-meetings",
     description:
       "List detected meetings (Zoom, Teams, Meet, etc.) with id, duration, app, attendees, and note status. " +
@@ -451,8 +489,8 @@ const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        start_time: { type: "string", description: "ISO 8601 UTC or relative (e.g. '1d ago'). Omit when searching by q — it filters all history." },
-        end_time: { type: "string", description: "ISO 8601 UTC or relative" },
+        start_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD'). Omit when searching by q — it filters all history." },
+        end_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
         q: { type: "string", description: "Case-insensitive substring filter on title, attendees (names/emails), and note. Searches all history." },
         limit: { type: "integer", description: "Max results (default 20)", default: 20 },
         offset: { type: "integer", description: "Pagination offset", default: 0 },
@@ -462,17 +500,31 @@ const TOOLS: Tool[] = [
   {
     name: "activity-summary",
     description:
-      "Rich activity overview: app usage, window/tab titles with URLs and time spent, key text per context, audio transcriptions. " +
+      "Rich activity overview: authoritative active minutes, app/window time, edited document paths, key text, and audio transcriptions, with optional parsed task context when available. " +
       "USE WHEN: any broad question about what the user did — 'what was I doing?', 'how long on X?', 'which apps?', 'recap my morning'. " +
       "This is almost always the right first call for time-range questions — usually sufficient without follow-up searches. " +
+      "Use parsed/path evidence to identify tasks, but only active-minute fields for duration; frame and row counts are never time. " +
       "DO NOT USE for: finding a specific keyword (use keyword-search) or a specific UI control (use search-elements).",
     annotations: { title: "Activity Summary", readOnlyHint: true, openWorldHint: false, idempotentHint: true },
     inputSchema: {
       type: "object",
       properties: {
-        start_time: { type: "string", description: "ISO 8601 UTC or relative (e.g. '3h ago')" },
-        end_time: { type: "string", description: "ISO 8601 UTC or relative (e.g. 'now')" },
+        start_time: { type: "string", description: "ISO 8601, relative (e.g. '3h ago'), or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
+        end_time: { type: "string", description: "ISO 8601, relative (e.g. 'now'), or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
         app_name: { type: "string", description: "Optional app name filter to focus on one app" },
+        include_parsed_context: {
+          type: "boolean",
+          description:
+            "Optionally include a bounded parsed-context sample for identifying projects and tasks. Parsed capture is experimental and may be disabled or unsupported. Context only; never use row counts as duration.",
+          default: false,
+        },
+        parsed_context_limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 20,
+          description: "Maximum parsed-context rows (default 10, max 20).",
+          default: 10,
+        },
       },
       required: ["start_time", "end_time"],
     },
@@ -495,8 +547,8 @@ const TOOLS: Tool[] = [
           description: "Element source. 'accessibility' is preferred (OS-native tree). 'ocr' for apps without a11y.",
         },
         role: { type: "string", description: "Element role filter (e.g. 'AXButton', 'AXLink', 'AXTextField')" },
-        start_time: { type: "string", description: "ISO 8601 UTC or relative" },
-        end_time: { type: "string", description: "ISO 8601 UTC or relative" },
+        start_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
+        end_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
         app_name: { type: "string", description: "Filter by app name" },
         purpose: {
           type: "string",
@@ -534,8 +586,8 @@ const TOOLS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        start_time: { type: "string", description: 'ISO 8601 UTC or relative (e.g. "5m ago", "now")' },
-        end_time: { type: "string", description: 'ISO 8601 UTC or relative (e.g. "5m ago", "now")' },
+        start_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
+        end_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
         output_path: {
           type: "string",
           description:
@@ -566,10 +618,53 @@ const TOOLS: Tool[] = [
     },
   },
   {
+    name: "get-feedback",
+    description:
+      "Search local user ratings and written comments attached to AI-produced notifications, chats, memories, blocks, artifacts, and other targets. " +
+      "Use before generating related work so you preserve what earned up ratings and correct what earned down ratings.",
+    annotations: { title: "Get AI Feedback", readOnlyHint: true, openWorldHint: false, idempotentHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        kind: {
+          type: "string",
+          description: "Optional target kind, such as notification, chat, memory, block, artifact, or structured_output.",
+        },
+        target_id: {
+          type: "string",
+          description: "Optional exact target id.",
+        },
+        producer: {
+          type: "string",
+          description: "Optional producer reference, for example pipe:daily-recap. Pipe tokens are always restricted to themselves.",
+        },
+        rating: {
+          type: "string",
+          enum: ["up", "down"],
+          description: "Optional rating filter.",
+        },
+        q: {
+          type: "string",
+          description: "Optional text search across comments, snapshots, target ids, producers, and context.",
+        },
+        since: {
+          type: "string",
+          description: "Optional RFC3339 lower bound on updated_at.",
+        },
+        limit: {
+          type: "integer",
+          description: "Maximum records (default 50, max 500).",
+          default: 50,
+        },
+      },
+    },
+  },
+  {
     name: "send-notification",
     description:
       "Send a notification to the screenpipe desktop UI. " +
-      "Use to alert the user about findings, completed tasks, or actions needing attention.",
+      "Use high priority only for time-sensitive failures or decisions needing human attention; " +
+      "routine findings and completed tasks should be normal or low.",
     annotations: { title: "Send Notification", readOnlyHint: false, destructiveHint: false, openWorldHint: false },
     inputSchema: {
       type: "object",
@@ -577,6 +672,12 @@ const TOOLS: Tool[] = [
         title: { type: "string", description: "Notification title (short, descriptive)" },
         body: { type: "string", description: "Notification body (markdown supported)" },
         pipe_name: { type: "string", description: "Name of the pipe/tool sending this notification" },
+        priority: {
+          type: "string",
+          enum: ["high", "normal", "low"],
+          description: "Every priority appears in the top-right panel. High also appears in the focused Priority view, normal (default) stays in All, and low is toast-only by default.",
+          default: "normal",
+        },
         timeout_secs: { type: "integer", description: "Auto-dismiss after N seconds (default 20). Use 0 for persistent.", default: 20 },
         actions: {
           type: "array",
@@ -771,8 +872,8 @@ const TOOLS: Tool[] = [
       type: "object",
       properties: {
         q: { type: "string", description: "Keyword query (FTS5 syntax: quoted phrases, AND/OR, prefix*)" },
-        start_time: { type: "string", description: "ISO 8601 UTC, 'Nh ago' / 'Nd ago' / 'Nw ago', 'now', 'yesterday', 'today', or 'YYYY-MM-DD'" },
-        end_time: { type: "string", description: "Same formats as start_time" },
+        start_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
+        end_time: { type: "string", description: "ISO 8601, relative time, or local calendar ('today', 'yesterday', 'tomorrow', 'YYYY-MM-DD')" },
         app_name: { type: "string", description: "Filter by exact app name (case-sensitive, e.g. 'Google Chrome')" },
         limit: { type: "integer", description: "Max results (default 20)", default: 20 },
         offset: { type: "integer", description: "Pagination offset", default: 0 },
@@ -943,7 +1044,7 @@ const TEAM_TOOLS: Tool[] = [
     name: "team-records",
     description:
       "Chronological dump of the org's data for a time window — both raw " +
-      "telemetry (frame/audio) and the structured outputs of the enterprise-" +
+      "telemetry (frame/parsed/audio/feedback) and the structured outputs of the enterprise-" +
       "worker pipes (sop/skill/trajectory/memory/workflow). " +
       "Raw kinds return oldest → newest (vs team-search which is recency-ranked). " +
       "Synthesized kinds return one record per device's latest run by default " +
@@ -960,9 +1061,9 @@ const TEAM_TOOLS: Tool[] = [
         device_id: { type: "string", description: "Restrict to one device (optional). Raw kinds only." },
         kind: {
           type: "string",
-          enum: ["frame", "audio", "all", "sop", "skill", "trajectory", "memory", "workflow"],
+          enum: ["frame", "parsed", "audio", "feedback", "all", "sop", "skill", "trajectory", "memory", "workflow"],
           description:
-            "What to return. Raw: frame|audio|all (telemetry). " +
+            "What to return. Raw: frame|parsed|audio|feedback|all (telemetry and human feedback). " +
             "Synthesized: sop|skill|trajectory|memory|workflow (pipe outputs). " +
             "Default: all.",
           default: "all",
@@ -979,6 +1080,36 @@ const TEAM_TOOLS: Tool[] = [
           default: true,
         },
       },
+    },
+  },
+  {
+    name: "team-frame",
+    description:
+      "Read one PII-redacted team screenshot. Use device_id and frame_id from " +
+      "team-search or team-records. Returns actual JPEG image content when the " +
+      "device has uploaded it, or an explicit unavailable result. Never claim " +
+      "to have seen a frame unless this tool returns image content. " +
+      "Auth: enterprise admin token with read:records.",
+    annotations: { title: "Team Frame", readOnlyHint: true, openWorldHint: true, idempotentHint: true },
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: {
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          pattern: "^[A-Za-z0-9_-]+$",
+          description: "Device ID from team-search or team-devices.",
+        },
+        frame_id: {
+          type: "integer",
+          minimum: 1,
+          maximum: 999999999999999,
+          description: "Frame ID from team-search or team-records.",
+        },
+      },
+      required: ["device_id", "frame_id"],
+      additionalProperties: false,
     },
   },
 ];
@@ -1028,6 +1159,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
   if (uri === "screenpipe://context") {
     const now = new Date();
     const ms = now.getTime();
+    const dayStarts = localContextDayStarts(now);
     return {
       contents: [
         {
@@ -1047,8 +1179,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
                 now: now.toISOString(),
                 one_hour_ago: new Date(ms - 60 * 60 * 1000).toISOString(),
                 three_hours_ago: new Date(ms - 3 * 60 * 60 * 1000).toISOString(),
-                today_start: `${now.toISOString().split("T")[0]}T00:00:00Z`,
-                yesterday_start: `${new Date(ms - 24 * 60 * 60 * 1000).toISOString().split("T")[0]}T00:00:00Z`,
+                ...dayStarts,
                 one_week_ago: new Date(ms - 7 * 24 * 60 * 60 * 1000).toISOString(),
               },
             },
@@ -1077,6 +1208,10 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 | 3 | search-elements | Need UI structure: buttons, links, form fields |
 | 4 | frame-context | Need full detail for a specific moment (use frame_id from step 2) |
 
+For another/named device or an across-device question, use synced-devices to
+resolve the device name, then search-synced-content. Keep search-content for the
+current machine. Synced results must be attributed with their device and timestamp.
+
 ## Search Strategy
 
 - **Always provide start_time** — without it, search scans the entire history
@@ -1092,6 +1227,8 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 - "What did I discuss in my meeting?" → list-meetings to find it, then get-meeting with include_transcript=true
 - "When did I last talk to <person>?" → list-meetings with q=<name or email>, NO start_time (q searches all history)
 - "Find when I was on Twitter" → search-content with app_name='Arc' (or the browser name), q='twitter'
+- "What was I doing on my MacBook this morning?" → synced-devices, then search-synced-content with device_name='MacBook' and the requested time window
+- "Find this across my devices" → search-synced-content with the requested time window and no device filter
 - "Remember that I prefer X" → update-memory with content describing the preference
 - "What do you remember about X?" → search-content with content_type='memory', q='X'
 - "Automate X every day / on a schedule" → read the screenpipe://guide/pipes resource, then create-pipe (a scheduled AI automation)
@@ -1101,6 +1238,7 @@ server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
 When referencing specific moments in results, create clickable links:
 - Frame: [10:30 AM — Chrome](screenpipe://frame/{frame_id}) — use frame_id from search results
 - Timeline: [meeting at 3pm](screenpipe://timeline?timestamp=2024-01-15T15:00:00Z) — use exact timestamp from results
+- Chat: [crm](screenpipe://chat/{conversationId}) — use a real conversation id
 Never fabricate IDs or timestamps — only use values from actual results.
 `,
         },
@@ -1230,6 +1368,7 @@ async function fetchAPI(
       headers: {
         "Content-Type": "application/json",
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        "x-screenpipe-client": "mcp",
         ...options.headers,
       },
     });
@@ -1259,43 +1398,12 @@ const qualifiedValue = createMcpQualifiedValueReporter((payload) =>
     method: "POST",
     body: JSON.stringify(payload),
   }),
+  () =>
+    resolveMcpClient(
+      process.env.SCREENPIPE_MCP_CLIENT,
+      server.getClientVersion()?.name,
+    ),
 );
-
-// Server's deserialize_flexible_datetime accepts ISO 8601 + "Nh ago" / "Nd ago"
-// / "Nw ago" / "now". Models also try "yesterday", "today", and bare dates
-// ("2026-05-17") — normalize those here so the request doesn't 400.
-function normalizeTime(input: string | undefined): string | undefined {
-  if (!input) return input;
-  const s = input.trim();
-  if (!s) return input;
-  const lower = s.toLowerCase();
-  if (lower === "yesterday") return "1d ago";
-  if (lower === "today") {
-    return `${new Date().toISOString().split("T")[0]}T00:00:00Z`;
-  }
-  if (lower === "tomorrow") {
-    const t = new Date();
-    t.setUTCDate(t.getUTCDate() + 1);
-    return `${t.toISOString().split("T")[0]}T00:00:00Z`;
-  }
-  // Bare YYYY-MM-DD → start of day UTC
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${s}T00:00:00Z`;
-  return s;
-}
-
-// Apply normalizeTime to start_time/end_time fields in an args object.
-// Returns a new object — does not mutate the input.
-function normalizeTimeFields(
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const out = { ...args };
-  for (const k of ["start_time", "end_time"] as const) {
-    if (typeof out[k] === "string") {
-      out[k] = normalizeTime(out[k] as string);
-    }
-  }
-  return out;
-}
 
 // Zone label for a timestamp's HH:MM slice. The server serializes timestamps in
 // its LOCAL timezone (e.g. "...T09:03:44+05:30"), so the HH:MM is already local —
@@ -1474,6 +1582,69 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const text = await res.text();
         const trimmed = text.length > 6000 ? `…${text.slice(-6000)}` : text;
         return { content: [{ type: "text", text: trimmed || "(no logs yet)" }] };
+      }
+
+      case "synced-devices": {
+        const response = await callAPI("/data-sync/devices");
+        const data = await response.json();
+        const devices = Array.isArray(data.devices) ? data.devices : [];
+        if (devices.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: data.enabled === false
+                ? "Data Sync is off and no synced devices are available. Enable Data Sync in Screenpipe settings on the devices you want to query."
+                : "No synced devices are available yet. Enable Data Sync and let a device complete its first upload.",
+            }],
+          };
+        }
+        return {
+          content: [{
+            type: "text",
+            text: devices
+              .map((device: any) =>
+                `${device.device_name} (${device.device_id}) — last synced ${device.last_synced_at}` +
+                `${device.platform ? ` — ${device.platform}` : ""}`
+              )
+              .join("\n"),
+          }],
+        };
+      }
+
+      case "search-synced-content": {
+        const params = new URLSearchParams();
+        for (const key of ["q", "device_name", "device_id", "app_name", "since", "until", "since_hours_ago", "limit"]) {
+          const value = args[key];
+          if (value !== null && value !== undefined && value !== "") {
+            params.set(key, String(value));
+          }
+        }
+        const response = await callAPI(`/data-sync/search?${params.toString()}`);
+        const data = await response.json();
+        const results = Array.isArray(data.results) ? data.results : [];
+        if (results.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text: data.enabled === false
+                ? "No matching synced records. Data Sync is currently off, so no new records are uploading."
+                : "No matching synced records. Try a wider time range, confirm the device with synced-devices, or use a broader query.",
+            }],
+          };
+        }
+        const prefix = data.truncated
+          ? "Results are truncated; narrow the device, time range, or query.\n\n"
+          : "";
+        return {
+          content: [{
+            type: "text",
+            text: prefix + results.map((record: any) => {
+              const content = record.text || record.transcription || record.content || "";
+              return `[${record.device || record.device_id || "unknown device"}] ${record.t || "unknown time"}` +
+                `${record.app ? ` — ${record.app}` : ""}\n${truncateMiddle(String(content), DEFAULT_SEARCH_CONTENT_TRUNCATE)}`;
+            }).join("\n\n"),
+          }],
+        };
       }
 
       case "search-content": {
@@ -1656,94 +1827,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "activity-summary": {
-        const normalized = normalizeTimeFields(args);
-        const params = new URLSearchParams();
-        for (const [key, value] of Object.entries(normalized)) {
-          if (value !== null && value !== undefined) {
-            params.append(key, String(value));
-          }
-        }
-
-        const response = await callAPI(`/activity-summary?${params.toString()}`);
-
-        const data = await response.json();
-
-        if (
-          (data.total_frames ?? 0) > 0 ||
-          (data.audio_summary?.segment_count ?? 0) > 0 ||
-          (data.apps?.length ?? 0) > 0
-        ) {
+        const result = await buildActivitySummaryResult(args, callAPI);
+        if (result.hasArtifact) {
           qualifiedValue.artifactResult();
         }
-
-        const appsLines = (data.apps || []).map(
-          (a: {
-            name: string;
-            frame_count: number;
-            minutes: number;
-            first_seen?: string;
-            last_seen?: string;
-          }) => {
-            const timeSpan =
-              a.first_seen && a.last_seen
-                ? `, ${a.first_seen.slice(11, 16)}–${a.last_seen.slice(11, 16)}${zoneSuffix(a.first_seen)}`
-                : "";
-            return `  ${a.name}: ${a.minutes} min (${a.frame_count} frames${timeSpan})`;
-          }
-        );
-
-        // Window/tab activity — what pages/documents were open
-        const windowLines = (data.windows || []).map(
-          (w: {
-            app_name: string;
-            window_name: string;
-            browser_url: string;
-            minutes: number;
-            frame_count: number;
-          }) => {
-            const url = w.browser_url ? ` (${w.browser_url})` : "";
-            return `  [${w.app_name}] ${w.window_name}${url} — ${w.minutes} min`;
-          }
-        );
-
-        const speakerLines = (data.audio_summary?.speakers || []).map(
-          (s: { name: string; segment_count: number }) =>
-            `  ${s.name}: ${s.segment_count} segments`
-        );
-
-        // Actual audio transcriptions (not just counts)
-        const transcriptLines = (data.audio_summary?.top_transcriptions || []).map(
-          (t: { transcription: string; speaker: string; device: string; timestamp: string }) =>
-            `  [${t.speaker}, ${t.timestamp.slice(11, 19)}] ${t.transcription}`
-        );
-
-        // Key text content sampled across the time range
-        const textLines = (data.key_texts || data.recent_texts || []).map(
-          (t: { text: string; app_name: string; window_name?: string; timestamp: string }) => {
-            const win = t.window_name ? ` | ${t.window_name}` : "";
-            return `  [${t.app_name}${win}, ${t.timestamp.slice(11, 19)}] ${t.text}`;
-          }
-        );
-
-        const summary = [
-          `Activity Summary (${data.time_range?.start} → ${data.time_range?.end})`,
-          `Total frames: ${data.total_frames}`,
-          "",
-          "Apps:",
-          ...(appsLines.length ? appsLines : ["  (none)"]),
-          "",
-          "Windows & Tabs:",
-          ...(windowLines.length ? windowLines.slice(0, 20) : ["  (none)"]),
-          "",
-          `Audio: ${data.audio_summary?.segment_count || 0} segments`,
-          ...(speakerLines.length ? speakerLines : []),
-          ...(transcriptLines.length ? ["", "Audio transcriptions:", ...transcriptLines.slice(0, 15)] : []),
-          "",
-          "Key content (sampled across time range):",
-          ...(textLines.length ? textLines.slice(0, 20) : ["  (none)"]),
-        ].join("\n");
-
-        return { content: [{ type: "text", text: summary }] };
+        return { content: [{ type: "text", text: result.text }] };
       }
 
       case "search-elements": {
@@ -1822,8 +1910,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case "export-video": {
-        const startTime = normalizeTime(args.start_time as string);
-        const endTime = normalizeTime(args.end_time as string);
+        const now = new Date();
+        const startTime = normalizeTime(args.start_time as string, now);
+        const endTime = normalizeTime(args.end_time as string, now);
 
         if (!startTime || !endTime) {
           return {
@@ -1961,6 +2050,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const notifResult = await notifResponse.json();
         return {
           content: [{ type: "text", text: `Notification sent: ${notifResult.message}` }],
+        };
+      }
+
+      case "get-feedback": {
+        const params = new URLSearchParams();
+        if (typeof args.kind === "string" && args.kind) {
+          params.set("kind", args.kind);
+        }
+        if (typeof args.target_id === "string" && args.target_id) {
+          params.set("target_id", args.target_id);
+        }
+        if (typeof args.producer === "string" && args.producer) {
+          params.set("producer", args.producer);
+        }
+        if (typeof args.rating === "string" && args.rating) {
+          params.set("rating", args.rating);
+        }
+        if (typeof args.q === "string" && args.q) {
+          params.set("q", args.q);
+        }
+        if (typeof args.since === "string" && args.since) {
+          params.set("since", args.since);
+        }
+        if (args.limit !== undefined) {
+          params.set("limit", String(args.limit));
+        }
+        const response = await callAPI(`/feedback${params.size ? `?${params}` : ""}`);
+        const feedback = await response.json();
+        return {
+          content: [{ type: "text", text: JSON.stringify(feedback, null, 2) }],
         };
       }
 
@@ -2297,7 +2416,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ---------------------------------------------------------------------
       case "team-search":
       case "team-devices":
-      case "team-records": {
+      case "team-records":
+      case "team-frame": {
         if (!TEAM_TOKEN) {
           return {
             content: [
@@ -2317,6 +2437,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               },
             ],
           };
+        }
+        if (name === "team-frame") {
+          const deviceId = args.device_id;
+          const frameId = args.frame_id;
+          const path = teamFramePath(deviceId, frameId);
+          const response = await fetchTeam(path);
+          return teamFrameContent(response, deviceId as string, frameId as number);
         }
         // Map MCP tool name → /api/enterprise/v1 path. team-records also
         // routes synthesized pipe outputs (kind=sop|skill|...) to the

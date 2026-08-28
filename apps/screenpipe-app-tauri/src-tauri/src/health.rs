@@ -7,6 +7,7 @@ use anyhow::Result;
 use dark_light::Mode;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
+use serde_json::json;
 use std::sync::{atomic::Ordering, RwLock};
 use std::time::Instant;
 use tauri::{path::BaseDirectory, Emitter, Manager};
@@ -70,6 +71,11 @@ pub struct BootPhaseSnapshot {
     /// Unix epoch seconds when the current phase was entered. Lets the UI
     /// show "X minutes" on slow migrations.
     pub since_epoch_secs: u64,
+    /// True when this CPU lacks AVX2 (pre-2013 x86-64 / Atom-line): local
+    /// whisper/qwen3 STT is disabled at runtime (their kernels are
+    /// AVX2-compiled); parakeet + cloud engines still work. Drives the
+    /// "compatibility mode" notice in onboarding/settings.
+    pub cpu_compat_mode: bool,
 }
 
 impl BootPhaseSnapshot {
@@ -79,12 +85,22 @@ impl BootPhaseSnapshot {
             message: None,
             error: None,
             since_epoch_secs: 0,
+            cpu_compat_mode: false,
         }
     }
 }
 
 static BOOT_PHASE: Lazy<RwLock<BootPhaseSnapshot>> =
     Lazy::new(|| RwLock::new(BootPhaseSnapshot::idle()));
+
+/// Set once at startup (main.rs) when the CPU lacks AVX2; folded into every
+/// boot-phase snapshot so the frontend's existing getBootPhase polling
+/// carries the flag without a new command.
+static CPU_COMPAT_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_cpu_compat_mode(on: bool) {
+    CPU_COMPAT_MODE.store(on, Ordering::SeqCst);
+}
 
 fn now_epoch() -> u64 {
     std::time::SystemTime::now()
@@ -118,7 +134,9 @@ pub fn set_boot_error(err: &str) {
 }
 
 pub fn get_boot_phase_snapshot() -> BootPhaseSnapshot {
-    BOOT_PHASE.read().unwrap_or_else(|e| e.into_inner()).clone()
+    let mut snap = BOOT_PHASE.read().unwrap_or_else(|e| e.into_inner()).clone();
+    snap.cpu_compat_mode = CPU_COMPAT_MODE.load(Ordering::SeqCst);
+    snap
 }
 
 /// Snapshot of where the boot lifecycle currently is.
@@ -136,6 +154,16 @@ pub enum BootReadiness {
     /// Phase is `error`. Process is in a stuck state; restart won't help and
     /// callers should fail fast rather than waiting.
     Errored,
+    /// Phase is `idle`: the engine was never started (signed-out install,
+    /// entitlement gate, deliberate stop) or a prior engine fully wound
+    /// down. Nothing is initializing, so the #3622 ORT teardown race cannot
+    /// happen — a process restart is safe. Kept distinct from `Ready`
+    /// because engine-dependent callers (capture start after a permission
+    /// grant) must still treat it as "engine unavailable". Before this
+    /// variant existed, `idle` fell into `Pending`, so a signed-out install
+    /// could never pass the update restart gate: the tray's "Restart to
+    /// update" silently no-oped forever (2026-08-11 MacBook Air report).
+    Idle,
 }
 
 fn read_boot_phase() -> String {
@@ -153,19 +181,25 @@ pub fn boot_readiness() -> BootReadiness {
     match read_boot_phase().as_str() {
         "ready" => BootReadiness::Ready,
         "error" => BootReadiness::Errored,
+        "idle" => BootReadiness::Idle,
         _ => BootReadiness::Pending,
     }
 }
 
-/// Block until boot reaches a terminal state (`Ready` or `Errored`) or `timeout`
-/// elapses, then return the final readiness. Callers decide what to do with
-/// `Errored` and timed-out `Pending`.
+/// Block until boot reaches a settled state (`Ready`, `Errored`, or `Idle`)
+/// or `timeout` elapses, then return the final readiness. Callers decide what
+/// to do with `Errored`, `Idle`, and timed-out `Pending`.
+///
+/// `Idle` is settled, not pending: nothing is booting, and nothing will
+/// change without an external trigger (sign-in, manual start), so waiting on
+/// it would always run out the full timeout for no reason.
 pub async fn wait_for_boot_ready(timeout: Duration) -> BootReadiness {
     let deadline = Instant::now() + timeout;
     loop {
         match boot_readiness() {
             BootReadiness::Ready => return BootReadiness::Ready,
             BootReadiness::Errored => return BootReadiness::Errored,
+            BootReadiness::Idle => return BootReadiness::Idle,
             BootReadiness::Pending => {
                 if Instant::now() >= deadline {
                     return BootReadiness::Pending;
@@ -189,6 +223,15 @@ pub enum RecordingStatus {
     ScheduledPause,
     Stopped,
     Error,
+}
+
+/// Audio-specific state shown alongside the overall recording state. Keeping
+/// this separate avoids claiming screen capture stopped while meetings-only
+/// audio intentionally owns no devices.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum AudioCaptureStatus {
+    WaitingForMeeting,
+    MeetingDetectorUnavailable,
 }
 
 /// Kind of recording device
@@ -215,12 +258,14 @@ pub struct DeviceInfo {
 #[derive(Clone, PartialEq, Debug)]
 pub struct RecordingInfo {
     pub status: RecordingStatus,
+    pub audio_capture_status: Option<AudioCaptureStatus>,
     pub devices: Vec<DeviceInfo>,
 }
 
 static RECORDING_INFO: Lazy<RwLock<RecordingInfo>> = Lazy::new(|| {
     RwLock::new(RecordingInfo {
         status: RecordingStatus::Starting,
+        audio_capture_status: None,
         devices: Vec::new(),
     })
 });
@@ -269,7 +314,6 @@ pub fn set_audio_device_status(devices: Vec<AudioDeviceEntry>) {
 #[derive(Clone, Debug)]
 pub struct VisionDeviceEntry {
     pub id: u32,
-    pub name: String,
     pub user_disabled: bool,
 }
 
@@ -330,9 +374,14 @@ pub fn set_recording_status(status: RecordingStatus) {
         .status = status;
 }
 
-fn set_recording_info(status: RecordingStatus, devices: Vec<DeviceInfo>) {
+fn set_recording_info(
+    status: RecordingStatus,
+    audio_capture_status: Option<AudioCaptureStatus>,
+    devices: Vec<DeviceInfo>,
+) {
     let mut info = RECORDING_INFO.write().unwrap_or_else(|e| e.into_inner());
     info.status = status;
+    info.audio_capture_status = audio_capture_status;
     info.devices = devices;
 }
 
@@ -422,6 +471,18 @@ struct HealthCheckResponse {
     last_ui_timestamp: Option<String>,
     #[serde(default)]
     frame_status: Option<String>,
+    /// Why vision is in `frame_status`. Absent on engines predating the
+    /// reason field, which is why every consumer below treats `None` as "no
+    /// information" and falls back to the old `frame_status` behavior.
+    #[serde(default)]
+    vision_reason: Option<String>,
+    /// Capture-loop stage the engine last entered, and its age. Explains a
+    /// `frame_status == "stale"` instead of leaving the incident with only a
+    /// frozen clock. Absent on engines predating the stage marker.
+    #[serde(default)]
+    loop_stage: Option<String>,
+    #[serde(default)]
+    loop_stage_age_secs: Option<u64>,
     #[serde(default)]
     audio_status: Option<String>,
     #[serde(default)]
@@ -470,10 +531,57 @@ struct HealthCheckResponse {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct OcrUnavailableLatch {
+    unavailable: bool,
+}
+
+impl OcrUnavailableLatch {
+    /// Returns true only on a transition into deterministic OCR unavailability.
+    /// `None` is an older engine with no such reason and resets the latch.
+    fn observe(&mut self, vision_reason: Option<&str>) -> bool {
+        let unavailable = vision_reason == Some("ocr_unavailable");
+        let entered = unavailable && !self.unavailable;
+        self.unavailable = unavailable;
+        entered
+    }
+}
+
+fn ocr_unavailable_notification_payload() -> serde_json::Value {
+    serde_json::json!({
+        "id": "ocr_unavailable",
+        "type": "ocr_unavailable",
+        "title": "screen text capture unavailable",
+        "body": "screenpipe is recording screenshots without searchable text. update or reinstall screenpipe; on Debian/Ubuntu, run `sudo apt install tesseract-ocr`, then restart screenpipe.",
+        "actions": [],
+        "autoDismissMs": 0
+    })
+}
+
+fn audio_capture_status_from_health(
+    health_result: &Result<HealthCheckResponse>,
+) -> Option<AudioCaptureStatus> {
+    match health_result
+        .as_ref()
+        .ok()
+        .and_then(|health| health.audio_status.as_deref())
+    {
+        Some("waiting_for_meeting") => Some(AudioCaptureStatus::WaitingForMeeting),
+        Some("meeting_detector_unavailable") => {
+            Some(AudioCaptureStatus::MeetingDetectorUnavailable)
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct CaptureFailureSignals {
     audio: bool,
     vision: bool,
     persistence: bool,
+    /// ScreenCaptureKit exhausted its process-wide native worker budget.
+    /// Fallback frames may still arrive, but a recorder-only restart cannot
+    /// release workers whose native callbacks remain blocked.
+    vision_process_exhausted: bool,
 }
 
 fn capture_failure_signals(
@@ -485,28 +593,64 @@ fn capture_failure_signals(
         Some("stale")
             | Some("not_started")
             | Some("active_no_data")
+            | Some("meeting_detector_unavailable")
             | Some("permission_denied")
             | Some("capture_stalled")
             | Some("error")
     );
+    // NOTE: bare "stale" is deliberately NOT a hard failure. It means the
+    // engine saw neither a unique frame nor a capture attempt for 60s — which
+    // a starved-but-recoverable capture loop produces on an idle machine
+    // (wedged ScreenCaptureKit call during a static screen). That signature
+    // self-heals the moment the user interacts, so it gets its own
+    // user-presence-tiered debounce in the polling loop instead of the fast
+    // 90s incident path. The engine never emits permission_denied /
+    // capture_stalled / error for frame_status today; the arms are kept so a
+    // future engine that does gets the fast path automatically.
     let vision_status_failed = matches!(
         health.frame_status.as_deref(),
-        Some("stale")
-            | Some("not_started")
-            | Some("permission_denied")
-            | Some("capture_stalled")
-            | Some("error")
+        Some("not_started") | Some("permission_denied") | Some("capture_stalled") | Some("error")
     );
     let unrecovered_vision_failure = vision_progress.observe(health.pipeline.as_ref());
 
+    // An intentional pixel pause must never raise a capture-failure incident:
+    // it produces no frames by design and would otherwise alarm forever.
+    let vision_paused = vision_intentionally_paused(health);
+
     CaptureFailureSignals {
         audio,
-        vision: vision_status_failed
-            || (health.vision_db_write_stalled && unrecovered_vision_failure),
+        vision: !vision_paused
+            && (vision_status_failed
+                || (health.vision_db_write_stalled && unrecovered_vision_failure)),
         persistence: health.write_queue_degraded
             && (health.write_queue_consecutive_fatal >= WRITE_QUEUE_FAILURE_THRESHOLD
                 || health.write_queue_consecutive_contention >= WRITE_QUEUE_FAILURE_THRESHOLD),
+        vision_process_exhausted: false,
     }
+}
+
+/// Vision is off because screenpipe turned it off, not because anything
+/// failed. The engine reports the distinction in `vision_reason` (#5808);
+/// engines predating that field report `None`, which keeps the old behavior.
+///
+/// Load-bearing for the notification path: with `disableScreenshots` set, no
+/// pixel frame ever lands, so `frame_status` sits at `stale` forever. Without
+/// this check that steady, intended state raises a capture-failure incident
+/// and tells the user to go fix a permission that is already granted.
+fn vision_intentionally_paused(health: &HealthCheckResponse) -> bool {
+    matches!(
+        health.vision_reason.as_deref(),
+        Some("disabled_by_setting")
+            | Some("no_displays_expected")
+            | Some("screenshots_disabled_by_config")
+            | Some("screenshots_disabled_by_power_profile")
+    )
+}
+
+/// Bare `frame_status == "stale"` — no unique frame AND no capture attempt for
+/// 60s. Debounced separately from hard failures; see `crate::stale_tier`.
+fn vision_frame_flow_stale(health: &HealthCheckResponse) -> bool {
+    health.frame_status.as_deref() == Some("stale") && !vision_intentionally_paused(health)
 }
 
 /// Recovery requires positive proof that both enabled raw-capture paths are
@@ -514,10 +658,13 @@ fn capture_failure_signals(
 /// timeout fallback reports `unknown`, and a first stale tick has not yet
 /// reached the user-visible failure debounce.
 fn health_confirms_recording(health: &HealthCheckResponse) -> bool {
-    let vision_healthy = matches!(health.frame_status.as_deref(), Some("ok") | Some("disabled"));
+    let vision_healthy = matches!(
+        health.frame_status.as_deref(),
+        Some("ok") | Some("disabled")
+    );
     let audio_healthy = matches!(
         health.audio_status.as_deref(),
-        Some("ok") | Some("disabled") | Some("no_input_device")
+        Some("ok") | Some("disabled") | Some("no_input_device") | Some("waiting_for_meeting")
     );
 
     vision_healthy && audio_healthy && !health.write_queue_degraded
@@ -540,13 +687,30 @@ fn stall_confirmed(counter: u32) -> bool {
     counter >= CAPTURE_STALL_THRESHOLD
 }
 
+/// Test-only wrapper that pins the production cooldown; the polling loop calls
+/// [`should_track_capture_stalls_after`] with its own delay.
+#[cfg(test)]
 fn should_track_capture_stalls(
     status: RecordingStatus,
     elapsed_since_start: Duration,
     in_restart_grace: bool,
 ) -> bool {
+    should_track_capture_stalls_after(
+        status,
+        elapsed_since_start,
+        in_restart_grace,
+        NOTIFICATION_COOLDOWN,
+    )
+}
+
+fn should_track_capture_stalls_after(
+    status: RecordingStatus,
+    elapsed_since_start: Duration,
+    in_restart_grace: bool,
+    tracking_delay: Duration,
+) -> bool {
     status == RecordingStatus::Recording
-        && elapsed_since_start > NOTIFICATION_COOLDOWN
+        && elapsed_since_start > tracking_delay
         && !in_restart_grace
 }
 
@@ -564,6 +728,59 @@ fn notification_cooldown_ok(last_notification: Option<Instant>, now: Instant) ->
 struct OverlayTickDecision {
     broken: bool,
     healthy: bool,
+    failure_detail: &'static str,
+}
+
+/// Short, privacy-safe explanation for the recording-health overlay. Keep
+/// these labels actionable without forwarding raw engine/DB errors, which can
+/// contain paths, device names, or other local details.
+fn overlay_failure_detail(
+    status: RecordingStatus,
+    failures: CaptureFailureSignals,
+    simulated_break: bool,
+) -> &'static str {
+    if simulated_break {
+        return "simulated recording failure";
+    }
+    if failures.vision_process_exhausted {
+        return crate::overlay_health::MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL;
+    }
+
+    match (failures.audio, failures.vision, failures.persistence) {
+        (true, true, false) => "audio and screen capture are not updating",
+        (false, false, true) => "recording data cannot be saved",
+        (true, false, false) => "audio capture is not updating",
+        (false, true, false) => "screen capture is not updating",
+        (true, _, true) | (_, true, true) => "multiple recording errors detected",
+        (false, false, false) if status == RecordingStatus::Error => {
+            "recording engine could not start"
+        }
+        (false, false, false) if status == RecordingStatus::Stopped => "recording engine stopped",
+        _ => "recording stopped unexpectedly",
+    }
+}
+
+/// Which subsystem the overlay pill should name, derived from the reason
+/// [`overlay_failure_detail`] already produced.
+///
+/// The pill said "recording needs help" for everything, so routine Bluetooth
+/// audio churn read as a total product failure while screen capture was
+/// writing a frame every second (#6126). The engine already knew which
+/// subsystem failed; only the visible label threw it away.
+///
+/// Returns `""` whenever the cause is more than one subsystem or cannot be
+/// attributed — the pill then keeps its generic wording rather than guessing.
+pub(crate) fn overlay_failure_subsystem(detail: &str) -> &'static str {
+    match detail {
+        "audio capture is not updating" => "audio",
+        "screen capture is not updating" => "screen",
+        crate::overlay_health::MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL
+        | crate::overlay_health::MANUAL_PERMISSION_RECOVERY_DETAIL => "screen",
+        // "audio and screen capture are not updating", "multiple recording
+        // errors detected", persistence, engine start/stop, simulated breaks,
+        // and anything unrecognized stay generic on purpose.
+        _ => "",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -584,7 +801,10 @@ fn overlay_tick_decision(
         && !recently_woke
         && (status == RecordingStatus::Error
             || (status == RecordingStatus::Stopped && ever_connected));
-    let confirmed_failure = failures.audio || failures.vision || failures.persistence;
+    let confirmed_failure = failures.audio
+        || failures.vision
+        || failures.persistence
+        || failures.vision_process_exhausted;
     let failure_suppressed = start_in_progress || recently_woke || intentionally_paused;
     let broken = simulated_break || (!failure_suppressed && (engine_down || confirmed_failure));
     let healthy = !intentionally_paused
@@ -594,8 +814,17 @@ fn overlay_tick_decision(
         && status == RecordingStatus::Recording
         && !confirmed_failure
         && !simulated_break;
+    let failure_detail = if broken {
+        overlay_failure_detail(status, failures, simulated_break)
+    } else {
+        ""
+    };
 
-    OverlayTickDecision { broken, healthy }
+    OverlayTickDecision {
+        broken,
+        healthy,
+        failure_detail,
+    }
 }
 
 /// Decide recording status based on health check result and time since startup.
@@ -982,6 +1211,22 @@ fn apply_capture_session_status(
     }
 }
 
+fn apply_manual_recovery_status(
+    status: RecordingStatus,
+    manual_recovery_required: bool,
+) -> RecordingStatus {
+    if manual_recovery_required {
+        // Once a confirmed SQLite hard fault has stopped every DB owner, the
+        // ordinary connection-error poll must not immediately overwrite the
+        // recovery signal with Stopped. Keep the red/help state stable until
+        // an offline repair and healthy process restart clear the recovery
+        // latch.
+        RecordingStatus::Error
+    } else {
+        status
+    }
+}
+
 /// Map RecordingStatus to tray icon status string
 fn status_to_icon_key(status: RecordingStatus) -> &'static str {
     match status {
@@ -1072,9 +1317,9 @@ fn parse_devices_from_health(health_result: &Result<HealthCheckResponse>) -> Vec
     devices
 }
 
-/// How many consecutive stale/not_started checks before showing a notification.
+/// How many consecutive failed checks before showing a notification.
 /// At 1-second polling, 90 = 90 seconds of sustained failure.
-const CAPTURE_STALL_THRESHOLD: u32 = 90;
+pub(crate) const CAPTURE_STALL_THRESHOLD: u32 = 90;
 
 /// A single failed shared-queue batch is data loss, but not proof that ongoing
 /// recording is broken. Match the queue's three-batch fatal threshold and use
@@ -1099,7 +1344,20 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
     // Capture stall detection state
     let mut consecutive_audio_stall: u32 = 0;
     let mut consecutive_vision_stall: u32 = 0;
+    // Bare-"stale" frame flow, debounced on its own user-presence tier —
+    // see `crate::stale_tier::stale_stall_threshold`.
+    // Bare-"stale" incident run: counter, presence-tiered confirmation, and
+    // once-per-run notification latch, encapsulated so observation-free ticks
+    // (health request failures mid-incident) can't flap the overlay.
+    let mut stale_tier = crate::stale_tier::StaleTier::default();
+    // One notification per hard-failure run (see the `>=` + latch rationale
+    // at the notification site).
+    let mut vision_hard_notified = false;
+    // One detected/recovered analytics pair per incident run, independent of
+    // the notification setting (which defaults off).
+    let mut stall_reported = false;
     let mut vision_progress = VisionProgressTracker::default();
+    let mut ocr_unavailable_latch = OcrUnavailableLatch::default();
     let mut last_audio_notification: Option<Instant> = None;
     let mut last_vision_notification: Option<Instant> = None;
     let mut wake_reset_done = false;
@@ -1126,6 +1384,14 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
 
             let theme = dark_light::detect().unwrap_or(Mode::Dark);
             let health_result = check_health(&app, &client).await;
+
+            if matches!(
+                &health_result,
+                Ok(health) if ocr_unavailable_latch.observe(health.vision_reason.as_deref())
+            ) {
+                warn!("screen text capture unavailable, showing OCR capability notification");
+                let _ = show_ocr_unavailable_notification(&app).await;
+            }
 
             // Track consecutive failures (connection errors) and unhealthy responses separately.
             // Connection errors = server unreachable (crash, restart, port conflict).
@@ -1220,6 +1486,10 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                 start_in_progress,
                 schedule_paused,
                 capture_intended,
+            );
+            let status = apply_manual_recovery_status(
+                status,
+                crate::db_relaunch::manual_recovery_required(),
             );
 
             // Bring the embedded engine back if it has crashed while capture
@@ -1326,11 +1596,7 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                                 let id = d["id"].as_u64().unwrap_or(0) as u32;
                                 let name = d["name"].as_str().unwrap_or("").to_string();
                                 let user_disabled = d["user_disabled"].as_bool().unwrap_or(false);
-                                vision_entries.push(VisionDeviceEntry {
-                                    id,
-                                    name: name.clone(),
-                                    user_disabled,
-                                });
+                                vision_entries.push(VisionDeviceEntry { id, user_disabled });
                                 devices.push(DeviceInfo {
                                     name,
                                     kind: DeviceKind::Monitor,
@@ -1405,7 +1671,11 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                 }
             }
 
-            set_recording_info(status, devices);
+            set_recording_info(
+                status,
+                audio_capture_status_from_health(&health_result),
+                devices,
+            );
 
             let current_status = status_to_icon_key(status);
 
@@ -1477,6 +1747,8 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                         last_restart_triggered = Some(Instant::now());
                         consecutive_audio_stall = 0;
                         consecutive_vision_stall = 0;
+                        stale_tier.reset();
+                        vision_hard_notified = false;
                     }
                     last_known_spawn_epoch = current_epoch;
                 }
@@ -1495,18 +1767,32 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
             let in_restart_grace = last_restart_triggered
                 .map(|t| t.elapsed() < NOTIFICATION_COOLDOWN)
                 .unwrap_or(false);
-            let failure_signals = match &health_result {
+            let mut failure_signals = match &health_result {
                 Ok(health) => capture_failure_signals(health, &mut vision_progress),
                 Err(_) => {
                     vision_progress.observe(None);
                     CaptureFailureSignals::default()
                 }
             };
+            // Native SCK process state is authoritative even when `/health`
+            // is unavailable or a CoreGraphics fallback makes it look green.
+            failure_signals.vision_process_exhausted =
+                screenpipe_screen::screencapturekit_process_exhausted();
             let capture_health_confirmed = match &health_result {
                 Ok(health) => health_confirms_recording(health),
                 Err(_) => false,
             };
-            if should_track_capture_stalls(status, start_time.elapsed(), in_restart_grace) {
+            let tracking_delay = if crate::stale_tier::capture_loop_silent_e2e_started() {
+                Duration::ZERO
+            } else {
+                NOTIFICATION_COOLDOWN
+            };
+            if should_track_capture_stalls_after(
+                status,
+                start_time.elapsed(),
+                in_restart_grace,
+                tracking_delay,
+            ) {
                 if let Ok(ref health) = health_result {
                     // Only raw capture health drives the recording overlay.
                     // `audio_db_write_stalled` is a transcription-reconciliation
@@ -1533,12 +1819,66 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                         &mut consecutive_vision_stall,
                         failure_signals.vision && !vision_excused,
                     ) {
+                        vision_hard_notified = false;
                         if stall_confirmed(recovered_after) {
                             info!(
                                 "vision capture recovered after {} stale checks",
                                 recovered_after
                             );
                         }
+                    }
+
+                    // Bare "stale" runs on its own user-presence tier: 90
+                    // attended stale checks when UI activity proves someone is
+                    // losing recording right now, 15 minutes when the machine
+                    // is idle and the engine's gone-silent watchdog should
+                    // self-heal first. Idle checks never carry into the
+                    // attended threshold: return input often wakes capture.
+                    let user_active = crate::stale_tier::user_present_for_stale_tier(
+                        health.last_ui_timestamp.as_deref(),
+                    );
+                    if let Some(recovered_after) = stale_tier.observe(
+                        vision_frame_flow_stale(health) && !vision_excused,
+                        user_active,
+                    ) {
+                        if recovered_after >= CAPTURE_STALL_THRESHOLD {
+                            info!(
+                                "vision frame flow recovered after {} stale checks",
+                                recovered_after
+                            );
+                        }
+                        if stall_reported {
+                            stall_reported = false;
+                            send_capture_stall_event(
+                                &app,
+                                "capture_stall_recovered",
+                                json!({
+                                    "stale_checks": recovered_after,
+                                    "user_active": user_active,
+                                }),
+                            )
+                            .await;
+                        }
+                    }
+
+                    // Fleet visibility for the gone-silent stall, emitted on the
+                    // confirmation edge and NOT gated on `show_restart_notifications`:
+                    // that setting defaults off, so gating here would undercount the
+                    // incident to near zero. Content-free — stage name, ages and a
+                    // presence flag only, never window titles, app names or pixels.
+                    if !stall_reported && stale_tier.confirmed() {
+                        stall_reported = true;
+                        send_capture_stall_event(
+                            &app,
+                            "capture_stall_detected",
+                            json!({
+                                "stale_checks": stale_tier.consecutive(),
+                                "user_active": user_active,
+                                "loop_stage": health.loop_stage.clone(),
+                                "loop_stage_age_secs": health.loop_stage_age_secs,
+                            }),
+                        )
+                        .await;
                     }
 
                     // After wake from sleep, reset stall counters and notification
@@ -1550,6 +1890,8 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                         wake_reset_done = true;
                         consecutive_audio_stall = 0;
                         consecutive_vision_stall = 0;
+                        stale_tier.reset();
+                        vision_hard_notified = false;
                         last_audio_notification = None;
                         last_vision_notification = None;
                     }
@@ -1580,13 +1922,19 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                         let _ = show_capture_stall_notification(&app, "audio").await;
                     }
 
+                    // Hard vision path uses a per-run latch with `>=` rather
+                    // than exact counter equality: the stale tier below shares
+                    // the vision cooldown stamp, and an exact-equality check
+                    // whose single qualifying tick lands inside that cooldown
+                    // would lose its notification for the entire run.
                     let vision_cooldown_ok =
                         notification_cooldown_ok(last_vision_notification, now_instant);
-                    if should_notify_capture_stall(
-                        consecutive_vision_stall,
-                        notifications_enabled,
-                        vision_cooldown_ok,
-                    ) {
+                    if notifications_enabled
+                        && vision_cooldown_ok
+                        && stall_confirmed(consecutive_vision_stall)
+                        && !vision_hard_notified
+                    {
+                        vision_hard_notified = true;
                         let reason = if vision_db_stalled {
                             "db write stall"
                         } else {
@@ -1594,7 +1942,24 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                         };
                         warn!(
                             "vision {} for {}s, showing restart notification",
-                            reason, CAPTURE_STALL_THRESHOLD
+                            reason, consecutive_vision_stall
+                        );
+                        last_vision_notification = Some(now_instant);
+                        let _ = show_capture_stall_notification(&app, "screen").await;
+                    }
+
+                    // Stale tier fires through the struct's once-per-run
+                    // latch (never exact counter equality: the threshold
+                    // moves with user presence, so a run can cross it at any
+                    // counter value).
+                    if stale_tier.take_notification(
+                        notifications_enabled,
+                        notification_cooldown_ok(last_vision_notification, now_instant),
+                    ) {
+                        warn!(
+                            "vision frame flow stale for {}s (user {}), showing restart notification",
+                            stale_tier.consecutive(),
+                            if user_active { "active" } else { "idle" }
                         );
                         last_vision_notification = Some(now_instant);
                         let _ = show_capture_stall_notification(&app, "screen").await;
@@ -1604,6 +1969,8 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                 // Reset stall counters when server is not in Recording state
                 consecutive_audio_stall = 0;
                 consecutive_vision_stall = 0;
+                stale_tier.reset();
+                vision_hard_notified = false;
             }
 
             // ── Recording-health overlay (issue #5127) ──
@@ -1637,15 +2004,23 @@ pub async fn start_health_check(app: tauri::AppHandle) -> Result<()> {
                 intentionally_paused,
                 CaptureFailureSignals {
                     audio: stall_confirmed(consecutive_audio_stall),
-                    vision: stall_confirmed(consecutive_vision_stall),
+                    vision: stall_confirmed(consecutive_vision_stall) || stale_tier.confirmed(),
                     persistence: failure_signals.persistence,
+                    vision_process_exhausted: failure_signals.vision_process_exhausted,
                 },
                 sim_break,
             );
             // Recovery needs a real successful health response this tick:
             // decide_status holds "Recording" through up to 30 failed checks
             // (anti-flicker), which must not read as "recovered" mid-restart.
-            crate::overlay_health::on_tick(&app, decision.broken, decision.healthy).await;
+            crate::overlay_health::on_tick(
+                &app,
+                decision.broken,
+                decision.healthy,
+                intentionally_paused && !sim_break,
+                decision.failure_detail,
+            )
+            .await;
         }
     });
 
@@ -1681,6 +2056,26 @@ async fn show_port_conflict_notification(app: &tauri::AppHandle, error_msg: &str
         .map_err(|e| anyhow::anyhow!(e))
 }
 
+/// Report a capture-stall incident edge to analytics.
+///
+/// Deliberately NOT gated on `show_restart_notifications`: that setting
+/// defaults off, so gating here would undercount the incident to near zero and
+/// leave us unable to answer "how many users hit this". Respects the user's
+/// analytics opt-out, which `AnalyticsManager::send_event` already enforces.
+///
+/// Payload is content-free by construction: a stage name from a fixed enum,
+/// integer ages and a presence flag. No window titles, app names, monitor
+/// names, paths or pixels.
+async fn send_capture_stall_event(app: &tauri::AppHandle, event: &str, props: serde_json::Value) {
+    let Some(analytics) = app.try_state::<std::sync::Arc<crate::analytics::AnalyticsManager>>()
+    else {
+        return;
+    };
+    if let Err(e) = analytics.send_event(event, Some(props)).await {
+        debug!("failed to send {event} analytics: {e}");
+    }
+}
+
 /// Show a notification telling the user that capture has stalled, with a restart button.
 /// Skips showing if the main overlay panel is visible — the notification panel
 /// steals focus and causes a deadlock with the overlay's focus-loss handler.
@@ -1705,6 +2100,15 @@ async fn show_capture_stall_notification(app: &tauri::AppHandle, system: &str) -
     crate::commands::show_notification_panel(app.clone(), payload.to_string())
         .await
         .map_err(|e| anyhow::anyhow!(e))
+}
+
+async fn show_ocr_unavailable_notification(app: &tauri::AppHandle) -> Result<()> {
+    crate::commands::show_notification_panel(
+        app.clone(),
+        ocr_unavailable_notification_payload().to_string(),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!(e))
 }
 
 /// Checks the health of the sidecar by making a request to its health endpoint.
@@ -1752,6 +2156,51 @@ async fn check_health(
 mod tests {
     use super::*;
 
+    #[test]
+    fn ocr_unavailable_alert_emits_on_entry_and_reentry_only() {
+        let mut latch = OcrUnavailableLatch::default();
+        assert!(!latch.observe(None));
+        assert!(!latch.observe(Some("future_reason")));
+        assert!(latch.observe(Some("ocr_unavailable")));
+        assert!(!latch.observe(Some("ocr_unavailable")));
+        assert!(!latch.observe(Some("ok")));
+        assert!(latch.observe(Some("ocr_unavailable")));
+    }
+
+    #[test]
+    fn ocr_unavailable_alert_is_persistent_actionable_and_has_no_restart_action() {
+        let payload = ocr_unavailable_notification_payload();
+        assert_eq!(payload["id"], "ocr_unavailable");
+        assert_eq!(payload["autoDismissMs"], 0);
+        assert_eq!(payload["actions"], serde_json::json!([]));
+        let body = payload["body"].as_str().unwrap();
+        assert!(body.contains("sudo apt install tesseract-ocr"));
+        assert!(body.contains("restart screenpipe"));
+        assert!(!payload.to_string().contains("restart_recording"));
+    }
+
+    #[test]
+    fn cpu_compat_mode_round_trips_through_snapshot() {
+        // Serialize with every other test that mutates the process-wide
+        // BOOT_PHASE singleton (see the boot-readiness section for the
+        // convention) — an unguarded set_boot_phase here would race the
+        // wait_for_boot_ready tests and flap them.
+        let _guard = BOOT_PHASE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Default off.
+        assert!(!get_boot_phase_snapshot().cpu_compat_mode);
+        set_cpu_compat_mode(true);
+        assert!(get_boot_phase_snapshot().cpu_compat_mode);
+        // Setting a boot phase must not clear the flag (separate storage).
+        set_boot_phase("building_audio", None);
+        assert!(get_boot_phase_snapshot().cpu_compat_mode);
+        set_cpu_compat_mode(false);
+        assert!(!get_boot_phase_snapshot().cpu_compat_mode);
+        // Reset so other tests see a known-pending baseline.
+        set_boot_phase("idle", None);
+    }
+
     fn make_healthy_response() -> Result<HealthCheckResponse> {
         Ok(HealthCheckResponse {
             status: "healthy".to_string(),
@@ -1760,6 +2209,9 @@ mod tests {
             last_audio_timestamp: None,
             last_ui_timestamp: None,
             frame_status: None,
+            vision_reason: None,
+            loop_stage: None,
+            loop_stage_age_secs: None,
             audio_status: None,
             ui_status: None,
             message: None,
@@ -1785,6 +2237,9 @@ mod tests {
             last_audio_timestamp: None,
             last_ui_timestamp: None,
             frame_status: None,
+            vision_reason: None,
+            loop_stage: None,
+            loop_stage_age_secs: None,
             audio_status: None,
             ui_status: None,
             message: None,
@@ -1808,6 +2263,20 @@ mod tests {
 
     fn healthy_health() -> HealthCheckResponse {
         make_healthy_response().expect("healthy fixture")
+    }
+
+    #[test]
+    fn ocr_unavailable_does_not_enter_capture_restart_signals() {
+        let mut health = healthy_health();
+        health.status = "degraded".to_string();
+        health.frame_status = Some("ok".to_string());
+        health.audio_status = Some("ok".to_string());
+        health.vision_reason = Some("ocr_unavailable".to_string());
+
+        let signals = capture_failure_signals(&health, &mut VisionProgressTracker::default());
+        assert!(!signals.vision);
+        assert!(!signals.audio);
+        assert!(!signals.persistence);
     }
 
     #[test]
@@ -1930,11 +2399,7 @@ mod tests {
         ] {
             for enabled in [false, true] {
                 for cooldown_ok in [false, true] {
-                    assert!(!should_notify_capture_stall(
-                        counter,
-                        enabled,
-                        cooldown_ok,
-                    ));
+                    assert!(!should_notify_capture_stall(counter, enabled, cooldown_ok,));
                 }
             }
         }
@@ -2012,6 +2477,7 @@ mod tests {
             OverlayTickDecision {
                 broken: false,
                 healthy: false,
+                failure_detail: "",
             },
             "a stale raw status blocks green recovery but stays quiet before debounce"
         );
@@ -2056,6 +2522,7 @@ mod tests {
             OverlayTickDecision {
                 broken: false,
                 healthy: true,
+                failure_detail: "",
             }
         );
     }
@@ -2078,6 +2545,73 @@ mod tests {
 
     // ==================== recording-overlay signal tests ====================
 
+    /// #5808: with `disableScreenshots` set, no pixel frame ever lands, so
+    /// `frame_status` sits at `stale` forever. That steady, intended state
+    /// used to raise a capture-failure incident and point the user at a
+    /// permission that was already granted.
+    #[test]
+    fn an_intentional_pixel_pause_never_raises_a_capture_failure() {
+        for reason in [
+            "screenshots_disabled_by_config",
+            "screenshots_disabled_by_power_profile",
+            "disabled_by_setting",
+            "no_displays_expected",
+        ] {
+            let mut health = healthy_health();
+            health.frame_status = Some("stale".to_string());
+            health.vision_reason = Some(reason.to_string());
+            health.audio_status = Some("ok".to_string());
+
+            assert!(
+                !vision_frame_flow_stale(&health),
+                "{reason} must not enter the stale-tier notification path",
+            );
+            assert!(
+                !capture_failure_signals(&health, &mut VisionProgressTracker::default()).vision,
+                "{reason} must not be reported as a vision failure",
+            );
+        }
+    }
+
+    /// The pause must not mask a genuine fault either — including the case
+    /// where the engine has separately proven the writer is stuck.
+    #[test]
+    fn a_real_vision_fault_still_reports_while_reasons_are_present() {
+        let mut health = healthy_health();
+        health.frame_status = Some("stale".to_string());
+        health.vision_reason = Some("capture_stalled".to_string());
+        health.audio_status = Some("ok".to_string());
+        assert!(vision_frame_flow_stale(&health));
+
+        health.frame_status = Some("not_started".to_string());
+        assert!(capture_failure_signals(&health, &mut VisionProgressTracker::default()).vision);
+
+        let mut health = healthy_health();
+        health.frame_status = Some("stale".to_string());
+        health.vision_reason = Some("permission_denied".to_string());
+        health.audio_status = Some("ok".to_string());
+        assert!(vision_frame_flow_stale(&health));
+    }
+
+    /// Engines predating `vision_reason` send `None`; behavior must not change
+    /// for them, or upgrading the desktop app ahead of the engine would
+    /// silence real stalls.
+    #[test]
+    fn a_missing_vision_reason_keeps_the_previous_behavior() {
+        let mut health = healthy_health();
+        health.frame_status = Some("stale".to_string());
+        health.vision_reason = None;
+        health.audio_status = Some("ok".to_string());
+        assert!(vision_frame_flow_stale(&health));
+
+        health.frame_status = Some("not_started".to_string());
+        assert!(capture_failure_signals(&health, &mut VisionProgressTracker::default()).vision);
+
+        // An unrecognized future reason is also treated as no information.
+        health.vision_reason = Some("some_future_reason".to_string());
+        assert!(capture_failure_signals(&health, &mut VisionProgressTracker::default()).vision);
+    }
+
     #[test]
     fn transcription_backlog_is_not_a_recording_failure() {
         let mut health = healthy_health();
@@ -2085,8 +2619,7 @@ mod tests {
         health.audio_status = Some("ok".to_string());
         health.audio_db_write_stalled = true;
 
-        let signals =
-            capture_failure_signals(&health, &mut VisionProgressTracker::default());
+        let signals = capture_failure_signals(&health, &mut VisionProgressTracker::default());
 
         assert_eq!(signals, CaptureFailureSignals::default());
     }
@@ -2187,6 +2720,7 @@ mod tests {
             "stale",
             "not_started",
             "active_no_data",
+            "meeting_detector_unavailable",
             "permission_denied",
             "capture_stalled",
             "error",
@@ -2199,7 +2733,7 @@ mod tests {
             );
         }
 
-        for status in ["ok", "disabled", "no_input_device"] {
+        for status in ["ok", "disabled", "no_input_device", "waiting_for_meeting"] {
             let mut health = healthy_health();
             health.audio_status = Some(status.to_string());
             assert!(
@@ -2210,9 +2744,30 @@ mod tests {
     }
 
     #[test]
+    fn tray_audio_status_preserves_meetings_only_detail() {
+        let mut waiting = healthy_health();
+        waiting.audio_status = Some("waiting_for_meeting".to_string());
+        assert_eq!(
+            audio_capture_status_from_health(&Ok(waiting)),
+            Some(AudioCaptureStatus::WaitingForMeeting)
+        );
+
+        let mut unavailable = healthy_health();
+        unavailable.audio_status = Some("meeting_detector_unavailable".to_string());
+        assert_eq!(
+            audio_capture_status_from_health(&Ok(unavailable)),
+            Some(AudioCaptureStatus::MeetingDetectorUnavailable)
+        );
+
+        assert_eq!(
+            audio_capture_status_from_health(&make_connection_error()),
+            None
+        );
+    }
+
+    #[test]
     fn explicit_vision_capture_failures_are_detected() {
         for status in [
-            "stale",
             "not_started",
             "permission_denied",
             "capture_stalled",
@@ -2226,14 +2781,40 @@ mod tests {
             );
         }
 
-        for status in ["ok", "disabled"] {
+        // BEHAVIOR CHANGE (starved-loop false positive): bare "stale" left the
+        // fast 90s incident set. A starved-but-recoverable capture loop on an
+        // idle machine produces exactly this signature and self-heals on user
+        // input; it now flows through the user-presence-tiered stale path.
+        for status in ["ok", "disabled", "stale"] {
             let mut health = healthy_health();
             health.frame_status = Some(status.to_string());
             assert!(
                 !capture_failure_signals(&health, &mut VisionProgressTracker::default()).vision,
-                "{status} must not be treated as a capture failure"
+                "{status} must not be treated as a fast-path capture failure"
             );
         }
+    }
+
+    #[test]
+    fn bare_stale_feeds_the_tiered_path_not_the_fast_path() {
+        for (status, expect_stale) in [
+            ("stale", true),
+            ("ok", false),
+            ("disabled", false),
+            ("not_started", false),
+            ("error", false),
+        ] {
+            let mut health = healthy_health();
+            health.frame_status = Some(status.to_string());
+            assert_eq!(
+                vision_frame_flow_stale(&health),
+                expect_stale,
+                "frame_status={status}"
+            );
+        }
+        let mut health = healthy_health();
+        health.frame_status = None;
+        assert!(!vision_frame_flow_stale(&health));
     }
 
     #[test]
@@ -2261,7 +2842,7 @@ mod tests {
     #[test]
     fn only_explicit_good_capture_statuses_confirm_recovery() {
         for frame_status in ["ok", "disabled"] {
-            for audio_status in ["ok", "disabled", "no_input_device"] {
+            for audio_status in ["ok", "disabled", "no_input_device", "waiting_for_meeting"] {
                 let mut health = healthy_health();
                 health.frame_status = Some(frame_status.to_string());
                 health.audio_status = Some(audio_status.to_string());
@@ -2328,6 +2909,39 @@ mod tests {
             !paused.healthy,
             "DRM, schedule, lock, power, and user pauses must stand down quietly"
         );
+    }
+
+    /// Escaped regression: the native SCK breaker hit its hard 32-worker
+    /// ceiling, then CoreGraphics returned a fallback frame and `/health`
+    /// looked green long enough for the overlay to claim recovery. Native
+    /// process state must outrank fresh fallback data.
+    #[test]
+    fn terminal_sck_worker_leak_cannot_be_masked_by_green_health() {
+        let decision = overlay_tick_decision(
+            RecordingStatus::Recording,
+            true,
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+            CaptureFailureSignals {
+                vision_process_exhausted: true,
+                ..CaptureFailureSignals::default()
+            },
+            false,
+        );
+
+        assert_eq!(
+            decision,
+            OverlayTickDecision {
+                broken: true,
+                healthy: false,
+                failure_detail: crate::overlay_health::MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL,
+            }
+        );
+        assert_eq!(overlay_failure_subsystem(decision.failure_detail), "screen");
     }
 
     #[test]
@@ -2398,7 +3012,185 @@ mod tests {
     }
 
     #[test]
-    fn overlay_decision_exhaustively_checks_12288_state_combinations() {
+    fn overlay_failure_details_are_brief_specific_and_privacy_safe() {
+        let cases = [
+            (
+                RecordingStatus::Recording,
+                CaptureFailureSignals {
+                    audio: true,
+                    ..CaptureFailureSignals::default()
+                },
+                false,
+                "audio capture is not updating",
+            ),
+            (
+                RecordingStatus::Recording,
+                CaptureFailureSignals {
+                    vision: true,
+                    ..CaptureFailureSignals::default()
+                },
+                false,
+                "screen capture is not updating",
+            ),
+            (
+                RecordingStatus::Recording,
+                CaptureFailureSignals {
+                    vision_process_exhausted: true,
+                    ..CaptureFailureSignals::default()
+                },
+                false,
+                crate::overlay_health::MANUAL_SCREEN_CAPTURE_RECOVERY_DETAIL,
+            ),
+            (
+                RecordingStatus::Recording,
+                CaptureFailureSignals {
+                    persistence: true,
+                    ..CaptureFailureSignals::default()
+                },
+                false,
+                "recording data cannot be saved",
+            ),
+            (
+                RecordingStatus::Recording,
+                CaptureFailureSignals {
+                    audio: true,
+                    vision: true,
+                    ..CaptureFailureSignals::default()
+                },
+                false,
+                "audio and screen capture are not updating",
+            ),
+            (
+                RecordingStatus::Recording,
+                CaptureFailureSignals {
+                    audio: true,
+                    persistence: true,
+                    ..CaptureFailureSignals::default()
+                },
+                false,
+                "multiple recording errors detected",
+            ),
+            (
+                RecordingStatus::Error,
+                CaptureFailureSignals::default(),
+                false,
+                "recording engine could not start",
+            ),
+            (
+                RecordingStatus::Stopped,
+                CaptureFailureSignals::default(),
+                false,
+                "recording engine stopped",
+            ),
+            (
+                RecordingStatus::Recording,
+                CaptureFailureSignals::default(),
+                true,
+                "simulated recording failure",
+            ),
+        ];
+
+        for (status, failures, simulated, expected) in cases {
+            assert_eq!(
+                overlay_failure_detail(status, failures, simulated),
+                expected
+            );
+            assert!(expected.len() <= 49, "tooltip detail must stay brief");
+            assert!(!expected.contains('/'), "tooltip must never expose a path");
+        }
+    }
+
+    /// #6126: the pill said "recording needs help" for everything, so routine
+    /// audio churn read as a total product failure while screen capture was
+    /// writing a frame every second.
+    #[test]
+    fn overlay_names_a_single_failing_subsystem_and_never_guesses() {
+        assert_eq!(
+            overlay_failure_subsystem("audio capture is not updating"),
+            "audio",
+        );
+        assert_eq!(
+            overlay_failure_subsystem("screen capture is not updating"),
+            "screen",
+        );
+
+        // Anything spanning subsystems, or that the engine could not attribute,
+        // must stay generic rather than pick a side.
+        for generic in [
+            "audio and screen capture are not updating",
+            "multiple recording errors detected",
+            "recording data cannot be saved",
+            "recording engine could not start",
+            "recording engine stopped",
+            "recording stopped unexpectedly",
+            "recording did not restart",
+            "simulated recording failure",
+            "",
+        ] {
+            assert_eq!(
+                overlay_failure_subsystem(generic),
+                "",
+                "{generic:?} must keep the generic pill wording",
+            );
+        }
+    }
+
+    /// Every reason the engine can produce has to route through the mapping
+    /// above, so a new detail string cannot silently land in the wrong bucket.
+    #[test]
+    fn every_producible_failure_detail_maps_to_a_known_subsystem() {
+        let mut saw_audio = false;
+        let mut saw_screen = false;
+
+        for audio in [false, true] {
+            for vision in [false, true] {
+                for persistence in [false, true] {
+                    for simulated in [false, true] {
+                        for status in [
+                            RecordingStatus::Recording,
+                            RecordingStatus::Error,
+                            RecordingStatus::Stopped,
+                            RecordingStatus::Starting,
+                        ] {
+                            let detail = overlay_failure_detail(
+                                status,
+                                CaptureFailureSignals {
+                                    audio,
+                                    vision,
+                                    persistence,
+                                    vision_process_exhausted: false,
+                                },
+                                simulated,
+                            );
+                            let subsystem = overlay_failure_subsystem(detail);
+                            assert!(
+                                matches!(subsystem, "" | "audio" | "screen"),
+                                "{detail:?} produced unknown subsystem {subsystem:?}",
+                            );
+                            // Only a lone audio or lone vision failure may be
+                            // attributed, and only when nothing else failed.
+                            if subsystem == "audio" {
+                                saw_audio = true;
+                                assert!(audio && !vision && !persistence && !simulated);
+                            }
+                            if subsystem == "screen" {
+                                saw_screen = true;
+                                assert!(vision && !audio && !persistence && !simulated);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            saw_audio && saw_screen,
+            "both attributions must be reachable"
+        );
+    }
+
+    #[test]
+    fn overlay_decision_exhaustively_checks_24576_state_combinations() {
         let statuses = [
             RecordingStatus::Starting,
             RecordingStatus::Recording,
@@ -2409,11 +3201,11 @@ mod tests {
         ];
         let mut checked = 0usize;
 
-        // Eleven independent booleans x six recording states. This covers
-        // 12,288 combinations of response quality, capture intent, lifecycle
-        // guards, three failure classes, and the QA simulation path.
+        // Twelve independent booleans x six recording states. This covers
+        // 24,576 combinations of response quality, capture intent, lifecycle
+        // guards, four failure classes, and the QA simulation path.
         for status in statuses {
-            for bits in 0u16..(1 << 11) {
+            for bits in 0u16..(1 << 12) {
                 let health_response_received = bits & (1 << 0) != 0;
                 let health_confirmed = bits & (1 << 1) != 0;
                 let capture_intended = bits & (1 << 2) != 0;
@@ -2426,8 +3218,9 @@ mod tests {
                     audio: bits & (1 << 7) != 0,
                     vision: bits & (1 << 8) != 0,
                     persistence: bits & (1 << 9) != 0,
+                    vision_process_exhausted: bits & (1 << 10) != 0,
                 };
-                let simulated_break = bits & (1 << 10) != 0;
+                let simulated_break = bits & (1 << 11) != 0;
 
                 let decision = overlay_tick_decision(
                     status,
@@ -2442,17 +3235,20 @@ mod tests {
                     simulated_break,
                 );
 
-                let failure_suppressed =
-                    start_in_progress || recently_woke || intentionally_paused;
-                let confirmed_failure = failures.audio || failures.vision || failures.persistence;
+                let failure_suppressed = start_in_progress || recently_woke || intentionally_paused;
+                let confirmed_failure = failures.audio
+                    || failures.vision
+                    || failures.persistence
+                    || failures.vision_process_exhausted;
                 let engine_down = capture_intended
                     && !start_in_progress
                     && !recently_woke
                     && (status == RecordingStatus::Error
                         || (status == RecordingStatus::Stopped && ever_connected));
+                let expected_broken =
+                    simulated_break || (!failure_suppressed && (engine_down || confirmed_failure));
                 let expected = OverlayTickDecision {
-                    broken: simulated_break
-                        || (!failure_suppressed && (engine_down || confirmed_failure)),
+                    broken: expected_broken,
                     healthy: !intentionally_paused
                         && !recently_woke
                         && health_response_received
@@ -2460,9 +3256,14 @@ mod tests {
                         && status == RecordingStatus::Recording
                         && !confirmed_failure
                         && !simulated_break,
+                    failure_detail: if expected_broken {
+                        overlay_failure_detail(status, failures, simulated_break)
+                    } else {
+                        ""
+                    },
                 };
 
-                assert_eq!(decision, expected, "status={status:?}, bits={bits:011b}");
+                assert_eq!(decision, expected, "status={status:?}, bits={bits:012b}");
                 assert!(
                     !(decision.broken && decision.healthy),
                     "failure and recovery must be mutually exclusive"
@@ -2480,7 +3281,7 @@ mod tests {
             }
         }
 
-        assert_eq!(checked, 12_288);
+        assert_eq!(checked, 24_576);
     }
 
     // Helper: call decide_status with thresholds exceeded (no debouncing active)
@@ -2874,6 +3675,22 @@ mod tests {
             true, // intended
         );
         assert_eq!(status, RecordingStatus::Stopped);
+    }
+
+    #[test]
+    fn test_manual_db_recovery_keeps_error_status_after_server_stops() {
+        assert_eq!(
+            apply_manual_recovery_status(RecordingStatus::Stopped, true),
+            RecordingStatus::Error
+        );
+        assert_eq!(
+            apply_manual_recovery_status(RecordingStatus::Recording, true),
+            RecordingStatus::Error
+        );
+        assert_eq!(
+            apply_manual_recovery_status(RecordingStatus::Stopped, false),
+            RecordingStatus::Stopped
+        );
     }
 
     #[test]

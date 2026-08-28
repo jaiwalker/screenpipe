@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,6 +20,7 @@ use screenpipe_redact::{
     worker::{column_keys, RedactColumns, TargetTable, Worker, WorkerConfig, ALL_TARGET_TABLES},
     Pseudonymizer, RedactError, RedactionMap, RedactionOutput, Redactor,
 };
+use screenpipe_sqlite_coordinator::SqliteWritePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::Row;
 use tempfile::TempDir;
@@ -38,6 +39,23 @@ fn test_worker_config() -> WorkerConfig {
         resource_governor: None,
         ..Default::default()
     }
+}
+
+async fn wait_until<F, Fut>(description: &str, mut condition: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if condition().await {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {description}"));
 }
 
 async fn setup_db() -> (sqlx::SqlitePool, TempDir) {
@@ -206,8 +224,24 @@ async fn worker_redacts_all_targets() {
     let worker = Worker::new(pool.clone(), redactor, cfg);
     let handle = worker.clone().spawn();
 
-    // Give the worker a moment to drain the queue.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("all target watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT \
+                (SELECT COUNT(*) FROM frames \
+                   WHERE full_text IS NOT NULL AND full_text_redacted_at IS NULL) + \
+                (SELECT COUNT(*) FROM frames \
+                   WHERE accessibility_text IS NOT NULL AND accessibility_redacted_at IS NULL) + \
+                (SELECT COUNT(*) FROM audio_transcriptions WHERE redacted_at IS NULL) + \
+                (SELECT COUNT(*) FROM ui_events WHERE redacted_at IS NULL) + \
+                (SELECT COUNT(*) FROM elements \
+                   WHERE (text IS NOT NULL OR properties IS NOT NULL) AND redacted_at IS NULL)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 0
+    })
+    .await;
     handle.abort();
 
     // Every single-column seeded row should now have its source column
@@ -331,6 +365,70 @@ async fn worker_redacts_all_targets() {
 }
 
 #[tokio::test]
+async fn worker_writes_through_capability_with_physically_read_only_reader() {
+    let (write_pool, temp_dir) = setup_db().await;
+    sqlx::query("INSERT INTO frames (full_text) VALUES ('email alice@example.com')")
+        .execute(&write_pool)
+        .await
+        .unwrap();
+
+    let read_options = SqliteConnectOptions::new()
+        .filename(temp_dir.path().join("redact-worker-test.sqlite"))
+        .read_only(true);
+    let read_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(read_options)
+        .await
+        .unwrap();
+
+    let direct_write = sqlx::query("UPDATE frames SET full_text = 'must fail'")
+        .execute(&read_pool)
+        .await;
+    assert!(
+        direct_write.is_err(),
+        "reader unexpectedly accepted a write"
+    );
+
+    let redactor = Arc::new(RegexRedactor::new()) as Arc<dyn Redactor>;
+    let cfg = WorkerConfig {
+        batch_size: 1,
+        idle_between_batches: Duration::from_millis(1),
+        poll_interval: Duration::from_millis(20),
+        tables: vec![TargetTable::FullText],
+        ..test_worker_config()
+    };
+    let worker = Worker::new_with_writer(
+        read_pool,
+        SqliteWritePool::standalone(write_pool.clone()),
+        redactor,
+        cfg,
+    );
+    let handle = worker.spawn();
+
+    wait_until("coordinated redaction write", || {
+        let pool = write_pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<i64>>(
+                "SELECT full_text_redacted_at FROM frames WHERE id = 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .ok()
+            .flatten()
+            .is_some()
+        }
+    })
+    .await;
+    handle.abort();
+
+    let text: String = sqlx::query_scalar("SELECT full_text FROM frames WHERE id = 1")
+        .fetch_one(&write_pool)
+        .await
+        .unwrap();
+    assert_eq!(text, "email [EMAIL]");
+}
+
+#[tokio::test]
 async fn worker_skips_already_redacted_rows() {
     let (pool, _temp_dir) = setup_db().await;
     // Frame 1 is already processed — source already redacted, redacted_at set.
@@ -354,7 +452,16 @@ async fn worker_skips_already_redacted_rows() {
     let worker = Worker::new(pool.clone(), redactor, cfg);
     let handle = worker.clone().spawn();
 
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    wait_until("unredacted frame watermark", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 2 AND full_text_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let status = worker.status().await;
@@ -380,7 +487,16 @@ async fn worker_overwrites_source_columns_destructively() {
     let worker = Worker::new(pool.clone(), redactor, cfg);
     let handle = worker.clone().spawn();
 
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    wait_until("destructive full-text overwrite", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 AND full_text_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query("SELECT full_text, full_text_redacted_at FROM frames WHERE id = 1")
@@ -425,7 +541,16 @@ async fn worker_redacts_frames_full_text_search_surface() {
     let worker = Worker::new(pool.clone(), redactor, cfg);
     let handle = worker.clone().spawn();
 
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    wait_until("full-text search-surface watermark", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 AND full_text_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     // The issue's repro query: zero verbatim PII left on the search surface.
@@ -493,7 +618,16 @@ async fn worker_writes_consistent_pseudonym_tokens() {
     let worker = Worker::new(pool.clone(), redactor, cfg);
     let handle = worker.clone().spawn();
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("audio pseudonym watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audio_transcriptions WHERE redacted_at IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 0
+    })
+    .await;
     handle.abort();
 
     let texts: Vec<String> =
@@ -535,6 +669,189 @@ struct CountingPipeline {
     map_calls: AtomicUsize,
     /// direct `redact_batch` calls = independent (non-propagated) passes.
     batch_calls: AtomicUsize,
+}
+
+/// Records the worker's requested batch widths while making every batch slow
+/// enough to exceed a test-sized work-slice target.
+struct SlowBatchRedactor {
+    batch_sizes: Mutex<Vec<usize>>,
+    delay: Duration,
+}
+
+/// Gives audio deliberately slow timing while leaving element redaction fast,
+/// so the worker must learn independent limits for the two tables.
+struct TableTimingRedactor {
+    audio_batch_sizes: Mutex<Vec<usize>>,
+    element_batch_sizes: Mutex<Vec<usize>>,
+    audio_delay: Duration,
+}
+
+#[async_trait]
+impl Redactor for SlowBatchRedactor {
+    fn name(&self) -> &str {
+        "slow-batch"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    async fn redact_batch(&self, texts: &[String]) -> Result<Vec<RedactionOutput>, RedactError> {
+        self.batch_sizes.lock().unwrap().push(texts.len());
+        tokio::time::sleep(self.delay).await;
+        Ok(texts
+            .iter()
+            .map(|text| RedactionOutput {
+                input: text.clone(),
+                redacted: text.clone(),
+                spans: Vec::new(),
+            })
+            .collect())
+    }
+}
+
+#[async_trait]
+impl Redactor for TableTimingRedactor {
+    fn name(&self) -> &str {
+        "table-timing"
+    }
+
+    fn version(&self) -> u32 {
+        1
+    }
+
+    async fn redact_batch(&self, texts: &[String]) -> Result<Vec<RedactionOutput>, RedactError> {
+        if texts
+            .first()
+            .is_some_and(|text| text.starts_with("slow audio"))
+        {
+            self.audio_batch_sizes.lock().unwrap().push(texts.len());
+            tokio::time::sleep(self.audio_delay).await;
+        } else if texts
+            .first()
+            .is_some_and(|text| text.starts_with("fast element"))
+        {
+            self.element_batch_sizes.lock().unwrap().push(texts.len());
+        }
+        Ok(texts
+            .iter()
+            .map(|text| RedactionOutput {
+                input: text.clone(),
+                redacted: text.clone(),
+                spans: Vec::new(),
+            })
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn slow_work_slice_shrinks_the_next_database_batch() {
+    let (pool, _temp_dir) = setup_db().await;
+    for index in 0..10 {
+        sqlx::query("INSERT INTO audio_transcriptions (transcription) VALUES (?)")
+            .bind(format!("ordinary transcript {index}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let redactor = Arc::new(SlowBatchRedactor {
+        batch_sizes: Mutex::new(Vec::new()),
+        delay: Duration::from_millis(40),
+    });
+    let cfg = WorkerConfig {
+        batch_size: 8,
+        initial_batch_size: 4,
+        target_batch_duration: Duration::from_millis(5),
+        idle_between_batches: Duration::from_millis(1),
+        poll_interval: Duration::from_millis(20),
+        tables: vec![TargetTable::AudioTranscription],
+        ..test_worker_config()
+    };
+    let worker = Worker::new(pool.clone(), redactor.clone(), cfg);
+    let handle = worker.spawn();
+
+    wait_until("adaptive audio batches", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audio_transcriptions WHERE redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 10
+    })
+    .await;
+    handle.abort();
+
+    let batch_sizes = redactor.batch_sizes.lock().unwrap().clone();
+    assert_eq!(batch_sizes.first(), Some(&4));
+    assert_eq!(batch_sizes.get(1), Some(&1));
+    assert!(
+        batch_sizes.iter().skip(1).all(|size| *size == 1),
+        "slow slices must stay at the minimum until timing improves: {batch_sizes:?}"
+    );
+}
+
+#[tokio::test]
+async fn table_work_slices_adapt_independently() {
+    let (pool, _temp_dir) = setup_db().await;
+    for index in 0..10 {
+        sqlx::query("INSERT INTO audio_transcriptions (transcription) VALUES (?)")
+            .bind(format!("slow audio {index}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    for index in 0..20 {
+        sqlx::query("INSERT INTO elements (text) VALUES (?)")
+            .bind(format!("fast element {index}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let redactor = Arc::new(TableTimingRedactor {
+        audio_batch_sizes: Mutex::new(Vec::new()),
+        element_batch_sizes: Mutex::new(Vec::new()),
+        audio_delay: Duration::from_millis(160),
+    });
+    let cfg = WorkerConfig {
+        batch_size: 8,
+        initial_batch_size: 4,
+        target_batch_duration: Duration::from_millis(100),
+        idle_between_batches: Duration::from_millis(1),
+        poll_interval: Duration::from_millis(20),
+        tables: vec![TargetTable::AudioTranscription, TargetTable::Elements],
+        ..test_worker_config()
+    };
+    let worker = Worker::new(pool.clone(), redactor.clone(), cfg);
+    let handle = worker.spawn();
+
+    wait_until("independent table batches", || async {
+        let audio_done = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM audio_transcriptions WHERE redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let elements_done = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM elements WHERE redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        audio_done == 10 && elements_done == 20
+    })
+    .await;
+    handle.abort();
+
+    let audio_batches = redactor.audio_batch_sizes.lock().unwrap().clone();
+    let element_batches = redactor.element_batch_sizes.lock().unwrap().clone();
+    assert_eq!(audio_batches.first(), Some(&4));
+    assert_eq!(audio_batches.get(1), Some(&2));
+    assert!(audio_batches.iter().skip(2).all(|size| *size == 1));
+    assert_eq!(&element_batches[..3], &[4, 4, 4]);
+    assert_eq!(element_batches.get(3), Some(&8));
 }
 
 #[async_trait]
@@ -595,7 +912,18 @@ async fn frame_fulltext_redaction_propagates_to_accessibility_once() {
     };
     let worker = Worker::new(pool.clone(), redactor.clone(), cfg);
     let handle = worker.spawn();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("full-text and accessibility watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 \
+             AND full_text_redacted_at IS NOT NULL \
+             AND accessibility_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query(
@@ -689,7 +1017,21 @@ async fn frame_fulltext_propagates_to_all_derived_copies_once() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor.clone(), cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("all derived-copy watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 \
+             AND full_text_redacted_at IS NOT NULL \
+             AND accessibility_tree_redacted_at IS NOT NULL \
+             AND window_name_redacted_at IS NOT NULL \
+             AND browser_url_redacted_at IS NOT NULL \
+             AND text_json_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query(
@@ -807,7 +1149,16 @@ async fn frame_fulltext_uses_accessibility_input_context_without_extra_model_pas
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor.clone(), cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("contextual full-text redaction", || async {
+        let row = sqlx::query(
+            "SELECT full_text_redacted_at, accessibility_redacted_at FROM frames WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        row.get::<Option<i64>, _>(0).is_some() && row.get::<Option<i64>, _>(1).is_some()
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query(
@@ -868,7 +1219,16 @@ async fn frame_fulltext_does_not_clobber_already_redacted_accessibility() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor.clone(), cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_until("full-text watermark", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 AND full_text_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query(
@@ -922,7 +1282,16 @@ async fn frame_fulltext_clean_frame_marks_both_done() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor.clone(), cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_until("clean frame watermarks", || async {
+        let row = sqlx::query(
+            "SELECT full_text_redacted_at, accessibility_redacted_at FROM frames WHERE id = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        row.get::<Option<i64>, _>(0).is_some() && row.get::<Option<i64>, _>(1).is_some()
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query(
@@ -976,7 +1345,18 @@ async fn frame_fulltext_pseudonym_token_is_identical_across_columns() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor, cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_until("pseudonymized frame watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 \
+             AND full_text_redacted_at IS NOT NULL \
+             AND accessibility_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query("SELECT full_text, accessibility_text FROM frames WHERE id = 1")
@@ -1028,7 +1408,18 @@ async fn frame_fulltext_each_frame_detected_once() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor.clone(), cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    wait_until("all frame watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames \
+             WHERE full_text_redacted_at IS NOT NULL \
+               AND accessibility_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 3
+    })
+    .await;
     handle.abort();
 
     assert_eq!(
@@ -1083,7 +1474,18 @@ async fn frame_fulltext_falls_back_when_no_map() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor, cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("fallback frame watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 \
+             AND full_text_redacted_at IS NOT NULL \
+             AND accessibility_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query(
@@ -1232,7 +1634,20 @@ async fn frame_fulltext_no_map_path_scrubs_all_derived_copies() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor, cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("span-less derived-copy watermarks", || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames WHERE id = 1 \
+             AND accessibility_tree_redacted_at IS NOT NULL \
+             AND window_name_redacted_at IS NOT NULL \
+             AND full_text_redacted_at IS NOT NULL \
+             AND browser_url_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let row = sqlx::query(
@@ -1320,7 +1735,26 @@ async fn default_columns_leave_optin_columns_untouched() {
         ..test_worker_config()
     };
     let handle = Worker::new(pool.clone(), redactor, cfg).spawn();
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until("default-column redaction", || async {
+        let frame_done = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM frames \
+             WHERE full_text_redacted_at IS NOT NULL \
+               AND window_name_redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1;
+        let event_done = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM ui_events WHERE redacted_at IS NOT NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+            == 1;
+        frame_done && event_done
+    })
+    .await;
     handle.abort();
 
     let frame = sqlx::query(
@@ -1398,7 +1832,14 @@ async fn ui_events_ancestors_json_scrubbed_structure_preserved() {
     };
     let worker = Worker::new(pool.clone(), redactor, cfg);
     let handle = worker.clone().spawn();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_until("ui-events watermark", || async {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM ui_events WHERE redacted_at IS NOT NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            == 1
+    })
+    .await;
     handle.abort();
 
     let (title, ancestors, redacted_at): (String, String, Option<i64>) = sqlx::query_as(

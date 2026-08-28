@@ -4,10 +4,13 @@
 
 use super::catalog::{manifest_for_family, profile_for, AppFamily, BuiltinAppProfile};
 use crate::{
-    AccessibilityAttribute, IdentityQuality, NodeId, ParseContext, ParseOutcome, ParserManifest,
-    ProjectionError, SemanticItem, SemanticKind, SemanticParser, SemanticTree,
+    AccessibilityAttribute, CapturedNodeFlags, IdentityQuality, NodeId, ParseContext, ParseOutcome,
+    ParserManifest, ProjectionError, SemanticItem, SemanticKind, SemanticParser, SemanticTree,
 };
 
+/// Per-item byte cap: oversized buffers truncate instead of blowing the
+/// projection text budget and abstaining on the whole frame.
+const MAX_EDITOR_BODY_BYTES: usize = 24 * 1024;
 const MONACO_WORKBENCH_CLASS: &str = "monaco-workbench";
 const EDITOR_INSTANCE_CLASS: &str = "editor-instance";
 const XTERM_TREE_CLASS: &str = "xterm-accessibility-tree";
@@ -24,22 +27,22 @@ pub struct EditorFamilyParser {
 
 impl EditorFamilyParser {
     pub fn new() -> Self {
-        Self {
-            manifest: manifest_for_family(
-                AppFamily::Editor,
-                "family.editor",
-                vec![SemanticKind::Document],
-                vec![
-                    AccessibilityAttribute::Title,
-                    AccessibilityAttribute::Description,
-                    AccessibilityAttribute::Value,
-                    AccessibilityAttribute::Children,
-                    AccessibilityAttribute::DomIdentifier,
-                    AccessibilityAttribute::DomClasses,
-                ],
-                60,
-            ),
-        }
+        let mut manifest = manifest_for_family(
+            AppFamily::Editor,
+            "family.editor",
+            vec![SemanticKind::Document],
+            vec![
+                AccessibilityAttribute::Title,
+                AccessibilityAttribute::Description,
+                AccessibilityAttribute::Value,
+                AccessibilityAttribute::Children,
+                AccessibilityAttribute::DomIdentifier,
+                AccessibilityAttribute::DomClasses,
+            ],
+            60,
+        );
+        manifest.parser_version = "2".into();
+        Self { manifest }
     }
 }
 
@@ -92,6 +95,9 @@ impl SemanticParser for EditorFamilyParser {
         }
 
         if !recognized_workbench {
+            if let Some(item) = persisted_tree_editor_item(profile, tree) {
+                return Ok(ParseOutcome::Handled(vec![item]));
+            }
             return Ok(ParseOutcome::NotHandled);
         }
 
@@ -104,10 +110,12 @@ impl SemanticParser for EditorFamilyParser {
             }
         } else {
             for (index, root) in editor_roots.into_iter().enumerate() {
-                if let Some(buffer) = best_editor_buffer(tree, root) {
-                    if let Some(item) = editor_item(profile, tree, root, buffer, index) {
-                        items.push(item);
-                    }
+                if let Some(item) = best_editor_buffer(tree, root)
+                    .and_then(|buffer| editor_item(profile, tree, root, buffer, index))
+                {
+                    items.push(item);
+                } else if let Some(item) = editor_identity_item(profile, tree, root, index) {
+                    items.push(item);
                 }
             }
         }
@@ -124,6 +132,95 @@ impl SemanticParser for EditorFamilyParser {
             Ok(ParseOutcome::Handled(items))
         }
     }
+}
+
+/// Persisted accessibility records do not contain the transient DOM classes
+/// used by Monaco. A selected editor tab plus a text buffer is the durable
+/// cross-platform shape retained in the database. Requiring both prevents a
+/// settings page, search box, or command palette from becoming source code.
+fn persisted_tree_editor_item(
+    profile: &BuiltinAppProfile,
+    tree: &SemanticTree,
+) -> Option<SemanticItem> {
+    let (tab, title) = selected_editor_tab(tree)?;
+    if !looks_like_file_title(title) {
+        return None;
+    }
+    let buffer = tree
+        .roots()
+        .flat_map(|root| tree.descendants(root))
+        .filter(|node| is_buffer_role(tree.role(*node)))
+        .filter_map(|node| usable_buffer(tree, node).map(|body| (node, body)))
+        .filter(|(_, body)| looks_like_code_buffer(body))
+        .max_by_key(|(_, body)| body.len())?;
+
+    let body = truncate_body(buffer.1);
+    let mut item = SemanticItem::new(
+        "editor-0",
+        SemanticKind::Document,
+        format!("{}:editor:selected:{}", profile.id, key_component(title)),
+        IdentityQuality::Derived,
+    );
+    item.title = Some(title.trim().to_owned());
+    item.body = Some(body.to_owned());
+    item.metadata
+        .insert("app".into(), profile.display_name.into());
+    item.metadata.insert("family".into(), "editor".into());
+    item.metadata
+        .insert("surface".into(), "persisted_accessibility_tree".into());
+    item.source_nodes.extend([tab, buffer.0]);
+    Some(item)
+}
+
+fn selected_editor_tab(tree: &SemanticTree) -> Option<(NodeId, &str)> {
+    tree.roots()
+        .flat_map(|root| tree.descendants(root))
+        .find_map(|node| {
+            let role = tree.role(node)?;
+            if !["AXRadioButton", "AXTab", "Tab", "TabItem"]
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(role))
+                || tree.flags(node).unwrap_or_default() & CapturedNodeFlags::SELECTED == 0
+            {
+                return None;
+            }
+            let title = node_content(tree, node).or_else(|| {
+                tree.descendants(node)
+                    .skip(1)
+                    .find_map(|child| node_content(tree, child))
+            })?;
+            Some((node, title))
+        })
+}
+
+fn node_content(tree: &SemanticTree, node: NodeId) -> Option<&str> {
+    tree.value(node)
+        .or_else(|| tree.text(node))
+        .or_else(|| tree.title(node))
+        .or_else(|| tree.description(node))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn looks_like_file_title(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("untitled")
+        || value.rsplit_once('.').is_some_and(|(stem, extension)| {
+            !stem.trim().is_empty()
+                && (1..=12).contains(&extension.len())
+                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
+fn looks_like_code_buffer(value: &str) -> bool {
+    let value = value.trim();
+    value.len() >= 8
+        && (value.contains('\n')
+            || ['{', '}', ';', '=', '(', ')', ':']
+                .iter()
+                .filter(|token| value.contains(**token))
+                .count()
+                >= 2)
 }
 
 fn is_workbench_marker(tree: &SemanticTree, node: NodeId) -> bool {
@@ -201,7 +298,7 @@ fn editor_item(
     buffer: NodeId,
     index: usize,
 ) -> Option<SemanticItem> {
-    let body = usable_buffer(tree, buffer)?;
+    let body = truncate_body(usable_buffer(tree, buffer)?);
     let label = node_label(tree, buffer).unwrap_or_default();
     let (mut title, group, preview) = parse_editor_label(label);
     if title.is_empty() {
@@ -245,6 +342,55 @@ fn editor_item(
     Some(item)
 }
 
+/// Monaco withholds buffer text ("The editor is not accessible at this time")
+/// until screen-reader mode is enabled, and an empty buffer has none. The tab
+/// label still names the open file, so record document identity alone instead
+/// of abstaining; the body follows automatically once content is exposed.
+fn editor_identity_item(
+    profile: &BuiltinAppProfile,
+    tree: &SemanticTree,
+    root: NodeId,
+    index: usize,
+) -> Option<SemanticItem> {
+    let labeled = tree
+        .descendants(root)
+        .find(|node| is_buffer_role(tree.role(*node)) && node_label(tree, *node).is_some())?;
+    let label = node_label(tree, labeled)?;
+    let (mut title, group, preview) = parse_editor_label(label);
+    if title.trim().is_empty() {
+        return None;
+    }
+    if preview {
+        title.push_str(" (preview)");
+    }
+    let mut item = SemanticItem::new(
+        format!("editor-{index}"),
+        SemanticKind::Document,
+        format!(
+            "{}:editor:{}:{}",
+            profile.id,
+            group.map_or(index.to_string(), |group| group.to_string()),
+            key_component(&title)
+        ),
+        IdentityQuality::Derived,
+    );
+    item.title = Some(title);
+    item.metadata
+        .insert("app".into(), profile.display_name.into());
+    item.metadata.insert("family".into(), "vscode".into());
+    item.metadata.insert("surface".into(), "editor".into());
+    item.metadata.insert("content".into(), "unavailable".into());
+    if let Some(group) = group {
+        item.metadata
+            .insert("editor_group".into(), group.to_string());
+    }
+    item.source_nodes.push(root);
+    if labeled != root {
+        item.source_nodes.push(labeled);
+    }
+    Some(item)
+}
+
 fn terminal_item(
     profile: &BuiltinAppProfile,
     tree: &SemanticTree,
@@ -270,7 +416,8 @@ fn terminal_item(
 
 fn terminal_text(tree: &SemanticTree, root: NodeId) -> Option<String> {
     let mut lines: Vec<&str> = Vec::new();
-    for node in tree.descendants(root) {
+    let mut bytes = 0usize;
+    'nodes: for node in tree.descendants(root) {
         let role = tree.role(node).unwrap_or_default();
         let text_role = [
             "AXStaticText",
@@ -293,10 +440,25 @@ fn terminal_text(tree: &SemanticTree, root: NodeId) -> Option<String> {
             if line.trim().is_empty() || lines.last().is_some_and(|previous| *previous == line) {
                 continue;
             }
+            bytes += line.len() + usize::from(!lines.is_empty());
+            if bytes > MAX_EDITOR_BODY_BYTES {
+                break 'nodes;
+            }
             lines.push(line);
         }
     }
     (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn truncate_body(value: &str) -> &str {
+    if value.len() <= MAX_EDITOR_BODY_BYTES {
+        return value;
+    }
+    let mut end = MAX_EDITOR_BODY_BYTES;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].trim_end()
 }
 
 fn parse_editor_label(label: &str) -> (String, Option<u16>, bool) {

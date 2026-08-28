@@ -152,30 +152,50 @@ export interface ConnectionSuggestionTile {
   description?: string;
 }
 
+const CONNECTION_SEARCH_ALIASES_BY_ID: Record<string, readonly string[]> = {
+  gmail: ["google", "google mail", "email", "mail"],
+  claude: ["anthropic", "claude desktop", "claude code"],
+};
+
+export function connectionMatchesSearch(
+  tile: ConnectionSuggestionTile,
+  query: string,
+): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+
+  return [
+    tile.name,
+    tile.id,
+    tile.description ?? "",
+    ...(CONNECTION_SEARCH_ALIASES_BY_ID[tile.id] ?? []),
+  ].some((term) => term.toLowerCase().includes(normalizedQuery));
+}
+
 export const CONNECTION_HARDCODED_DESCRIPTIONS: Record<string, string> = {
-  "claude": "Search your screen & audio from Claude Desktop via MCP",
-  "cursor": "Give Cursor AI access to your screen history via MCP",
-  "codex": "Give Codex access to your screen & audio via MCP",
-  "grok": "Give Grok CLI access to your screen & audio via MCP",
-  "claude-code": "Add screen memory to the Claude Code CLI",
-  "warp": "Search screen history from Warp terminal via MCP",
+  "claude": "Let Claude search your screen and audio history",
+  "cursor": "Let Cursor search your screen and audio history",
+  "codex": "Let Codex search your screen and audio history",
+  "grok": "Let Grok search your screen and audio history",
+  "claude-code": "Use your screen history in Claude Code",
+  "warp": "Search your screen and audio history from Warp",
   "chatgpt": "Search your screen history from ChatGPT",
-  "browser-url": "Capture visited URLs from your browser in real time",
-  "voice-memos": "Sync Apple Voice Memos for AI-powered search",
-  "apple-calendar": "Search Apple Calendar events with AI",
-  "google-calendar": "Search Google Calendar events with AI",
+  "browser-url": "Include the pages you visit in your screen history",
+  "voice-memos": "Search your Apple Voice Memos",
+  "apple-calendar": "Search your Apple Calendar events",
+  "google-calendar": "Search your Google Calendar events",
   "google-docs": "Read and search your Google Docs",
-  gmail: "Read your Gmail inbox (via composio.dev managed auth)",
-  "google-drive": "Search and read your Google Drive files (via composio.dev managed auth)",
-  "google-sheets": "Read, create, and edit Google Sheets (via composio.dev managed auth)",
+  gmail: "Read your Gmail inbox",
+  "google-drive": "Search and read your Google Drive files",
+  "google-sheets": "Read, create, and edit Google Sheets",
   "outlook-email": "Read and send your Outlook email",
-  "ics-calendar": "Subscribe to any ICS calendar feed",
-  "remote-agent": "Run a 24/7 agent (OpenClaw, Hermes, Claude, Codex) on your VPS, wired to screenpipe",
+  "ics-calendar": "Add a calendar using its subscription link",
+  "remote-agent": "Keep an AI agent running on another computer",
   "whatsapp": "Search your WhatsApp conversations",
-  "anythingllm": "Give AnythingLLM access to your screen",
-  "ollama": "Connect local Ollama models to screenpipe",
-  "lmstudio": "Connect LM Studio models to screenpipe",
-  "msty": "Connect Msty models to screenpipe",
+  "anythingllm": "Let AnythingLLM search your screen history",
+  "ollama": "Use your Ollama models with screenpipe",
+  "lmstudio": "Use your LM Studio models with screenpipe",
+  "msty": "Use your Msty models with screenpipe",
   "obsidian": "Sync screen memory to your Obsidian vault",
   "notion": "Search Notion pages with your screen context",
   "linear": "Search Linear issues from your screen context",
@@ -183,50 +203,67 @@ export const CONNECTION_HARDCODED_DESCRIPTIONS: Record<string, string> = {
   "krisp": "Search Krisp meeting transcripts and notes",
   "plaud": "Search Plaud recordings and transcripts",
   "excalidraw": "Search and edit your Excalidraw+ whiteboards",
-  "custom-mcp": "Connect any MCP-compatible server",
-  "skills": "Import Claude Code skills for AI automations",
-  "pi-extensions": "Install Pi packages such as subagents and web tools",
+  "custom-mcp": "Connect another tool or data source",
+  "skills": "Add reusable instructions and workflows to your AI",
+  "pi-extensions": "Add web browsing and more to your AI",
 };
 
 // High-activation defaults fill the suggested row when there are not enough
-// detected or already-connected apps on the device.
+// detected apps on the device.
+//
+// Ordered by what people actually keep connected (PostHog `connections_loaded`
+// -> `active_connections`, 90d distinct users) with calendar and mail pulled to
+// the front: they carry the strongest "answer my day" payoff, calendar is the
+// single largest connected category (apple 351 + google 226 + ics 30), and mail
+// is high-intent but under-surfaced. Plumbing tiles (custom-mcp, pi-extensions)
+// sit below outcome-bearing ones — they are a means, not a reason to connect.
 export const FEATURED_CONNECTION_IDS = [
-  "custom-mcp",
-  "pi-extensions",
-  "claude",
-  "cursor",
-  "codex",
-  "claude-code",
-  "chatgpt",
+  "google-calendar",
+  "apple-calendar",
+  "gmail",
+  "outlook-email",
   "slack",
   "obsidian",
   "notion",
+  "github",
+  "claude",
+  "linear",
 ];
 
 export const DEVICE_CONNECTION_ORDER = [
-  "custom-mcp",
-  "pi-extensions",
-  "claude",
-  "cursor",
-  "codex",
-  "grok",
-  "claude-code",
-  "chatgpt",
-  "browser-url",
+  // Calendar & mail first — highest real adoption and clearest payoff.
+  "google-calendar",
+  "apple-calendar",
+  "outlook-calendar",
+  "ics-calendar",
+  "gmail",
+  "outlook-email",
+  "microsoft365",
+  "email",
+  // Then the rest of the daily-context surface.
+  "slack",
   "obsidian",
   "notion",
+  "github",
   "linear",
-  "slack",
-  "outlook-email",
-  "apple-calendar",
-  "google-calendar",
   "google-docs",
+  "browser-url",
+  "whatsapp",
+  "granola",
+  // Desktop AI clients & local runtimes.
+  "claude",
+  "codex",
+  "cursor",
+  "grok",
+  "chatgpt",
   "warp",
   "ollama",
   "lmstudio",
   "msty",
   "krisp",
-  "whatsapp",
+  // Plumbing last.
+  "custom-mcp",
+  "pi-extensions",
 ];
 
 export function normalizeConnectionCategory(category: string | null | undefined): string {
@@ -244,9 +281,26 @@ export function normalizeConnectionCategory(category: string | null | undefined)
     .join(" ");
 }
 
+// Calendar and mail share the top tier with detected apps: they are the two
+// sources that make "what happened / what is next" answerable, so they lead the
+// suggested row instead of losing it to whichever client happens to be
+// installed. Ties inside a tier fall through to DEVICE_CONNECTION_ORDER.
+// Only the mainstream providers — a raw ICS feed or generic IMAP is a
+// power-user fallback, and stacking them here buries mail under a wall of
+// near-identical calendar tiles. They stay reachable via search and the
+// Calendar/Communication groups.
+export const PRIORITY_CONNECTION_IDS = [
+  "google-calendar",
+  "apple-calendar",
+  "outlook-calendar",
+  "gmail",
+  "outlook-email",
+  "microsoft365",
+];
+
 function connectionPriority(tile: ConnectionSuggestionTile): number {
   if (tile.connected) return 0;
-  if (tile.detected) return 1;
+  if (tile.detected || PRIORITY_CONNECTION_IDS.includes(tile.id)) return 1;
   if (FEATURED_CONNECTION_IDS.includes(tile.id)) return 2;
   return 3;
 }
@@ -267,8 +321,17 @@ export function compareConnectionTiles(
   return a.name.localeCompare(b.name);
 }
 
+// Suggestions are a call to action, so anything already connected is excluded —
+// re-listing a connected tile spends the most valuable slot on a no-op and
+// pushes the real next step out of view. Connected tiles still show in their
+// category group (sorted first there by compareConnectionTiles).
 export function isSuggestedForThisDevice(tile: ConnectionSuggestionTile): boolean {
-  return tile.connected || !!tile.detected || FEATURED_CONNECTION_IDS.includes(tile.id);
+  if (tile.connected) return false;
+  return (
+    !!tile.detected ||
+    PRIORITY_CONNECTION_IDS.includes(tile.id) ||
+    FEATURED_CONNECTION_IDS.includes(tile.id)
+  );
 }
 
 export function getSuggestedConnectionsForDevice<T extends ConnectionSuggestionTile>(

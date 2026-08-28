@@ -12,9 +12,11 @@
 //! Detection comes from two sources that funnel through a single emission
 //! path (so events are deduped and dedup'd state is shared):
 //!
-//! 1. **Polling** (this task). Every 5s checks `check_permissions()` and
-//!    emits on transition. The only way to detect accessibility state
-//!    changes (no stream-failure signal for that permission).
+//! 1. **Polling** (this task). Every 5s checks `check_permissions_live()` and
+//!    emits on transition. On macOS the Screen Recording result comes directly
+//!    from TCC rather than SkyLight's process-local preflight cache. This is the
+//!    only way to detect accessibility state changes (no stream-failure signal
+//!    for that permission).
 //!
 //! 2. **Eager reports from capture modules**. Vision (`monitor_watcher`)
 //!    calls [`report_state`] when `SCStream` errors with `PermissionDenied`.
@@ -40,7 +42,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
-use screenpipe_core::permissions::{check_permissions, PermissionStatus};
+use screenpipe_core::permissions::{
+    check_accessibility, check_microphone, check_screen_recording, PermissionStatus,
+    PermissionsCheck,
+};
 use screenpipe_events::{send_event, PermissionEvent, PermissionKind};
 use tokio::task::JoinHandle;
 use tracing::{debug, info};
@@ -112,6 +117,26 @@ static STATE: Lazy<Mutex<State>> = Lazy::new(|| {
     })
 });
 
+fn check_permissions_live() -> PermissionsCheck {
+    #[cfg(target_os = "macos")]
+    let screen_recording = screenpipe_core::permissions::check_screen_recording_tcc()
+        .unwrap_or_else(|error| {
+            debug!(
+                %error,
+                "direct Screen Recording TCC preflight failed; using fallback permission check"
+            );
+            check_screen_recording()
+        });
+    #[cfg(not(target_os = "macos"))]
+    let screen_recording = check_screen_recording();
+
+    PermissionsCheck {
+        screen_recording,
+        microphone: check_microphone(),
+        accessibility: check_accessibility(),
+    }
+}
+
 /// Start the monitor. Idempotent — calling twice returns early; the first
 /// call wins. Returns the join handle of the polling task (first call) or
 /// `None` on subsequent calls.
@@ -125,7 +150,7 @@ pub fn start() -> Option<JoinHandle<()>> {
         // Seed last-known with current state so the first poll tick doesn't
         // emit spurious events for permissions that were already denied at
         // process start.
-        let perms = check_permissions();
+        let perms = check_permissions_live();
         state.screen = LastKnown::new(perms.screen_recording.is_granted());
         state.mic = LastKnown::new(perms.microphone.is_granted());
         state.accessibility = LastKnown::new(perms.accessibility.is_granted());
@@ -287,7 +312,7 @@ async fn run() {
 
     loop {
         ticker.tick().await;
-        let perms = check_permissions();
+        let perms = check_permissions_live();
         // While vision enumeration says screen capture is broken, the
         // preflight's answer for ScreenRecording is known-stale (see
         // `report_screen_enumeration`) — don't let it flap us back.
@@ -336,6 +361,20 @@ fn screen_poll_suppressed() -> bool {
 pub fn screen_enumeration_denied() -> bool {
     let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     state.screen_enum_denied
+}
+
+/// Last known screen-recording grant, as seen by the 5s poll and by
+/// capture-side enumeration. Cheap: a mutex read, never a TCC syscall, so
+/// `/health` can consult it on every request.
+///
+/// `false` means the most recent evidence says screen capture is not
+/// permitted — either the poll saw the grant revoked, or enumeration proved
+/// capture is broken while the preflight still (stale-ly) answers granted.
+/// Callers must not treat `true` as proof that capture is working; it only
+/// rules permission out as the explanation.
+pub fn screen_recording_granted() -> bool {
+    let state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.screen.granted && !state.screen_enum_denied
 }
 
 /// Read-only probe of the OS keychain. Returns `true` if the encryption key

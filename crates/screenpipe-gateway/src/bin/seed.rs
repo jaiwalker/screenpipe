@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use screenpipe_gateway::{GatewayConfig, S3BlobSource};
 use screenpipe_telemetry_wire::{
-    build_jsonl, compute_batch_id, direct_batch_key, AudioRow, DirectUploadCursors,
-    DirectUploadRecordCounts, FrameRow, MemoryRow, UiEventRow,
+    build_jsonl_with_parsed, compute_batch_id, direct_batch_key, AudioRow, DirectUploadCursors,
+    DirectUploadRecordCounts, FrameRow, MemoryRow, ParsedRow, UiEventRow,
 };
 
 struct Device {
@@ -27,6 +27,8 @@ struct Device {
     label: &'static str,
     marker: &'static str,
     hour: u32,
+    /// Emit the out-of-window "stale batch member" frame (see [`STALE_FRAME_ID`]).
+    stale_sentinel: bool,
 }
 
 const DEVICES: &[Device] = &[
@@ -35,18 +37,38 @@ const DEVICES: &[Device] = &[
         label: "alice-mbp",
         marker: "alpha",
         hour: 9,
+        stale_sentinel: true,
     },
     Device {
         id: "dev-bob",
         label: "bob-thinkpad",
         marker: "bravo",
         hour: 10,
+        stale_sentinel: false,
     },
 ];
 
+/// The stale-window regression sentinel: a July-12 frame inside a batch object
+/// whose LastModified is inside the seeded July-22 window.
+///
+/// The hosted target filters `/search` and `/records` by object LastModified;
+/// the gateway filters by RECORD timestamp. This row is the only thing that
+/// tells those two apart, so both targets must exclude it from a
+/// `?since=2026-07-22&until=2026-07-23` query. Without it, an implementation
+/// that filtered by object time only would pass the whole conformance suite.
+///
+/// Alice only, and appended AFTER the memory row rather than sorted in with the
+/// other frames: the fixture is vendored from the website repo (see
+/// `e2e/conformance/VENDORED_FROM`) and the parity test compares bytes, so the
+/// line order here has to match the canonical copy. Folding this into the
+/// `frames` slice below would move it to line 3 and break the vendored fixture.
+const STALE_FRAME_ID: i64 = 999;
+const STALE_DAY: &str = "2026-07-12";
+
 fn batch_for(device: &Device) -> Vec<u8> {
     let ts = |m: u32| format!("2026-07-22T{:02}:{:02}:00Z", device.hour, m);
-    build_jsonl(
+    let parsed_text = format!("Ada: quarterly roadmap {} structured update", device.marker);
+    let mut body = build_jsonl_with_parsed(
         device.id,
         device.label,
         &[
@@ -73,6 +95,30 @@ fn batch_for(device: &Device) -> Vec<u8> {
                 )),
             },
         ],
+        &[ParsedRow {
+            frame_id: 2,
+            timestamp: ts(6),
+            app_name: "Slack".to_string(),
+            window_name: "#eng".to_string(),
+            browser_url: None,
+            text: parsed_text.clone(),
+            run_id: 1,
+            parser_id: "family.conversation".to_string(),
+            parser_version: "2".to_string(),
+            schema_version: 1,
+            app_platform: "macos".to_string(),
+            app_id: Some("com.tinyspeck.slackmacgap".to_string()),
+            app_executable: Some("Slack".to_string()),
+            app_version: None,
+            parse_duration_us: 1_000,
+            text_bytes: parsed_text.len(),
+            items: vec![serde_json::json!({
+                "kind": "message",
+                "body": format!("quarterly roadmap {} structured update", device.marker),
+                "actor": "Ada",
+            })],
+            actors: vec![serde_json::json!({"name": "Ada"})],
+        }],
         &[AudioRow {
             transcription_id: 1,
             timestamp: ts(2),
@@ -105,7 +151,28 @@ fn batch_for(device: &Device) -> Vec<u8> {
             importance: 0.8,
             frame_id: Some(1),
         }],
-    )
+    );
+    if device.stale_sentinel {
+        // Same wire builder, so a frame-format change still propagates here.
+        body.extend_from_slice(&build_jsonl_with_parsed(
+            device.id,
+            device.label,
+            &[FrameRow {
+                frame_id: STALE_FRAME_ID,
+                timestamp: format!("{STALE_DAY}T{:02}:00:00Z", device.hour),
+                app_name: Some("Arc".to_string()),
+                window_name: Some("stale batch member".to_string()),
+                browser_url: None,
+                text: Some("roadmap stale-window regression sentinel".to_string()),
+            }],
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        ));
+    }
+    body
 }
 
 /// One org-wide daily rollup, byte-identical to the conformance fixture.
@@ -121,7 +188,7 @@ fn rollup_body() -> Vec<u8> {
     // fixture, and the fixture-parity test compares bytes.
     // br##..##: the body contains `"#` (the "#eng" window name), which would
     // close a single-hash raw string.
-    br##"{"day":"2026-07-22","records":10,"devices":["dev-alice","dev-bob"],"apps":{"Arc":6,"Slack":2},"top_windows":["quarterly planning","#eng"],"speakers":["presenter"],"active_hours":[9,10]}"##
+    br##"{"day":"2026-07-22","records":12,"devices":["dev-alice","dev-bob"],"apps":{"Arc":6,"Slack":4},"top_windows":["quarterly planning","#eng"],"speakers":["presenter"],"active_hours":[9,10]}"##
         .to_vec()
 }
 
@@ -134,17 +201,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for device in DEVICES {
         let body = batch_for(device);
         let counts = DirectUploadRecordCounts {
-            frames: 2,
+            // The sentinel is a real frame in the body; the declared counts feed
+            // compute_batch_id, so they have to match what was actually written.
+            frames: 2 + usize::from(device.stale_sentinel),
+            parsed: 1,
             audio: 1,
             ui: 1,
             snapshots: 0,
             memories: 1,
+            feedback: 0,
         };
         let cursors = DirectUploadCursors {
             last_frame_ts: Some(format!("2026-07-22T{:02}:05:00Z", device.hour)),
+            last_parsed_ts: Some(format!("2026-07-22T{:02}:06:00Z", device.hour)),
             last_audio_ts: Some(format!("2026-07-22T{:02}:02:00Z", device.hour)),
             last_ui_ts: Some(format!("2026-07-22T{:02}:03:00Z", device.hour)),
             last_memory_ts: Some(format!("2026-07-22T{:02}:08:00Z", device.hour)),
+            last_feedback_ts: None,
         };
         let sha = {
             use sha2::{Digest, Sha256};

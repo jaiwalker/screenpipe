@@ -10,7 +10,7 @@
 
 use crate::capture_session::CaptureSession;
 use crate::config;
-use crate::permissions::do_permissions_check;
+use crate::permissions::{do_permissions_check, OSPermissionStatus};
 use crate::server_core::ServerCore;
 use crate::store::{LocalPlanPolicy, SettingsStore};
 use screenpipe_engine::RecordingConfig;
@@ -68,7 +68,8 @@ impl LocalApiContext {
 /// Build a `RecordingConfig` from the current settings store.
 fn build_config(app: &tauri::AppHandle) -> Result<RecordingConfig, String> {
     let store = SettingsStore::get(app).ok().flatten().unwrap_or_default();
-    let (data_dir, _) = config::resolve_data_dir(&store.data_dir);
+    let (data_dir, _) = config::resolve_data_dir(&store.data_dir)
+        .map_err(|e| format!("failed to prepare recording data directory: {e}"))?;
     Ok(store.to_recording_config(data_dir))
 }
 
@@ -124,7 +125,7 @@ fn recording_access_policy(
     is_enterprise_build: bool,
     dev_bypass: bool,
     has_verified_local_plan: bool,
-    app_entitled: bool,
+    enterprise_authorized: bool,
     consumer_requires_enterprise_app: bool,
 ) -> bool {
     if dev_bypass {
@@ -134,7 +135,10 @@ fn recording_access_policy(
         return false;
     }
     if is_enterprise_build {
-        return app_entitled;
+        // Consumer billing entitlement is not an Enterprise credential. Both
+        // account and key deployments use the same process-local grant, set
+        // only after policy and seat enrollment succeed for the organization.
+        return enterprise_authorized;
     }
     has_verified_local_plan
 }
@@ -147,7 +151,7 @@ pub(crate) fn recording_access_allowed(store: &SettingsStore) -> bool {
         cfg!(feature = "enterprise-build"),
         cfg!(debug_assertions),
         store.local_plan_policy() != LocalPlanPolicy::Unknown,
-        store.app_entitled_or_dev(),
+        crate::enterprise_policy::recording_authorized(),
         !cfg!(debug_assertions) && store.requires_enterprise_app_for_consumer(),
     )
 }
@@ -171,11 +175,12 @@ pub fn notify_audio_engine_fallback(store: &SettingsStore) {
         return;
     };
 
-    crate::notifications::client::send_typed(
+    crate::notifications::client::send_typed_with_priority(
         reason.notification_title(),
         reason.notification_body(),
         "system",
         Some(20000),
+        crate::notifications::store::NotificationPriority::High,
     );
 }
 
@@ -266,9 +271,24 @@ pub struct RecordingState {
     /// one update propagates to all three readers (cloud_proxy.rs, the
     /// pi-agent's models.json apiKey, and any future Tauri-side consumer).
     pub cloud_token: Arc<arc_swap::ArcSwap<Option<String>>>,
+    /// Live rolling-history policy shared with the local HTTP server. Consumer
+    /// plan refreshes update this in place; server restart is not required.
+    pub history_access: screenpipe_engine::history_access::HistoryAccessPolicy,
     /// Restart-storm guard for DB-wedge auto-recovery. Shared across server
     /// restarts so a DB that stays broken after N restarts stops retrying.
     pub db_wedge_breaker: DbWedgeBreaker,
+}
+
+/// Install a fully constructed capture session before activating any monitor
+/// that can synchronously request its teardown.
+pub(crate) fn install_capture_session(
+    slot: &mut Option<CaptureSession>,
+    session: CaptureSession,
+) {
+    *slot = Some(session);
+    slot.as_ref()
+        .expect("capture session was just installed")
+        .start_disk_pressure_monitor();
 }
 
 impl RecordingState {
@@ -285,6 +305,20 @@ impl RecordingState {
     pub fn capture_intended(&self) -> bool {
         capture_intended_now(&self.wants_recording)
     }
+}
+
+pub(crate) fn refresh_history_access_policy(
+    policy: &screenpipe_engine::history_access::HistoryAccessPolicy,
+    settings: &SettingsStore,
+) {
+    policy.set_last_24_hours(history_access_restricted(
+        cfg!(feature = "enterprise-build"),
+        settings.is_free_or_unattributed_user(),
+    ));
+}
+
+fn history_access_restricted(is_enterprise_build: bool, free_or_unattributed: bool) -> bool {
+    !is_enterprise_build && free_or_unattributed
 }
 
 fn capture_intended_now(wants_recording: &AtomicBool) -> bool {
@@ -346,7 +380,7 @@ pub async fn get_available_audio_devices() -> Result<Vec<AudioDeviceInfo>, Strin
                 Some(&name) == default_input.as_ref() || Some(&name) == default_output.as_ref();
             let is_combo_bluetooth_mic = d.device_type
                 == screenpipe_audio::core::device::DeviceType::Input
-                && screenpipe_audio::core::device_detection::InputDeviceKind::detect(&d.name)
+                && screenpipe_audio::core::device_detection::InputDeviceKind::detect_input(&d.name)
                     == screenpipe_audio::core::device_detection::InputDeviceKind::Bluetooth
                 && screenpipe_audio::core::device::bluetooth_input_is_combo_headset(&d.name);
             AudioDeviceInfo {
@@ -490,6 +524,19 @@ async fn remember_active_meeting_for_capture_restart(state: &RecordingState) {
     *state.interrupted_meeting.lock().await = Some(interrupted);
 }
 
+/// Whether this restart interrupted a meeting recently enough to still be the
+/// same call. Read-only — the restore path is what consumes the entry.
+async fn has_fresh_interrupted_meeting(state: &RecordingState) -> bool {
+    state
+        .interrupted_meeting
+        .lock()
+        .await
+        .as_ref()
+        .is_some_and(|interrupted| {
+            interrupted.captured_at.elapsed() <= CAPTURE_RESTART_MEETING_REATTACH_WINDOW
+        })
+}
+
 async fn restore_interrupted_meeting_for_capture_restart(
     state: &RecordingState,
 ) -> Result<(), String> {
@@ -544,6 +591,26 @@ async fn restore_interrupted_meeting_for_capture_restart(
                 manual: true,
             }));
         }
+    }
+
+    // Reopening the row is not enough. The streaming coordinator only probes
+    // for an active meeting once, at startup, and the meeting watcher closes
+    // the row on shutdown and again on start — so that probe reliably finds
+    // nothing and the coordinator idles while the meeting is still running.
+    // Republishing makes the attach ordering-independent instead of racy.
+    if let Err(e) = screenpipe_events::send_event(
+        screenpipe_audio::meeting_streaming::MEETING_STREAMING_REATTACH_EVENT,
+        serde_json::json!({
+            "meeting_id": interrupted.id,
+            "app": interrupted.app,
+            "title": interrupted.title,
+            "detection_source": interrupted.detection_source,
+        }),
+    ) {
+        warn!(
+            "failed to republish interrupted meeting {} for live streaming: {}",
+            interrupted.id, e
+        );
     }
 
     info!(
@@ -674,7 +741,7 @@ pub async fn start_capture(
     let session = CaptureSession::start(server, &config, false).await?;
     drop(server_guard);
 
-    *capture_guard = Some(session);
+    install_capture_session(&mut capture_guard, session);
 
     info!("Capture session started");
     Ok(())
@@ -706,7 +773,15 @@ async fn stop_screenpipe_inner(state: &RecordingState) -> Result<(), String> {
 
     // Stop capture first
     {
-        *state.interrupted_meeting.lock().await = None;
+        // Must run BEFORE `session.stop()`: the meeting watcher's shutdown hook
+        // closes the row (`MEETING_END_REASON_SHUTDOWN`), and the next start
+        // closes anything still open via `close_orphaned_meetings`. After that
+        // there is no active meeting left to find, which is exactly how a
+        // restart mid-meeting used to strand live transcription for the rest of
+        // the call. The capture-only path (`stop_capture`) has always done this;
+        // the full restart used by "Apply & Restart", audio shortcuts, updates,
+        // and the health overlay's RESTART button cleared it instead.
+        remember_active_meeting_for_capture_restart(state).await;
         let mut capture_guard = state.capture.lock().await;
         if let Some(session) = capture_guard.take() {
             session.stop().await;
@@ -790,7 +865,25 @@ pub async fn spawn_screenpipe(
     // a crashed/failed server back instead of treating it as a user stop.
     state.set_capture_intent(true);
 
-    let _lifecycle_guard = state.server_lifecycle.lock().await;
+    // Do not wait for the lifecycle lock. It is held across a full stop/start,
+    // so when the app is already bringing the server up — the ordinary case
+    // right after the macOS Screen Recording grant restarts us — this await
+    // parks for the whole boot. Onboarding calls this command on mount and its
+    // 20s guard was firing at 20.0-23.0s on every platform, with two users
+    // observed giving up: one closed the app at the timeout, one stayed 11
+    // minutes and never completed setup.
+    //
+    // A held lock means a startup or teardown is already running, and capture
+    // intent is set above, so the desired end state is already being reached.
+    // Report success and let the caller's health poll observe the engine come
+    // up — which is what already rescues most of these users, just without the
+    // dead wait first. If that in-flight startup fails, capture intent keeps
+    // the health watchdog retrying and the caller's own health timeout still
+    // surfaces it, so a real failure is not swallowed here.
+    let Ok(_lifecycle_guard) = state.server_lifecycle.try_lock() else {
+        info!("spawn_screenpipe: startup already in progress, not queueing behind it");
+        return Ok(());
+    };
     spawn_screenpipe_inner(&state, app).await
 }
 
@@ -855,8 +948,8 @@ async fn spawn_screenpipe_inner(
         return Err(err);
     }
     // `to_recording_config` applies SCREENPIPE_PORT for isolated dev/E2E
-    // instances. Lifecycle health checks and orphan cleanup must use that
-    // same effective port or a restart can kill an unrelated app on :3030.
+    // instances. Lifecycle health checks and conflict detection must use that
+    // same effective port or one instance can block an unrelated app on :3030.
     let port = configured_local_api_port(&app);
     let health_url = format!("http://localhost:{}/health", port);
 
@@ -1004,6 +1097,24 @@ async fn spawn_screenpipe_inner(
         }
     }
 
+    // A healthy server without our in-process handle belongs to another
+    // Screenpipe instance. Preserve it and ask the user to quit that instance.
+    // Only an owner that fails the Screenpipe health probe may be reclaimed.
+    let settings_key = if store.recording.api_key.is_empty() {
+        None
+    } else {
+        Some(store.recording.api_key.as_str())
+    };
+    let external_owner = state.server.lock().await.is_none();
+    if external_owner && probe_server_health(&health_url, settings_key).await {
+        state.is_starting.store(false, Ordering::SeqCst);
+        state.is_starting_capture.store(false, Ordering::SeqCst);
+        crate::port_conflict::show_healthy_screenpipe(&app, port);
+        return Err(format!(
+            "another healthy screenpipe is already using local port {port}"
+        ));
+    }
+
     // --- Full start: server + capture ---
     // Stop any existing capture first (self-contained, no server lock needed)
     if let Some(session) = state.capture.lock().await.take() {
@@ -1017,34 +1128,32 @@ async fn spawn_screenpipe_inner(
         }
     }
 
-    // Kill orphaned processes. Bound the cleanup so a hung OS helper cannot
-    // leak `is_starting=true` and wedge future restarts behind the
-    // "start already in progress" guard.
+    // The health probe above ruled out a healthy Screenpipe owner. Reclaim an
+    // unhealthy or unrelated owner gracefully first, with a forced fallback.
     if tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        kill_process_on_port(port),
+        crate::port_conflict::reclaim_owner(port, false),
     )
     .await
     .is_err()
     {
-        warn!(
-            "Timed out while killing orphaned process(es) on port {}; continuing with port-release wait",
-            port
-        );
+        warn!("Timed out while reclaiming unhealthy owner of port {port}");
     }
 
-    // Wait for port release
+    // Wait for port release.
     let max_poll_iters = if cfg!(windows) { 40 } else { 20 };
+    let mut port_released = false;
     for i in 0..max_poll_iters {
         match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
             Ok(_) => {
                 debug!("Port {} is free after {}ms", port, i * 250);
+                port_released = true;
                 break;
             }
             Err(_) => {
                 if i == max_poll_iters - 1 {
                     warn!(
-                        "Port {} still in use after {}s, will attempt start anyway",
+                        "Port {} still in use after {}s after reclaim attempt",
                         port,
                         max_poll_iters * 250 / 1000
                     );
@@ -1054,14 +1163,32 @@ async fn spawn_screenpipe_inner(
             }
         }
     }
+    if !port_released {
+        state.is_starting.store(false, Ordering::SeqCst);
+        state.is_starting_capture.store(false, Ordering::SeqCst);
+        crate::health::set_recording_status(crate::health::RecordingStatus::Error);
+        crate::port_conflict::show_reclaim_failed(&app, port);
+        return Err(format!(
+            "local port {port} is already in use; quit the other screenpipe or app and retry"
+        ));
+    }
 
-    // Permissions check
+    // Permissions check. The UI-facing status includes the engine's sticky
+    // display-enumeration verdict, but startup must not: the VisionManager
+    // watcher created below is the only component that can clear or reconfirm
+    // that verdict after a transient ScreenCaptureKit failure.
     let permissions_check = do_permissions_check(false);
     let disable_audio = store.recording.disable_audio;
 
-    if state.capture_intended() && !permissions_check.screen_recording.permitted() {
+    #[cfg(target_os = "macos")]
+    let screen_recording_start_permitted =
+        crate::permissions::screen_recording_permission_usable_in_process();
+    #[cfg(not(target_os = "macos"))]
+    let screen_recording_start_permitted = true;
+
+    if state.capture_intended() && !screen_recording_start_permitted {
         warn!(
-            "Screen recording permission not granted: {:?}. Cannot start server.",
+            "Screen recording permission is not usable in this process: {:?}. Cannot start server.",
             permissions_check.screen_recording
         );
         state.is_starting.store(false, Ordering::SeqCst);
@@ -1070,10 +1197,15 @@ async fn spawn_screenpipe_inner(
         // recording status indicator stops showing "Starting…" forever
         // when the user has clicked "click to record" with TCC denied.
         crate::health::set_recording_status(crate::health::RecordingStatus::Error);
-        return Err(
-            "Screen recording permission required. Please grant permission and restart the app."
-                .to_string(),
-        );
+        let error = match &permissions_check.screen_recording {
+            OSPermissionStatus::RestartRequired => {
+                "Screen recording permission was granted, but Screenpipe must restart before it can be used."
+            }
+            _ => {
+                "Screen recording permission required. Please grant permission and restart the app."
+            }
+        };
+        return Err(error.to_string());
     }
 
     if state.capture_intended() && !disable_audio && !permissions_check.microphone.permitted() {
@@ -1090,7 +1222,8 @@ async fn spawn_screenpipe_inner(
         permissions_check.microphone
     );
 
-    let (data_dir, fell_back) = config::resolve_data_dir(&store.data_dir);
+    let (data_dir, fell_back) = config::resolve_data_dir(&store.data_dir)
+        .map_err(|e| format!("failed to prepare recording data directory: {e}"))?;
     if fell_back {
         warn!(
             "Custom data dir '{}' unavailable, using default: {}",
@@ -1128,6 +1261,15 @@ async fn spawn_screenpipe_inner(
     let capture_arc = state.capture.clone();
     let wants_recording = state.wants_recording.clone();
     let cloud_token_arc = state.cloud_token.clone();
+    let history_access = state.history_access.clone();
+    // Orphan-closing exists to clean up meetings a *crash* left open. When this
+    // restart is the thing that interrupted the meeting we already know which
+    // one is still running, so sweeping it is not cleanup — it is the bug: the
+    // watcher's sweep lands microseconds after the restore reopens the row and
+    // closes it right back, leaving live transcription with nothing to attach
+    // to. `interrupted_meeting` is in-memory, so a real crash still finds it
+    // empty here and sweeps normally.
+    let close_orphaned_meetings_on_start = !has_fresh_interrupted_meeting(&state).await;
     // Wire the DB-wedge auto-recovery hook onto every (re)created DB. Captured into
     // the dedicated server thread so the freshly-built `ServerCore` gets the hook
     // before it starts writing.
@@ -1136,10 +1278,11 @@ async fn spawn_screenpipe_inner(
 
     // Pipe output callback. Stage 5: legacy `pipe_event` topic dropped.
     // Every pipe stdout line is emitted on the unified `agent_event`
-    // topic with sessionId `pipe:<name>:<execId>` (see the matching
+    // topic with either a per-run or stable continued session id (see the matching
     // helper in `apps/screenpipe-app-tauri/lib/events/types.ts`).
     let app_for_pipe = app.clone();
     let app_for_owned = app.clone();
+    let app_for_port_conflict = app.clone();
 
     // Owned-browser: create the connect-side instance and kick off the
     // webview install in the background. The engine starts immediately;
@@ -1155,8 +1298,8 @@ async fn spawn_screenpipe_inner(
     );
     let pipe_agent_events = crate::agent_event_emitter::PipeAgentEventEmitter::new(app_for_pipe);
     let on_pipe_output: Option<screenpipe_core::pipes::OnPipeOutputLine> = Some(
-        std::sync::Arc::new(move |pipe_name: &str, exec_id: i64, line: &str| {
-            pipe_agent_events.emit_line(pipe_name, exec_id, line);
+        std::sync::Arc::new(move |pipe_name: &str, exec_id: i64, continues_chat: bool, line: &str| {
+            pipe_agent_events.emit_line(pipe_name, exec_id, continues_chat, line);
         }),
     );
 
@@ -1189,12 +1332,19 @@ async fn spawn_screenpipe_inner(
                     on_pipe_output,
                     Some(owned_browser),
                     cloud_token_arc.clone(),
+                    history_access.clone(),
                 )
                 .await
                 {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to start server core: {}", e);
+                        if crate::port_conflict::is_error(&e, recording_config.port) {
+                            crate::port_conflict::show_reclaim_failed(
+                                &app_for_port_conflict,
+                                recording_config.port,
+                            );
+                        }
                         let _ = result_tx.send(Err(e));
                         return;
                     }
@@ -1218,7 +1368,13 @@ async fn spawn_screenpipe_inner(
                 // from starting or waits and then tears down the new session.
                 let mut capture_guard = capture_arc.lock().await;
                 let capture = if capture_intended_now(&wants_recording) {
-                    match CaptureSession::start(&server, &recording_config, true).await {
+                    match CaptureSession::start(
+                        &server,
+                        &recording_config,
+                        close_orphaned_meetings_on_start,
+                    )
+                    .await
+                    {
                         Ok(c) => Some(c),
                         Err(e) => {
                             error!("Failed to start capture session: {}", e);
@@ -1241,7 +1397,7 @@ async fn spawn_screenpipe_inner(
                     *guard = Some(server);
                 }
                 if let Some(capture) = capture {
-                    *capture_guard = Some(capture);
+                    install_capture_session(&mut capture_guard, capture);
                     info!("Server + capture started successfully on dedicated runtime");
                 } else {
                     info!("Server started with capture deliberately stopped");
@@ -1268,6 +1424,14 @@ async fn spawn_screenpipe_inner(
             crate::db_relaunch::reset_db_boot_failures();
             state.is_starting.store(false, Ordering::SeqCst);
             state.is_starting_capture.store(false, Ordering::SeqCst);
+            // A meeting that was in progress when this restart began is still
+            // in progress now. Reopen it and republish it to the streaming
+            // coordinator; without this the full-restart path (unlike the
+            // capture-only path) left the call transcribing on the delayed
+            // background chunker only, with no live notes and no way back.
+            if let Err(e) = restore_interrupted_meeting_for_capture_restart(&state).await {
+                warn!("failed to restore interrupted meeting after restart: {}", e);
+            }
             let spawn_epoch = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -1331,124 +1495,50 @@ async fn start_capture_internal(
     let session = CaptureSession::start(server, &config, false).await?;
     drop(server_guard);
 
-    *capture_guard = Some(session);
+    install_capture_session(&mut capture_guard, session);
     state.is_starting.store(false, Ordering::SeqCst);
 
     info!("Capture started on existing server");
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Port cleanup (unchanged)
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod spawn_lifecycle_lock_tests {
+    /// `spawn_screenpipe` must not await `server_lifecycle`.
+    ///
+    /// That lock is held across a full stop/start, so awaiting it parks the
+    /// command for an entire boot. Onboarding calls it on mount, and its 20s
+    /// guard fired at 20.0-23.0s across Windows, macOS and Linux — most users
+    /// were rescued by the health poll, but one closed the app at the timeout
+    /// and another stayed eleven minutes without ever completing setup.
+    ///
+    /// Guarded at the source because the runtime symptom is indistinguishable
+    /// from a slow machine: the command eventually returns the right answer.
+    #[test]
+    fn spawn_screenpipe_does_not_await_the_lifecycle_lock() {
+        // Assembled so the needles never match their own source lines.
+        let fn_needle = concat!("pub async fn ", "spawn_screenpipe(");
+        let blocking = concat!("server_lifecycle.lock()", ".await");
+        let non_blocking = concat!("server_lifecycle.", "try_lock()");
 
-async fn kill_process_on_port(port: u16) {
-    #[allow(unused_variables)]
-    let my_pid = std::process::id().to_string();
+        let source = include_str!("recording.rs");
+        let start = source
+            .find(fn_needle)
+            .expect("spawn_screenpipe renamed — repoint this guard at it");
+        let body = &source[start..];
+        let end = body.find("\n}\n").expect("unterminated function body");
+        let body = &body[..end];
 
-    #[cfg(unix)]
-    {
-        let child = match tokio::process::Command::new("lsof")
-            .args(["-nP", "-ti", &format!(":{}", port)])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-
-        let child_id = child.id();
-        let output =
-            match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
-                .await
-            {
-                Ok(Ok(o)) => o,
-                _ => {
-                    if let Some(pid) = child_id {
-                        let _ = std::process::Command::new("kill")
-                            .args(["-9", &pid.to_string()])
-                            .output();
-                    }
-                    warn!("lsof timed out checking port {}, killed", port);
-                    return;
-                }
-            };
-
-        if output.status.success() {
-            let pids_str = String::from_utf8_lossy(&output.stdout);
-            let pids: Vec<&str> = pids_str
-                .trim()
-                .split('\n')
-                .filter(|s| !s.is_empty() && *s != my_pid)
-                .collect();
-            if pids.is_empty() {
-                debug!("No orphaned processes on port {} (only our own PID)", port);
-                return;
-            }
-            warn!(
-                "Found {} orphaned process(es) on port {}: {:?}. Killing to free port (our pid: {}).",
-                pids.len(), port, pids, my_pid
-            );
-            for pid in &pids {
-                let _ = tokio::process::Command::new("kill")
-                    .args(["-9", pid])
-                    .output()
-                    .await;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            info!("Killed orphaned process(es) on port {}", port);
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        let my_pid_num: u32 = std::process::id();
-        let mut netstat_cmd = tokio::process::Command::new("cmd");
-        netstat_cmd.args(["/C", &format!("netstat -ano | findstr :{}", port)]);
-        {
-            #[allow(unused_imports)]
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            netstat_cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        match netstat_cmd.output().await {
-            Ok(output) if output.status.success() => {
-                let text = String::from_utf8_lossy(&output.stdout);
-                let mut pids = std::collections::HashSet::new();
-                for line in text.lines() {
-                    if let Some(pid) = line.split_whitespace().last() {
-                        if let Ok(pid_num) = pid.parse::<u32>() {
-                            if pid_num > 0 && pid_num != my_pid_num {
-                                pids.insert(pid_num);
-                            }
-                        }
-                    }
-                }
-                if pids.is_empty() {
-                    debug!("No orphaned processes on port {} (only our own PID)", port);
-                    return;
-                }
-                warn!(
-                    "Found {} orphaned process(es) on port {}: {:?}. Killing to free port (our pid: {}).",
-                    pids.len(), port, pids, my_pid_num
-                );
-                for pid in &pids {
-                    let mut kill_cmd = tokio::process::Command::new("taskkill");
-                    kill_cmd.args(["/F", "/PID", &pid.to_string()]);
-                    {
-                        #[allow(unused_imports)]
-                        use std::os::windows::process::CommandExt;
-                        const CREATE_NO_WINDOW: u32 = 0x08000000;
-                        kill_cmd.creation_flags(CREATE_NO_WINDOW);
-                    }
-                    let _ = kill_cmd.output().await;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                info!("Killed orphaned process(es) on port {}", port);
-            }
-            _ => {}
-        }
+        assert!(
+            !body.contains(blocking),
+            "spawn_screenpipe awaits server_lifecycle again — this parks the \
+             command behind an in-flight startup and strands onboarding"
+        );
+        assert!(
+            body.contains(non_blocking),
+            "expected a non-blocking try_lock so an in-progress startup is \
+             reported rather than queued behind"
+        );
     }
 }
 
@@ -1476,28 +1566,56 @@ mod recording_access_tests {
 
     #[test]
     fn verified_free_consumer_can_record_without_a_paid_entitlement() {
-        assert!(recording_access_policy(false, false, true, false, false));
+        assert!(recording_access_policy(
+            false, false, true, false, false
+        ));
     }
 
     #[test]
     fn consumer_with_unknown_plan_cannot_record() {
-        assert!(!recording_access_policy(false, false, false, false, false));
+        assert!(!recording_access_policy(
+            false, false, false, false, false
+        ));
     }
 
     #[test]
     fn signed_out_consumer_cannot_start_recording() {
-        assert!(!recording_access_policy(false, false, false, false, false));
+        assert!(!recording_access_policy(
+            false, false, false, false, false
+        ));
     }
 
     #[test]
-    fn enterprise_build_still_requires_entitlement() {
+    fn enterprise_build_requires_verified_enterprise_session() {
         assert!(!recording_access_policy(true, false, true, false, false));
-        assert!(recording_access_policy(true, false, true, true, false));
+        assert!(recording_access_policy(true, false, false, true, false));
     }
 
     #[test]
     fn mandatory_enterprise_org_cannot_record_from_consumer_binary() {
-        assert!(!recording_access_policy(false, false, true, true, true));
+        assert!(!recording_access_policy(
+            false, false, true, true, true
+        ));
+    }
+}
+
+#[cfg(test)]
+mod history_access_tests {
+    use super::history_access_restricted;
+
+    #[test]
+    fn consumer_free_and_unattributed_accounts_are_restricted() {
+        assert!(history_access_restricted(false, true));
+    }
+
+    #[test]
+    fn verified_paid_consumer_is_unrestricted() {
+        assert!(!history_access_restricted(false, false));
+    }
+
+    #[test]
+    fn enterprise_build_is_unrestricted_without_consumer_plan_truth() {
+        assert!(!history_access_restricted(true, true));
     }
 }
 

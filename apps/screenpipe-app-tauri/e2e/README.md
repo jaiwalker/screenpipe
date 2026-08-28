@@ -9,14 +9,16 @@ From `apps/screenpipe-app-tauri`:
 **1. Build**
 
 ```bash
-bun tauri build --no-sign --debug --verbose --no-bundle -- --features e2e
+bun run build:tauri:e2e
 ```
 
-- `--no-sign` — skip code signing (dev)
-- `--debug` — debug build, faster than release
-- `--verbose` — show build output
-- `--no-bundle` — binary only, no installer
-- `-- --features e2e` — enable WebDriver plugin
+- The script sets `NEXT_PUBLIC_SCREENPIPE_E2E=true` to compile in the frontend
+  E2E hooks. CI sets this too (see `.github/workflows/e2e-test.yml`); without it
+  the app-entitlement account seed is compiled out, so any spec that needs a
+  signed-in surface (Brain, Chat) silently renders "sign in required" instead
+- It selects the fast `debug-dev` profile, builds only the binary, enables the
+  WebDriver plugin, and enters the same system-wide native build queue as normal
+  development.
 
 **2. Run tests**
 
@@ -35,6 +37,37 @@ to keep vision capture off while leaving the audio settings visible with
 Screenpipe Cloud saved and no logged-in user. It asserts the Recording fallback
 alert and the persisted `/notifications` entry.
 
+**Run the local hosted-AI gateway spec**
+
+```bash
+bun run test:e2e:local-ai-gateway:macos
+```
+
+This opt-in lane bundles the production AI Worker under Miniflare, applies all
+checked-in migrations to an isolated in-memory D1 database, and launches the
+real E2E app with its hosted-AI URL pinned to that loopback Worker. OpenAI is a
+network-closed fake: the harness intercepts the exact chat endpoint and fails
+the run if the Worker attempts any other outbound request. No production
+gateway, customer data, provider credential, or paid model is used.
+
+**Run the first-run AI summary spec**
+
+```bash
+bun run test:e2e:first-run-ai-summary:macos
+```
+
+Same local Worker lane, pointed at the post-setup learning window. It proves the
+real app reaches the model through the real Pi command and the real Worker, that
+the forwarded provider request carries useful work evidence (not just app
+names), and that the model's text — never the deterministic fallback — is what
+lands in the seeded chat. Its matrix covers low-tier parsed-only evidence,
+accessibility fallback when parsed context is unavailable, and transient engine
+failures.
+
+`/activity-summary` is stubbed in the webview because a CI machine has no
+meaningful desktop activity. The real engine's answers and empty reasons are
+covered against a live engine in `first-run-learning-window.spec.ts`.
+
 **Run the macOS HD recording pipeline spec**
 
 ```bash
@@ -49,6 +82,33 @@ is written to disk, and (3) OCR rows keep landing via `/search` *during* the HD
 window — i.e. high-fps capture and normal indexing run concurrently (#3699 /
 #3707). Self-skips under the default `no-recording` seed or when the HD
 controller is unavailable, so it never fails the default CI lane.
+
+**Run the macOS gone-silent recovery reproduction**
+
+```bash
+bun run test:e2e:capture-stall-recovery:macos
+```
+
+This isolated fault lane includes the debug-only `ignore-disk-pressure` seed;
+otherwise a host that crosses the 20 GiB production safety threshold during a
+large debug build can correctly stop capture and mask the SCK failure under test.
+
+It also parks the first SCK frame worker and proves an independent
+CoreGraphics capture can reach a healthy terminal outcome. That seed clears
+window filters only inside the isolated E2E store: the production fallback is
+allowed only when no SCK window exclusions are active, so privacy failures stay
+fail-closed.
+
+This opt-in lane needs Screen Recording permission. It arms the fault only
+after real capture has reached a healthy terminal outcome, then verifies the complete
+stale-health / failure-pill / independent-watchdog / resumed-progress cycle.
+Before fault injection it pauses every selected display through the real local
+API, verifies health reports an intentional disabled state without surfacing
+`recording needs help`, resumes every display, and proves capture progress
+returns. Per-monitor unit coverage separately proves one healthy display cannot
+mask a silent sibling on multi-monitor systems.
+It also proves an id-based ScreenCaptureKit lookup is bounded and a fresh retry
+still enumerates the display. The local API is isolated on port 3041.
 
 **Or combined (build + test):**
 
@@ -68,7 +128,7 @@ The E2E launcher also moves the app-local focus/notification server to
 - **Bun** ≥ 1.3.10 — `winget install oven-sh.bun` or from [bun.sh](https://bun.sh)
 - **Rust** stable (x86_64-pc-windows-msvc) — `rustup target add x86_64-pc-windows-msvc`
 - **MSVC build tools** — Visual Studio 2022 Build Tools with C++ workload
-- **ONNX Runtime** — the pre_build script downloads this automatically during `bun tauri build`
+- **ONNX Runtime** — the pre_build script downloads this automatically during `bun run build:tauri:e2e`
 - No Scream audio driver needed for local runs (only required in CI for audio capture tests)
 
 ### Step-by-step (PowerShell)
@@ -79,7 +139,7 @@ cd apps/screenpipe-app-tauri
 bun install
 
 # 2. Build the debug binary with the WebDriver plugin enabled
-bun tauri build --no-sign --debug --no-bundle -- --features e2e
+bun run build:tauri:e2e
 
 # 3. Run all e2e specs
 bun run test:e2e
@@ -184,9 +244,9 @@ separately via `cargo llvm-cov`; see `../../docs/coverage/README.md`.
 
 **Binary not found**
 ```
-Error: Screenpipe debug binary not found at …\src-tauri\target\debug\screenpipe-app.exe
+Error: Screenpipe debug binary not found at …\src-tauri\target\debug-dev\screenpipe-app.exe
 ```
-Run the build step first. Debug builds land in `src-tauri/target/debug/`.
+Run the build step first. E2E builds land in `src-tauri/target/debug-dev/`.
 
 **Port 4445 already in use**
 The test runner (`wdio.conf.ts` `onPrepare`) calls `netstat -ano | findstr :4445` and kills the owner via `taskkill`. If it persists, manually run:
@@ -233,6 +293,7 @@ Saves to `e2e/videos/`.
 | `windows-system-integration.spec.ts` | Windows-only. Verifies isolated data dir, native DLL/WebView2 runtime, display/DPI topology, localhost-only API binding, process health, Defender visibility, audio service/device health, concurrent local API load, focus churn, rapid Home-window routing, Home close/reopen backend survival, and absence of Windows crash-report events during the suite |
 | `windows-user-journey.spec.ts` | Windows-only. Drives Home search button -> floating Search input -> Timeline -> Home, opens Recording settings to reveal Windows audio troubleshooting controls, starts/stops a manual Meeting note through the visible UI, opens the Shortcuts editor and cancels an open-search hotkey capture, toggles the Display shortcut-reminder overlay, clicks its visible Search, Chat, Timeline, and Hide controls, opens notification history from the bell, manages notification preferences, dismisses a notification from the visible bell UI, previews the Storage retention safety confirmation without applying destructive cleanup, and verifies the Privacy API-auth restart warning without restarting |
 | `hd-recording-pipeline.spec.ts` | macOS opt-in. Starts an HD timer session via `/capture/hd/start`; asserts the controller goes active, a non-empty `hd_*.mp4` chunk is written, and OCR keeps indexing during HD (high-fps + indexing decouple, #3699/#3707) |
+| `capture-stall-recovery.spec.ts` | macOS opt-in. Bounds a wedged SCK frame worker and verifies the privacy-gated CoreGraphics escape hatch, reproduces a status-Running capture loop going silent through the real health and failure-pill surfaces, proves one watchdog restart resumes terminal capture progress in-process, and bounds a wedged id-based SCK lookup while preserving a fresh retry. |
 | `settings-sections.spec.ts` | Navigates General → Recording → AI Presets → AI Settings → Speakers; verifies moved controls, enabled/disabled analysis flows, content, and no crash |
 | `audio-fallback.spec.ts` | macOS opt-in spec for the Screenpipe Cloud → local Whisper fallback alert and `/notify` history |
 | `window-lifecycle.spec.ts` | Exercises `show_window` / `close_window` routing for Home, Search, and completed onboarding |

@@ -1,5 +1,9 @@
 # Semantic App Parser
 
+<!-- doc-covers: crates/screenpipe-semantic -->
+<!-- doc-verified: bc84cd3c8 -->
+> **Current.** Last verified against bc84cd3c8 (2026-08-12).
+
 > **Status**: Experimental end-to-end path, opt-in and off by default
 > **Date**: 2026-07-27
 
@@ -96,19 +100,19 @@ of app definitions.
 
 ### Built-in catalog and reference family parsers
 
-The built-in catalog covers 47 app targets using public app identities, URL
+The built-in catalog covers 49 app targets using public app identities, URL
 patterns, and stable accessibility contracts. Implementations remain
 Screenpipe-owned parser families and exact app overrides.
 
 | Family | Built-in profiles |
 |---|---|
-| Conversation | Antigravity, Antigravity IDE, ChatGPT, ChatGPT legacy, ChatGPT web, Claude, Claude macOS, ClickUp, ClickUp web, Cursor, Discord, Gemini desktop, Gemini web, Messages, Messenger, Microsoft Teams, Slack, WhatsApp, WhatsApp web, Windsurf |
-| Mail | Gmail, Mail, Microsoft Outlook, Spark Desktop, Spark Mail Classic, Superhuman |
+| Conversation | Antigravity, Antigravity IDE, ChatGPT, ChatGPT legacy, ChatGPT web, Claude, Claude macOS, ClickUp, ClickUp web, Codex, Cursor, Discord, Gemini desktop, Gemini web, Messages, Messenger, Microsoft Teams, Slack, WhatsApp, WhatsApp web, Windsurf |
+| Mail | Fastmail, Gmail, HEY, Mail, Microsoft Outlook, Proton Mail, Spark Desktop, Spark Mail Classic, Superhuman, Thunderbird |
 | Editor | Antigravity IDE, Cursor, VS Code, Windsurf, Xcode |
 | Document | Antigravity IDE, Claude macOS, ClickUp, ClickUp web, Microsoft Outlook, Microsoft Word, Microsoft Word web, Notes, Notion, Obsidian, Pages, TextEdit, Xcode |
 | Task | Antigravity, Asana, Asana web, ClickUp, ClickUp web, Microsoft To Do, OmniFocus, Todoist, Toggl |
 | Calendar | Calendar, Fantastical |
-| Terminal | Ghostty, iTerm2, Terminal, Warp |
+| Terminal | Ghostty, iTerm2, Terminal, Warp, Windows Terminal |
 
 Profiles may belong to more than one family because the same app can expose
 different semantic surfaces. The registry still runs at most four matching
@@ -159,6 +163,45 @@ many parser-only structural containers and DOM identifiers that the opt-in
 walker now keeps transiently, so fresh opt-in captures remain necessary for
 those contracts. Exact overrides fail open to shared families or generic
 capture. Raw frames and extracted text remain local and are not test fixtures.
+
+### Windows fresh-capture checkpoint
+
+`cargo run -p screenpipe-a11y --example semantic_capture_probe` walks the
+focused window with the production walker in the opt-in semantic configuration
+and emits replay JSONL, so a live app surface can be replayed without waiting
+for capture triggers or content dedup. Probe output holds captured content and
+stays local; only metrics are recorded here.
+
+Eighteen Windows surfaces were probed on 2026-08-11 (XAML, WinUI/UWP, Office
+NetUI, Electron, Chromium-UIA and GPU-drawn terminals). The failures were
+concentrated in two places rather than spread across apps:
+
+- **Abstention through identity.** UWP store apps report
+  `ApplicationFrameHost.exe`, and the "new Outlook" ships as `olk.exe`, so
+  neither matched any parser identity at all. Resolving the hosted
+  `Windows.UI.Core.CoreWindow` process and adding the newer executable makes
+  Microsoft To Do select `family.task` and Outlook select `family.mail`.
+- **False positives through role width.** Windows UIA roles every static string
+  `Text`, so "the longest text node wins" turned an Electron crash dialog, an
+  Office subscription banner, and a Chromium page root's `file:///…` name into
+  stored documents. Across a 21-day local replay, 13 of 130 handled frames
+  (10%) were this class of output, and the live database held 489 frames
+  attached to `family.document` runs of the same shape. The document family now
+  requires a document surface — a document/editor role, or a `Text` node with an
+  explicit document marker — and reads `Value` rather than the label for `Edit`
+  controls. Titles no longer fall back to the localized control type, which is
+  what produced documents titled `text`.
+
+Microsoft Teams was the one app with real content and no output: its Fluent
+class names are build-hashed, but every message container carries
+`control-message-<epoch-ms>` as its automation ID with the author chip as a
+`Button` whose text prefixes the flattened turn. The conversation family gained
+that gated path, taking an open chat from zero items to a conversation plus its
+attributable turns, with a stable native message ID.
+
+Alacritty, WezTerm, Rio and Zed expose only window chrome over UIA — four nodes,
+no buffer — so they are deliberately absent from the catalog: a profile would
+only let a text sweep publish caption buttons as terminal content.
 
 ### Pipe-output evaluation checkpoint
 

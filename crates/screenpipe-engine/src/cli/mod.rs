@@ -24,19 +24,35 @@ pub(crate) mod store_file;
 pub mod survey;
 pub mod sync;
 pub mod team;
+pub mod team_pipes;
+pub mod team_skills;
 pub mod vault;
 pub mod view;
 pub mod vision;
 
 use clap::parser::ValueSource;
 use clap::{ArgAction, ArgMatches, ValueEnum};
-use clap::{Parser, Subcommand, ValueHint};
+use clap::{Args, Parser, Subcommand, ValueHint};
 use screenpipe_audio::{
     audio_manager::builder::TranscriptionMode,
     core::engine::AudioTranscriptionEngine as CoreAudioTranscriptionEngine,
 };
+use screenpipe_config::{DomainRule, UrlRule};
 use screenpipe_core::Language;
 use std::path::{Path, PathBuf};
+
+fn parse_domain_rule(value: &str) -> Result<DomainRule, String> {
+    let (domain, include_subdomains) = match value.strip_suffix(":subdomains") {
+        Some(domain) => (domain, true),
+        None => (value, false),
+    };
+    let domain = screenpipe_a11y::url_filter::normalize_rule_hostname(domain)?;
+    Ok(DomainRule {
+        domain,
+        include_subdomains,
+        excluded_subdomains: Vec::new(),
+    })
+}
 
 #[derive(Clone, Debug, ValueEnum, PartialEq)]
 pub enum CliAudioTranscriptionEngine {
@@ -203,7 +219,7 @@ pub enum Command {
     /// Start recording screen, audio, and serve the API
     Record(RecordArgs),
 
-    /// Show screenpipe status (running state, data stats)
+    /// Show recorder health, capture freshness, history, and storage
     Status {
         /// Output format
         #[arg(long, default_value_t = false)]
@@ -233,8 +249,8 @@ pub enum Command {
     Search(SearchArgs),
 
     /// Enterprise: query teammates' screen + audio history via
-    /// `screenpipe.com/api/enterprise/v1/*`. Admin-only — needs a
-    /// `team_api_token` minted at https://screenpipe.com/enterprise?tab=tokens.
+    /// `screenpi.pe/api/enterprise/v1/*`. Admin-only — needs a
+    /// `team_api_token` minted at https://screenpi.pe/enterprise?tab=tokens.
     Team {
         #[command(subcommand)]
         subcommand: TeamCommand,
@@ -321,7 +337,7 @@ pub enum Command {
     /// Authenticate with screenpipe cloud
     Login,
 
-    /// Sign out of screenpipe cloud (clears the auth token from store.bin)
+    /// Sign out of screenpipe cloud
     Logout,
 
     /// Show current auth status
@@ -622,9 +638,21 @@ pub struct RecordArgs {
     #[arg(long)]
     pub included_windows: Vec<String>,
 
-    /// URLs to ignore for browser privacy filtering
+    /// Legacy browser URL block patterns. Prefer `--url-block` for explicit
+    /// exact-domain and subdomain behavior.
     #[arg(long)]
     pub ignored_urls: Vec<String>,
+
+    /// Block a browser domain. Repeat for multiple domains. A bare domain
+    /// matches exactly; append `:subdomains` to include all descendants.
+    #[arg(long, value_parser = parse_domain_rule)]
+    pub url_block: Vec<DomainRule>,
+
+    /// Allow only a browser domain. Repeat for multiple domains. A bare domain
+    /// matches exactly; append `:subdomains` to include all descendants. To
+    /// exclude one branch, combine it with a more specific `--url-block`.
+    #[arg(long, value_parser = parse_domain_rule)]
+    pub url_allow: Vec<DomainRule>,
 
     /// Automatically detect and skip incognito / private browsing windows.
     /// Pass `--ignore-incognito-windows=false` to record them.
@@ -710,9 +738,9 @@ pub struct RecordArgs {
     /// Override `UiRecorderConfig::capture_scroll` — record scroll wheel
     /// events into `ui_events`. Off by default because wheel ticks fire
     /// at ~60Hz and inflate the table fast. When on, the recorder's
-    /// `ScrollBurstTracker` coalesces a wheel flick into one
-    /// `ScrollStop` trigger at burst-end so only the last row in a burst
-    /// gets `frame_id` linked.
+    /// `ScrollBurstTracker` retains every correlation ID while coalescing a
+    /// wheel flick into one `ScrollStop` trigger at burst-end, then links every
+    /// persisted scroll row in the settled burst to the resulting `frame_id`.
     #[arg(long)]
     pub capture_scroll: Option<bool>,
 
@@ -887,6 +915,8 @@ pub struct RecordArgSources {
     pub ignored_windows: bool,
     pub included_windows: bool,
     pub ignored_urls: bool,
+    pub url_block: bool,
+    pub url_allow: bool,
     pub ignore_incognito_windows: bool,
     pub enhanced_incognito_detection: bool,
     pub ignored_meeting_apps: bool,
@@ -951,6 +981,8 @@ impl RecordArgSources {
             ignored_windows: from_command_line(record, "ignored_windows"),
             included_windows: from_command_line(record, "included_windows"),
             ignored_urls: from_command_line(record, "ignored_urls"),
+            url_block: from_command_line(record, "url_block"),
+            url_allow: from_command_line(record, "url_allow"),
             ignore_incognito_windows: from_command_line(record, "ignore_incognito_windows"),
             enhanced_incognito_detection: from_command_line(record, "enhanced_incognito_detection"),
             ignored_meeting_apps: from_command_line(record, "ignored_meeting_apps"),
@@ -1004,6 +1036,8 @@ impl RecordArgSources {
             || self.ignored_windows
             || self.included_windows
             || self.ignored_urls
+            || self.url_block
+            || self.url_allow
             || self.ignore_incognito_windows
             || self.enhanced_incognito_detection
             || self.ignored_meeting_apps
@@ -1077,6 +1111,15 @@ fn parse_schedule_rule(s: &str) -> Result<screenpipe_config::ScheduleRule, Strin
 }
 
 impl RecordArgs {
+    fn combined_ignored_urls(&self) -> Vec<UrlRule> {
+        self.ignored_urls
+            .iter()
+            .cloned()
+            .map(UrlRule::Legacy)
+            .chain(self.url_block.iter().cloned().map(UrlRule::Structured))
+            .collect()
+    }
+
     pub fn unique_languages(&self) -> Result<Vec<Language>, String> {
         let mut unique_langs = std::collections::HashSet::new();
         for lang in &self.language {
@@ -1184,7 +1227,8 @@ impl RecordArgs {
             use_all_monitors: self.use_all_monitors && self.monitor_id.is_empty(),
             ignored_windows: self.ignored_windows.clone(),
             included_windows: self.included_windows.clone(),
-            ignored_urls: self.ignored_urls.clone(),
+            ignored_urls: self.combined_ignored_urls(),
+            included_urls: self.url_allow.clone(),
             ignored_meeting_apps: self.ignored_meeting_apps.clone(),
             languages: self
                 .language
@@ -1504,8 +1548,11 @@ impl RecordArgs {
         if sources.included_windows {
             settings.included_windows = self.included_windows.clone();
         }
-        if sources.ignored_urls {
-            settings.ignored_urls = self.ignored_urls.clone();
+        if sources.ignored_urls || sources.url_block {
+            settings.ignored_urls = self.combined_ignored_urls();
+        }
+        if sources.url_allow {
+            settings.included_urls = self.url_allow.clone();
         }
         if sources.ignore_incognito_windows {
             settings.ignore_incognito_windows = self.ignore_incognito_windows;
@@ -1940,13 +1987,14 @@ pub enum VaultCommand {
 pub enum DbCommand {
     /// Run PRAGMA quick_check on the live db.sqlite
     Check,
-    /// Recover a corrupt db.sqlite via SQLite's `.recover` page-level scan.
-    /// Snapshots the corrupt file aside, repairs into a sidecar, integrity-checks,
-    /// and atomically swaps in the recovered db. Refuses to run while screenpipe
-    /// is open (the desktop app would race the swap).
+    /// Recover a quarantined db.sqlite onto a verified fresh physical file.
+    /// Preserves the exact DB/WAL/SHM generation, repairs only a working copy,
+    /// verifies integrity, foreign keys, and a durable write canary, then swaps.
+    /// Refuses to run while screenpipe is open.
     Recover {
-        /// Run even if the screenpipe HTTP server is reachable. Dangerous —
-        /// quitting the app cleanly is preferred.
+        /// Deprecated compatibility flag. Recovery still refuses to race a
+        /// reachable screenpipe server because that cannot preserve one exact
+        /// DB/WAL/SHM generation.
         #[arg(long)]
         force: bool,
     },
@@ -2090,8 +2138,8 @@ pub struct SearchArgs {
 // Team (enterprise) subcommands
 // =============================================================================
 
-/// Mirrors the `screenpipe-team` skill 1:1 — same endpoints, same vocabulary.
-/// All three variants hit `https://screenpipe.com/api/enterprise/v1/*` directly
+/// Mirrors the `screenpipe-team` skill — same endpoints, same vocabulary.
+/// All variants hit `https://screenpi.pe/api/enterprise/v1/*` directly
 /// with the admin's `team_api_token` from `~/.screenpipe/enterprise.json`
 /// (or `SCREENPIPE_TEAM_API_TOKEN` env override). No daemon needed.
 #[derive(Subcommand, Debug)]
@@ -2103,6 +2151,176 @@ pub enum TeamCommand {
     /// Chronological dump for one device — use after `devices` + `search`
     /// have narrowed down a person and a moment
     Records(TeamRecordsArgs),
+    /// Download one PII-redacted team frame after `search` or `records`
+    /// returns its device and frame ids
+    Frame(TeamFrameArgs),
+    /// Manage the organization's hosted Pipes
+    Pipes {
+        #[command(subcommand)]
+        subcommand: TeamPipeCommand,
+    },
+    /// Discover approved skills or propose a local Agent Skills folder
+    Skills {
+        #[command(subcommand)]
+        subcommand: TeamSkillCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TeamSkillCommand {
+    /// List compact approved-skill metadata (no package bodies)
+    List(TeamSkillListArgs),
+    /// Fetch one approved skill, including its exact package manifest
+    Show(TeamSkillShowArgs),
+    /// Propose a local Agent Skills folder for private admin review
+    Propose(TeamSkillProposeArgs),
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamSkillListArgs {
+    /// Emit the complete API response as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamSkillShowArgs {
+    /// Approved skill id from `screenpipe team skills list`
+    pub id: String,
+
+    /// Emit the complete API response as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamSkillProposeArgs {
+    /// Skill directory, or its root SKILL.md
+    #[arg(value_hint = ValueHint::DirPath)]
+    pub source: PathBuf,
+
+    /// Optional review title; defaults to the skill name
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Submit after preview without an interactive confirmation
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Emit the complete API receipt as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum TeamPipeCommand {
+    /// List managed Pipes and their deployed versions
+    List(TeamPipeListArgs),
+    /// Preview a pipe.md deployment without changing the organization
+    Preview(TeamPipePreviewArgs),
+    /// Preview, confirm, and deploy a pipe.md to the organization
+    Deploy(TeamPipeDeployArgs),
+    /// Preview, confirm, and change an existing managed Pipe's schedule
+    Schedule(TeamPipeScheduleArgs),
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamPipeListArgs {
+    /// Emit the complete API response as JSON instead of a compact table
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct TeamPipeSpecArgs {
+    /// Path to pipe.md, or a directory containing pipe.md
+    #[arg(value_hint = ValueHint::FilePath)]
+    pub source: PathBuf,
+
+    /// Managed Pipe slug. Defaults to the pipe.md parent directory name
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// Human-readable name. Defaults to frontmatter title or the slug
+    #[arg(long)]
+    pub display_name: Option<String>,
+
+    /// Override the pipe.md schedule, e.g. "every 30m" or "0 9 * * *"
+    #[arg(long)]
+    pub schedule: Option<String>,
+
+    /// Execution timeout in seconds (5-3600)
+    #[arg(long)]
+    pub timeout: Option<u64>,
+
+    /// Organization AI preset id. Defaults to the organization's configured preset
+    #[arg(long)]
+    pub ai_preset: Option<String>,
+
+    /// Deploy disabled instead of using the pipe.md enabled state
+    #[arg(long)]
+    pub disabled: bool,
+
+    /// Target every enrolled device and Cloud Runner
+    #[arg(long)]
+    pub all_runtimes: bool,
+
+    /// Target one enrolled device id. Repeat for multiple devices
+    #[arg(long)]
+    pub device: Vec<String>,
+
+    /// Target one member email. Repeat for multiple members
+    #[arg(long)]
+    pub member: Vec<String>,
+
+    /// Include Cloud Runner with selected device targets
+    #[arg(long)]
+    pub cloud: bool,
+
+    /// Require this currently deployed version (0 means the Pipe must not exist)
+    #[arg(long)]
+    pub expected_version: Option<u64>,
+
+    /// Emit API receipts as JSON
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamPipePreviewArgs {
+    #[command(flatten)]
+    pub spec: TeamPipeSpecArgs,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamPipeDeployArgs {
+    #[command(flatten)]
+    pub spec: TeamPipeSpecArgs,
+
+    /// Deploy after preview without an interactive confirmation prompt
+    #[arg(long)]
+    pub yes: bool,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamPipeScheduleArgs {
+    /// Existing managed Pipe slug
+    pub name: String,
+
+    /// New schedule, e.g. "every 30m" or "0 9 * * *"
+    pub schedule: String,
+
+    /// Require this currently deployed version
+    #[arg(long)]
+    pub expected_version: Option<u64>,
+
+    /// Apply after preview without an interactive confirmation prompt
+    #[arg(long)]
+    pub yes: bool,
+
+    /// Emit API receipts as JSON
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -2154,7 +2372,8 @@ pub struct TeamRecordsArgs {
     #[arg(long)]
     pub device_id: String,
 
-    /// Record kind: `frame` (screen) / `audio` / `all`. Default `all`.
+    /// Record kind: `frame` (screen) / `parsed` (structured app data) /
+    /// `audio` / `all`. Default `all`.
     #[arg(long, default_value = "all")]
     pub kind: String,
 
@@ -2177,6 +2396,21 @@ pub struct TeamRecordsArgs {
     /// Emit compact JSON-lines (one record per line). Default is pretty JSON.
     #[arg(long)]
     pub raw: bool,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct TeamFrameArgs {
+    /// Device id returned by `screenpipe team search` or `records`.
+    #[arg(long)]
+    pub device_id: String,
+
+    /// Frame id returned by `screenpipe team search` or `records`.
+    #[arg(long)]
+    pub frame_id: u64,
+
+    /// New JPEG file to create. Existing files are never overwritten.
+    #[arg(long, value_hint = ValueHint::FilePath)]
+    pub output: PathBuf,
 }
 
 // =============================================================================
@@ -3108,6 +3342,77 @@ mod tests {
         ]);
         assert!(args.use_pii_removal);
         assert!(args.api_auth);
+    }
+
+    #[test]
+    fn url_rule_flags_make_exact_and_subdomain_behavior_explicit() {
+        let args = record_args([
+            "screenpipe",
+            "record",
+            "--ignored-urls",
+            "legacy.example",
+            "--url-block",
+            "admin.worktrace.ai:subdomains",
+            "--url-allow",
+            "https://WorkTrace.AI/path",
+        ]);
+        let settings = args.to_recording_settings();
+
+        assert_eq!(
+            settings.ignored_urls,
+            vec![
+                UrlRule::Legacy("legacy.example".to_string()),
+                UrlRule::Structured(DomainRule {
+                    domain: "admin.worktrace.ai".to_string(),
+                    include_subdomains: true,
+                    excluded_subdomains: vec![],
+                }),
+            ]
+        );
+        assert_eq!(
+            settings.included_urls,
+            vec![DomainRule {
+                domain: "worktrace.ai".to_string(),
+                include_subdomains: false,
+                excluded_subdomains: vec![],
+            }]
+        );
+    }
+
+    #[test]
+    fn url_rule_flags_reject_bare_labels() {
+        let result = Cli::try_parse_from([
+            "screenpipe",
+            "record",
+            "--url-allow",
+            "worktrace:subdomains",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn explicit_url_rule_flags_replace_persisted_policy() {
+        let cli_args = [
+            "screenpipe",
+            "record",
+            "--url-block",
+            "private.example.com",
+            "--url-allow",
+            "example.com:subdomains",
+        ];
+        let args = record_args(cli_args);
+        let sources = record_sources(cli_args);
+        let mut settings = screenpipe_config::RecordingSettings {
+            ignored_urls: vec![UrlRule::Legacy("old.example".to_string())],
+            included_urls: vec![],
+            ..Default::default()
+        };
+
+        args.apply_explicit_overrides(&mut settings, &sources);
+
+        assert_eq!(settings.ignored_urls.len(), 1);
+        assert!(matches!(settings.ignored_urls[0], UrlRule::Structured(_)));
+        assert!(settings.included_urls[0].include_subdomains);
     }
 
     #[test]

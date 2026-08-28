@@ -15,9 +15,15 @@
 //!
 //! So on macOS we split `download_and_install`: the background checker only
 //! downloads (signature-verified by the plugin) and stages the bytes on
-//! disk; `install()` runs at the last moment before the process goes away
+//! disk; the install runs at the last moment before the process goes away
 //! (relaunch or quit), when orphaning the bundle no longer matters.
 //! Windows and Linux keep `download_and_install` unchanged.
+//!
+//! Do not replace the bundle with a custom rename. The 2026-08-11 fast swap
+//! parked the authorized app at `staged-update/replaced/previous.app`; macOS
+//! TCC then kept resolving Screenpipe through that moved path and rejected
+//! the replacement process. Use the updater's verified installer path even
+//! though extraction at exit is slower: recording must survive the update.
 
 use log::{info, warn};
 use std::io::Write;
@@ -33,7 +39,7 @@ struct Staged {
 
 /// In-memory handle to the staged update. The `Update` object carries the
 /// install machinery and the release signature; the bytes live on disk.
-/// Deliberately process-local: after a crash the leftover file is garbage
+/// Deliberately process-local: after a crash the leftover files are garbage
 /// (cleared on next boot) and can never be installed.
 static STAGED: Mutex<Option<Staged>> = Mutex::new(None);
 
@@ -44,28 +50,63 @@ fn stage_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<PathBuf> {
         .map(|d| d.join("staged-update"))
 }
 
-/// Remove leftovers from a previous process. Called once at boot.
+/// Remove leftovers from a previous process. Called once at boot. Deletion
+/// runs off-thread so old fast-swap leftovers do not delay startup.
 pub fn clear_stage_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    if let Some(dir) = stage_dir(app) {
-        if dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&dir) {
-                warn!("staged update: failed to clear {}: {}", dir.display(), e);
+    let Some(dir) = stage_dir(app) else { return };
+
+    let mut doomed_dirs: Vec<PathBuf> = Vec::new();
+
+    // Leftover `staged-update.old-*` dirs from a prior boot that crashed or
+    // quit mid-deletion.
+    if let (Some(parent), Some(name)) = (dir.parent(), dir.file_name().and_then(|n| n.to_str())) {
+        let stale_prefix = format!("{name}.old-");
+        if let Ok(entries) = std::fs::read_dir(parent) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with(&stale_prefix))
+                {
+                    doomed_dirs.push(entry.path());
+                }
             }
         }
     }
+
+    if dir.exists() {
+        // Rename first so a re-stage started right after boot can never race
+        // the deletion of its own freshly written files.
+        let renamed = dir.with_file_name(format!("staged-update.old-{}", std::process::id()));
+        match std::fs::rename(&dir, &renamed) {
+            Ok(()) => doomed_dirs.push(renamed),
+            // Rename failed (unusual) — delete in place, still off-thread.
+            Err(_) => doomed_dirs.push(dir),
+        }
+    }
+
+    if doomed_dirs.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for target in doomed_dirs {
+            if let Err(e) = std::fs::remove_dir_all(&target) {
+                warn!("staged update: failed to clear {}: {}", target.display(), e);
+            }
+        }
+    });
 }
 
 /// Write downloaded (already plugin-verified) update bytes to disk and keep
 /// the `Update` handle for install-at-exit. Replaces any previously staged
-/// version — with the current release cadence a newer update can arrive
-/// before the user ever restarts.
+/// version — with the current release cadence a newer update can arrive before
+/// the user ever restarts.
 pub fn stage<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     update: Update,
     bytes: &[u8],
 ) -> std::io::Result<()> {
-    let dir = stage_dir(app)
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "no app data dir"))?;
+    let dir = stage_dir(app).ok_or_else(|| std::io::Error::other("no app data dir"))?;
     std::fs::create_dir_all(&dir)?;
     #[cfg(unix)]
     {
@@ -103,6 +144,19 @@ pub fn stage<R: tauri::Runtime>(
     Ok(())
 }
 
+/// Content-free snapshot of the staged state for diagnostics and the e2e
+/// driver. The Boolean remains for wire compatibility and is always false now
+/// that the TCC-breaking pre-extracted swap has been removed.
+pub fn staged_snapshot() -> Option<(String, bool)> {
+    let staged = STAGED.lock().unwrap();
+    staged.as_ref().map(|s| (s.update.version.clone(), false))
+}
+
+/// Version of the currently staged update, if any.
+pub fn staged_version() -> Option<String> {
+    staged_snapshot().map(|(v, _)| v)
+}
+
 /// Install the staged update if one exists. Idempotent — the first caller
 /// takes the handle, later callers no-op — because restart paths can reach
 /// both `force_app_relaunch` and `RunEvent::Exit`. Runs synchronously on
@@ -115,6 +169,7 @@ pub fn install_staged_if_any<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bo
     };
 
     let started = std::time::Instant::now();
+
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) => {
@@ -202,8 +257,12 @@ mod tests {
     use super::*;
     use base64::Engine;
     use std::io::Read;
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tauri_plugin_updater::UpdaterExt;
+
+    /// STAGED is process-global; tests that stage/install must not interleave.
+    static STAGED_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn b64(s: &str) -> String {
         base64::engine::general_purpose::STANDARD.encode(s)
@@ -243,26 +302,22 @@ mod tests {
             .expect("mock app")
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn staged_update_full_cycle_defers_install_until_requested() {
-        init_test_logger();
-        let tmp = tempfile::tempdir().unwrap();
-
-        // Fake currently-installed bundle the updater will eventually replace
-        let current = tmp.path().join("FakeApp.app");
-        std::fs::create_dir_all(current.join("Contents/MacOS")).unwrap();
-        std::fs::write(current.join("Contents/MacOS/app"), b"old-binary").unwrap();
-        std::fs::write(current.join("marker.txt"), b"OLD").unwrap();
-        let fake_exe = current.join("Contents/MacOS/app");
-
-        // Fake "v99.0.0" bundle, tarred with the .app as the root entry
-        // (the installer strips the first path component)
-        let newdir = tmp.path().join("new");
+    /// Build a fake .app dir, tar.gz it (root entry = the .app), sign it, and
+    /// return (archive bytes, sig b64, pubkey b64).
+    fn build_signed_fake_bundle(
+        tmp: &Path,
+        marker: &[u8],
+    ) -> (Vec<u8>, String, String, minisign::KeyPair) {
+        let newdir = tmp.join("new");
         let newapp = newdir.join("FakeApp.app");
         std::fs::create_dir_all(newapp.join("Contents/MacOS")).unwrap();
         std::fs::write(newapp.join("Contents/MacOS/app"), b"new-binary").unwrap();
-        std::fs::write(newapp.join("marker.txt"), b"NEW").unwrap();
-        let archive_path = tmp.path().join("update.tar.gz");
+        std::fs::write(newapp.join("marker.txt"), marker).unwrap();
+        // A symlink, because real bundles contain them (Frameworks/Versions)
+        // and the updater installer must preserve them.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("marker.txt", newapp.join("marker-link")).unwrap();
+        let archive_path = tmp.join("update.tar.gz");
         let status = std::process::Command::new("tar")
             // bsdtar writes AppleDouble ._* entries for xattrs; the updater's
             // extractor rejects them (real artifacts come from the Rust tar
@@ -278,7 +333,6 @@ mod tests {
         assert!(status.success());
         let archive = std::fs::read(&archive_path).unwrap();
 
-        // Throwaway minisign key; sign the archive the way `tauri signer` does
         let keypair = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
         let sig_box = minisign::sign(
             Some(&keypair.pk),
@@ -290,71 +344,68 @@ mod tests {
         .unwrap();
         let pubkey_b64 = b64(&keypair.pk.to_box().unwrap().to_string());
         let sig_b64 = b64(&sig_box.to_string());
+        (archive, sig_b64, pubkey_b64, keypair)
+    }
 
-        let (port, stop) = {
-            // Manifest built after we know the port? Chicken-and-egg: bind first
-            // with a placeholder, so build manifest lazily via two-step: bind,
-            // then serve. serve() takes the final bodies, so bind inside serve;
-            // use a self-referential URL through a fixed relative path instead.
-            let manifest = serde_json::json!({
-                "version": "99.0.0",
-                "pub_date": "2026-07-22T22:00:00Z",
-                "platforms": {
-                    "darwin-aarch64": { "signature": sig_b64, "url": "http://127.0.0.1:0/update.tar.gz" },
-                    "darwin-x86_64": { "signature": sig_b64, "url": "http://127.0.0.1:0/update.tar.gz" }
+    fn serve_update(archive: Vec<u8>, sig_b64: &str) -> (u16, std::sync::Arc<AtomicBool>) {
+        let manifest = serde_json::json!({
+            "version": "99.0.0",
+            "pub_date": "2026-07-22T22:00:00Z",
+            "platforms": {
+                "darwin-aarch64": { "signature": sig_b64, "url": "http://127.0.0.1:0/update.tar.gz" },
+                "darwin-x86_64": { "signature": sig_b64, "url": "http://127.0.0.1:0/update.tar.gz" }
+            }
+        });
+        let listener_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let real_port = listener_probe.local_addr().unwrap().port();
+        drop(listener_probe);
+        let manifest = manifest
+            .to_string()
+            .replace("127.0.0.1:0", &format!("127.0.0.1:{}", real_port));
+        // small race on port reuse is acceptable in a test; bind the same port
+        let listener = std::net::TcpListener::bind(("127.0.0.1", real_port)).unwrap();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let manifest_bytes = manifest.into_bytes();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if stop2.load(Ordering::SeqCst) {
+                    break;
                 }
-            });
-            // serve() rewrites nothing; patch the real port below by re-serializing
-            let listener_probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-            let real_port = listener_probe.local_addr().unwrap().port();
-            drop(listener_probe);
-            let manifest = manifest
-                .to_string()
-                .replace("127.0.0.1:0", &format!("127.0.0.1:{}", real_port));
-            // small race on port reuse is acceptable in a test; bind the same port
-            let listener = std::net::TcpListener::bind(("127.0.0.1", real_port)).unwrap();
-            let stop = std::sync::Arc::new(AtomicBool::new(false));
-            let stop2 = stop.clone();
-            let manifest_bytes = manifest.into_bytes();
-            let archive2 = archive.clone();
-            std::thread::spawn(move || {
-                for stream in listener.incoming() {
-                    if stop2.load(Ordering::SeqCst) {
-                        break;
-                    }
-                    let Ok(mut stream) = stream else { continue };
-                    let mut buf = [0u8; 4096];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let body: &[u8] = if req.starts_with("GET /latest.json") {
-                        &manifest_bytes
-                    } else {
-                        &archive2
-                    };
-                    let header = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    let _ = Write::write_all(&mut stream, header.as_bytes());
-                    let _ = Write::write_all(&mut stream, body);
-                }
-            });
-            (real_port, stop)
-        };
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let body: &[u8] = if req.starts_with("GET /latest.json") {
+                    &manifest_bytes
+                } else {
+                    &archive
+                };
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = Write::write_all(&mut stream, header.as_bytes());
+                let _ = Write::write_all(&mut stream, body);
+            }
+        });
+        (real_port, stop)
+    }
 
-        let app = mock_app_with_updater(&pubkey_b64);
-        let handle = app.handle().clone();
-        clear_stage_dir(&handle); // hermetic: drop leftovers from prior runs
-
-        // Real plugin: check + download (plugin verifies the minisign signature)
+    async fn check_and_download<R: tauri::Runtime>(
+        handle: &tauri::AppHandle<R>,
+        fake_exe: &Path,
+        pubkey_b64: &str,
+        port: u16,
+    ) -> (Update, Vec<u8>) {
         let update = handle
             .updater_builder()
-            .executable_path(&fake_exe)
+            .executable_path(fake_exe)
             .endpoints(vec![format!("http://127.0.0.1:{}/latest.json", port)
                 .parse()
                 .unwrap()])
             .unwrap()
-            .pubkey(&pubkey_b64)
+            .pubkey(pubkey_b64)
             .build()
             .unwrap()
             .check()
@@ -363,26 +414,69 @@ mod tests {
             .expect("update should be available");
         assert_eq!(update.version, "99.0.0");
         let bytes = update.download(|_, _| {}, || {}).await.expect("download");
+        (update, bytes)
+    }
 
-        // Stage: bytes hit disk, bundle is NOT touched
+    fn make_current_bundle(tmp: &Path) -> PathBuf {
+        let current = tmp.join("FakeApp.app");
+        std::fs::create_dir_all(current.join("Contents/MacOS")).unwrap();
+        std::fs::write(current.join("Contents/MacOS/app"), b"old-binary").unwrap();
+        std::fs::write(current.join("marker.txt"), b"OLD").unwrap();
+        current
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn staged_update_full_cycle_uses_verified_installer() {
+        let _guard = STAGED_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        init_test_logger();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let current = make_current_bundle(tmp.path());
+        let fake_exe = current.join("Contents/MacOS/app");
+        let (archive, sig_b64, pubkey_b64, _kp) = build_signed_fake_bundle(tmp.path(), b"NEW");
+        let (port, stop) = serve_update(archive, &sig_b64);
+
+        let app = mock_app_with_updater(&pubkey_b64);
+        let handle = app.handle().clone();
+        clear_stage_dir(&handle); // hermetic: drop leftovers from prior runs
+
+        let (update, bytes) = check_and_download(&handle, &fake_exe, &pubkey_b64, port).await;
+
+        // Staging stores the verified archive but leaves the current bundle
+        // untouched until the exit path installs it.
         stage(&handle, update.clone(), &bytes).expect("stage");
         let staged_file = stage_dir(&handle).unwrap().join("update-99.0.0.bin");
         assert!(staged_file.exists(), "staged file should exist");
+        let (version, pre_extracted) = staged_snapshot().expect("staged snapshot");
+        assert_eq!(version, "99.0.0");
+        assert!(!pre_extracted, "custom pre-extraction must stay disabled");
         assert_eq!(
             std::fs::read(current.join("marker.txt")).unwrap(),
             b"OLD",
             "bundle must be untouched while staged (the -3801 regression)"
         );
 
-        // Install at "exit": bundle swapped, staged file gone, idempotent
-        verify_signature(&handle, &bytes, &update.signature).expect("re-verify should pass");
+        // Install at "exit" through tauri-plugin-updater's verified path.
         assert!(install_staged_if_any(&handle), "install should succeed");
         assert_eq!(
             std::fs::read(current.join("marker.txt")).unwrap(),
             b"NEW",
             "bundle should be the new version after deferred install"
         );
-        assert!(!staged_file.exists(), "staged file should be cleaned up");
+        #[cfg(unix)]
+        assert!(
+            current
+                .join("marker-link")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "installed bundle must keep its symlinks"
+        );
+        assert!(
+            !stage_dir(&handle).unwrap().join("replaced/previous.app").exists(),
+            "the TCC-breaking previous.app path must never be created"
+        );
         assert!(
             !install_staged_if_any(&handle),
             "second install call must no-op"
@@ -422,4 +516,5 @@ mod tests {
             "tampered staged bytes must fail re-verification"
         );
     }
+
 }

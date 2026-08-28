@@ -16,10 +16,10 @@ use screenpipe_connect::oauth::{
     PENDING_OAUTH,
 };
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Serialize, Deserialize, specta::Type, Clone)]
 pub struct OAuthStatus {
@@ -45,16 +45,61 @@ pub struct OAuthInstanceInfo {
 
 async fn open_secret_store() -> Option<screenpipe_secrets::SecretStore> {
     let data_dir = screenpipe_core::paths::default_screenpipe_data_dir();
-    let db_path = data_dir.join("db.sqlite");
-    let secret_key = match crate::secrets::get_key_if_encryption_enabled() {
-        crate::secrets::KeyResult::Found(k) => Some(k),
-        _ => None,
-    };
-    // Shared, engine-matched pool — never an ad-hoc per-call connection, which
-    // churns the WAL-index and corrupts db.sqlite (#4263).
-    screenpipe_secrets::SecretStore::open(&db_path.to_string_lossy(), secret_key)
+    screenpipe_secrets::SecretStore::open_for_data_dir_with_vault_key(&data_dir)
         .await
         .ok()
+}
+
+/// Activate screenpipe after an external OAuth flow completes.
+///
+/// macOS can activate the application as a whole and let AppKit restore the
+/// user's last active Screenpipe window. Windows and Linux require a concrete
+/// top-level window, so they focus the window that initiated OAuth. We do not
+/// show, unminimize, navigate, or otherwise alter the window's saved state.
+/// Activation is best-effort because OAuth is already complete at this point.
+pub(crate) fn activate_app_after_oauth_impl(app_handle: &AppHandle, window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = window;
+        // App activation can emit a Space-change notification. Suppress the
+        // overlay monitor briefly so it does not immediately hide the window
+        // that OAuth is returning to.
+        crate::space_monitor::suppress_space_monitor(750);
+        if let Err(e) = app_handle.run_on_main_thread(|| {
+            crate::window::with_autorelease_pool(|| {
+                use objc::{msg_send, sel, sel_impl};
+                use tauri_nspanel::cocoa::base::id;
+
+                unsafe {
+                    let ns_app: id = msg_send![objc::class!(NSApplication), sharedApplication];
+                    let _: () = msg_send![ns_app, activateIgnoringOtherApps: true];
+                }
+            });
+        }) {
+            warn!("OAuth connected but could not activate screenpipe: {e}");
+        } else {
+            info!("OAuth connected; activated screenpipe");
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app_handle;
+        let label = window.label().to_string();
+        if let Err(e) = window.set_focus() {
+            warn!("OAuth connected but could not focus window '{label}': {e}");
+        } else {
+            info!("OAuth connected; focused initiating window '{label}'");
+        }
+    }
+}
+
+/// Frontend hook for browser OAuth flows that complete by polling (MCP and
+/// Composio). Generic integration OAuth calls the same mechanism directly.
+#[tauri::command]
+#[specta::specta]
+pub fn activate_app_after_oauth(app_handle: AppHandle, window: WebviewWindow) {
+    activate_app_after_oauth_impl(&app_handle, &window);
 }
 
 // ---------------------------------------------------------------------------
@@ -68,6 +113,7 @@ async fn open_secret_store() -> Option<screenpipe_secrets::SecretStore> {
 #[specta::specta]
 pub async fn oauth_connect(
     app_handle: AppHandle,
+    window: WebviewWindow,
     integration_id: String,
     instance: Option<String>,
     variant: Option<String>,
@@ -505,9 +551,10 @@ pub async fn oauth_connect(
     // provider coexist — connecting a second Google account must not clobber
     // the first.
     // We only fall back to the default slot (None) when the provider hands us
-    // no identity to key on (e.g. Notion/QuickBooks/Jira, which key on
-    // workspace metadata instead and stay single-account here).
-    let effective_instance = derive_effective_instance(instance, &token_data);
+    // no stable identity to key on. Most multi-account providers use email;
+    // Slack uses its stable team id so separate workspaces cannot overwrite
+    // each other.
+    let effective_instance = derive_effective_instance(&integration_id, instance, &token_data);
     let store_instance = effective_instance.as_deref();
 
     oauth::write_oauth_token_instance(store.as_ref(), &integration_id, store_instance, &token_data)
@@ -555,6 +602,8 @@ pub async fn oauth_connect(
     if integration_id == "google-calendar" {
         crate::google_calendar::poke();
     }
+
+    activate_app_after_oauth_impl(&app_handle, &window);
 
     Ok(OAuthStatus {
         connected: true,
@@ -701,10 +750,12 @@ fn extract_email_from_jwt(jwt: &str) -> Option<String> {
 }
 
 fn derive_effective_instance(
+    integration_id: &str,
     explicit_instance: Option<String>,
     token_data: &serde_json::Value,
 ) -> Option<String> {
-    explicit_instance.or_else(|| token_data["email"].as_str().map(String::from))
+    explicit_instance
+        .or_else(|| oauth::oauth_instance_identity(integration_id, token_data).map(String::from))
 }
 
 #[cfg(test)]
@@ -721,8 +772,23 @@ mod tests {
         });
 
         assert_eq!(
-            derive_effective_instance(None, &token_data).as_deref(),
+            derive_effective_instance("zoom", None, &token_data).as_deref(),
             Some("zoom-user@example.com")
+        );
+    }
+
+    #[test]
+    fn effective_instance_uses_slack_workspace_identity() {
+        let token_data = json!({
+            "authed_user": { "access_token": "xoxp-test" },
+            "team": { "id": "T012345", "name": "Acme" },
+            "team_id": "T012345",
+            "workspace_name": "Acme",
+        });
+
+        assert_eq!(
+            derive_effective_instance("slack", None, &token_data).as_deref(),
+            Some("T012345")
         );
     }
 
@@ -733,7 +799,7 @@ mod tests {
             "workspace_name": "Acme Workspace",
         });
 
-        assert_eq!(derive_effective_instance(None, &token_data), None);
+        assert_eq!(derive_effective_instance("notion", None, &token_data), None);
     }
 
     /// Canceled flow (#5092): oauth_cancel drops the pending sender, which

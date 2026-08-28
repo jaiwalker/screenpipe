@@ -338,18 +338,18 @@ export function classifyCurl(cmd: string): CurlPresentation | null {
   }
 
   if (path === "/pipes") {
-    if (method === "POST") return { label: "Installed pipe" };
-    return { label: "Listed pipes" };
+    if (method === "POST") return { label: "Installed scheduled task" };
+    return { label: "Listed scheduled tasks" };
   }
   const pipeMatch = path.match(/^\/pipes\/([^/]+)(?:\/(.+))?$/);
   if (pipeMatch) {
     const name = pipeMatch[1];
     const sub = pipeMatch[2];
     if (sub === "executions") return { label: `${name}: recent runs` };
-    if (sub === "run" || method === "POST") return { label: `Ran pipe ${name}` };
-    if (method === "PATCH" || method === "PUT") return { label: `Configured pipe ${name}` };
-    if (method === "DELETE") return { label: `Removed pipe ${name}` };
-    return { label: `Pipe ${name}` };
+    if (sub === "run" || method === "POST") return { label: `Ran scheduled task ${name}` };
+    if (method === "PATCH" || method === "PUT") return { label: `Configured scheduled task ${name}` };
+    if (method === "DELETE") return { label: `Removed scheduled task ${name}` };
+    return { label: `Scheduled task ${name}` };
   }
 
   if (path === "/export") return { label: "Exported video" };
@@ -382,7 +382,7 @@ export function endpointFamily(path: string): string {
   }
   if (path.startsWith("/meetings")) return "Meetings";
   if (path.startsWith("/speakers")) return "Speakers";
-  if (path.startsWith("/pipes")) return "Pipes";
+  if (path.startsWith("/pipes")) return "Scheduled tasks";
   return "Screenpipe";
 }
 
@@ -439,10 +439,16 @@ export function summarizeToolResult(result: string | undefined, family: string):
   return "JSON response returned";
 }
 
+// Adapters stamp their own name onto messages they relay from the underlying
+// agent (codex-acp: "[codex-acp forwarded startup error] …"). Which adapter
+// relayed a message is plumbing; the sentence after it is the part the user
+// has to act on, so the tag only pushes it off the first line.
+const ADAPTER_RELAY_TAG_RE = /^\[[a-z0-9_-]+ forwarded [a-z ]+\]\s*/i;
+
 export function formatToolResult(result: string | undefined): string | undefined {
   if (!result) return undefined;
   const json = parseToolResultJson(result);
-  if (!json) return result;
+  if (!json) return result.replace(ADAPTER_RELAY_TAG_RE, "");
   return JSON.stringify(json, null, 2);
 }
 
@@ -456,22 +462,126 @@ export function sanitizeCommand(command: string): string {
 export interface PresentableToolCall {
   toolName: string;
   args?: Record<string, unknown>;
+  result?: string;
+  // ACP tool-call kind (read/edit/execute/fetch/search/think/…). Native ACP
+  // tools (Claude's Read/Edit/…) carry this even when the human title doesn't
+  // match a known tool name, so it drives a sensible label as a fallback.
+  kind?: string;
   isRunning?: boolean;
   isError?: boolean;
+  agentId?: string;
+  // Set when this call is a subagent launch (Claude's Task/Agent tool). It is a
+  // container for the nested transcript, so it is labeled as a subagent run
+  // rather than by its `think` kind, which reads as "Thought it through".
+  subagent?: boolean;
+  subagentType?: string;
 }
 
 export interface ToolActivityPresentation {
   runningLabel: string;
   completedLabel: string;
+  icon: ToolActivityIcon;
 }
+
+export type ToolActivityIcon =
+  | "work"
+  | "skill"
+  | "search"
+  | "file"
+  | "edit"
+  | "delete"
+  | "terminal"
+  | "test"
+  | "web"
+  | "screenpipe"
+  | "database"
+  | "memory"
+  | "meeting"
+  | "connection"
+  | "automation"
+  | "export"
+  | "subagent"
+  | "thinking"
+  | "approval";
 
 const GENERIC_ACTIVITY: ToolActivityPresentation = {
   runningLabel: "Working on your request",
   completedLabel: "Completed a background step",
+  icon: "work",
 };
 
-function activity(runningLabel: string, completedLabel: string): ToolActivityPresentation {
-  return { runningLabel, completedLabel };
+function providerToolActivity(agentId?: string): ToolActivityPresentation | null {
+  if (!agentId) return null;
+  const provider = ({
+    "cursor": "Cursor",
+    "claude-acp": "Claude",
+    "codex-acp": "Codex",
+    "pi-acp": "Pi",
+    "github-copilot-cli": "GitHub Copilot",
+  } as Record<string, string>)[agentId.toLowerCase()] ?? "ACP";
+  const article = provider === "ACP" ? "an" : "a";
+  return activity(`Using ${article} ${provider} tool`, `Used ${article} ${provider} tool`, "work");
+}
+
+function activity(
+  runningLabel: string,
+  completedLabel: string,
+  icon: ToolActivityIcon = "work",
+): ToolActivityPresentation {
+  return { runningLabel, completedLabel, icon };
+}
+
+const SKILL_FILE_RE = /(?:^|[\\/])skill\.md$/i;
+const SAFE_SKILL_NAME_RE = /^[a-z0-9][a-z0-9_.:@-]{0,63}$/i;
+
+function humanizeSkillName(name: string): string {
+  const acronyms: Record<string, string> = {
+    api: "API",
+    mcp: "MCP",
+    pdf: "PDF",
+    sql: "SQL",
+    ui: "UI",
+    ux: "UX",
+  };
+  return name
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => acronyms[part.toLowerCase()] ?? part.toLowerCase())
+    .join(" ");
+}
+
+/** Return only a manifest-style skill name. A random parent directory is not
+ *  safe to expose just because it happens to contain a SKILL.md file. */
+function skillNameFromPath(path: string): string | null {
+  const normalized = path.replace(/\\/g, "/").replace(/["'`]+$/g, "");
+  const parts = normalized.split("/").filter(Boolean);
+  let skillFileIndex = -1;
+  for (let index = parts.length - 1; index >= 0; index--) {
+    if (parts[index].toLowerCase() === "skill.md") {
+      skillFileIndex = index;
+      break;
+    }
+  }
+  if (skillFileIndex < 2 || parts[skillFileIndex - 2].toLowerCase() !== "skills") {
+    return null;
+  }
+  const rawName = parts[skillFileIndex - 1];
+  if (!SAFE_SKILL_NAME_RE.test(rawName)) return null;
+  return humanizeSkillName(rawName);
+}
+
+function skillActivity(pathOrCommand: string): ToolActivityPresentation | null {
+  if (!/skill\.md/i.test(pathOrCommand)) return null;
+
+  const pathMatch = pathOrCommand.match(
+    /(?:^|[\s'"`])([^\s'"`]*[\\/]skills[\\/][^\s'"`\\/]+[\\/]SKILL\.md)(?=$|[\s'"`])/i,
+  );
+  const candidate = pathMatch?.[1] ?? pathOrCommand.trim();
+  if (!SKILL_FILE_RE.test(candidate) && !pathMatch) return null;
+
+  const name = skillNameFromPath(candidate);
+  const noun = name ? `${name} skill` : "a skill";
+  return activity(`Loading ${noun}`, `Loaded ${noun}`, "skill");
 }
 
 function connectionActivity(
@@ -483,16 +593,16 @@ function connectionActivity(
 
   if (normalized === "google-calendar") {
     return isChange
-      ? activity("Updating your calendar", "Updated your calendar")
-      : activity("Checking your calendar", "Checked your calendar");
+      ? activity("Updating your calendar", "Updated your calendar", "connection")
+      : activity("Checking your calendar", "Checked your calendar", "connection");
   }
   if (normalized === "google-docs") {
     return isChange
-      ? activity("Updating a document", "Updated a document")
-      : activity("Reviewing a document", "Reviewed a document");
+      ? activity("Updating a document", "Updated a document", "edit")
+      : activity("Reviewing a document", "Reviewed a document", "file");
   }
   if (normalized === "browsers" || normalized === "browser") {
-    return activity("Using the browser", "Used the browser");
+    return activity("Using the browser", "Used the browser", "web");
   }
 
   const displayName = normalized === "slack"
@@ -506,15 +616,15 @@ function connectionActivity(
           : "a connected app";
 
   return isChange
-    ? activity(`Updating ${displayName}`, `Updated ${displayName}`)
-    : activity(`Checking ${displayName}`, `Checked ${displayName}`);
+    ? activity(`Updating ${displayName}`, `Updated ${displayName}`, "connection")
+    : activity(`Checking ${displayName}`, `Checked ${displayName}`, "connection");
 }
 
 function curlActivity(command: string): ToolActivityPresentation | null {
   const search = parseSearchCommand(command);
   if (search) {
     const target = search.appName || search.windowName || search.contentType || "your history";
-    return activity(`Searching ${target}`, `Searched ${target}`);
+    return activity(`Searching ${target}`, `Searched ${target}`, "search");
   }
 
   if (!/\bcurl\b/i.test(command)) return null;
@@ -527,42 +637,42 @@ function curlActivity(command: string): ToolActivityPresentation | null {
     const target = firstExternalWebTarget(command, "fetch");
     if (!target) return null;
     return method === "GET" || method === "HEAD"
-      ? activity(`Checking ${target.domain}`, `Checked ${target.domain}`)
-      : activity(`Updating ${target.domain}`, `Updated ${target.domain}`);
+      ? activity(`Checking ${target.domain}`, `Checked ${target.domain}`, "web")
+      : activity(`Updating ${target.domain}`, `Updated ${target.domain}`, "web");
   }
 
   const path = localUrl.pathname.replace(/\/$/, "") || "/";
   if (path === "/raw_sql") {
-    return activity("Reviewing your information", "Reviewed your information");
+    return activity("Reviewing your information", "Reviewed your information", "database");
   }
   if (path === "/activity-summary" || path === "/search") {
-    return activity("Reviewing your activity", "Reviewed your activity");
+    return activity("Reviewing your activity", "Reviewed your activity", "screenpipe");
   }
   if (path === "/memories" || path.startsWith("/memories/")) {
     return method === "GET"
-      ? activity("Reviewing memories", "Reviewed memories")
-      : activity("Updating memory", "Updated memory");
+      ? activity("Reviewing memories", "Reviewed memories", "memory")
+      : activity("Updating memory", "Updated memory", "memory");
   }
   if (path === "/meetings" || path.startsWith("/meetings/")) {
     return method === "GET"
-      ? activity("Reviewing meetings", "Reviewed meetings")
-      : activity("Updating a meeting", "Updated a meeting");
+      ? activity("Reviewing meetings", "Reviewed meetings", "meeting")
+      : activity("Updating a meeting", "Updated a meeting", "meeting");
   }
   if (path.startsWith("/speakers")) {
     return method === "GET"
-      ? activity("Reviewing speakers", "Reviewed speakers")
-      : activity("Updating a speaker", "Updated a speaker");
+      ? activity("Reviewing speakers", "Reviewed speakers", "meeting")
+      : activity("Updating a speaker", "Updated a speaker", "meeting");
   }
   if (path === "/connections") {
-    return activity("Checking connected apps", "Checked connected apps");
+    return activity("Checking connected apps", "Checked connected apps", "connection");
   }
   if (path.startsWith("/connections/")) {
     return connectionActivity(path.split("/")[2] || "", method);
   }
   if (path === "/pipes" || path.startsWith("/pipes/")) {
     return method === "GET"
-      ? activity("Checking available automations", "Checked available automations")
-      : activity("Updating an automation", "Updated an automation");
+      ? activity("Checking available automations", "Checked available automations", "automation")
+      : activity("Updating an automation", "Updated an automation", "automation");
   }
   if (
     path === "/health" ||
@@ -570,18 +680,21 @@ function curlActivity(command: string): ToolActivityPresentation | null {
     path === "/list-audio-devices" ||
     path === "/tags"
   ) {
-    return activity("Checking Screenpipe", "Checked Screenpipe");
+    return activity("Checking screenpipe", "Checked screenpipe", "screenpipe");
   }
   if (path === "/export") {
-    return activity("Preparing an export", "Prepared an export");
+    return activity("Preparing an export", "Prepared an export", "export");
   }
 
-  return activity("Working in Screenpipe", "Completed work in Screenpipe");
+  return activity("Working in screenpipe", "Completed work in screenpipe", "screenpipe");
 }
 
 function commandActivity(command: string): ToolActivityPresentation {
   const curl = curlActivity(command);
   if (curl) return curl;
+
+  const skill = skillActivity(command);
+  if (skill) return skill;
 
   const normalized = command.toLowerCase();
   if (
@@ -589,25 +702,254 @@ function commandActivity(command: string): ToolActivityPresentation {
     /\b(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?test\b/.test(normalized) ||
     /\bcargo\s+(?:nextest\s+run|test|check|clippy)\b/.test(normalized)
   ) {
-    return activity("Checking the work", "Checked the work");
+    return activity("Checking the work", "Checked the work", "test");
   }
   if (/\bgit\s+(?:status|diff|log|show)\b/.test(normalized)) {
-    return activity("Reviewing changes", "Reviewed changes");
+    return activity("Reviewing changes", "Reviewed changes", "search");
   }
   if (/\bgit\s+(?:commit|push|merge|rebase)\b/.test(normalized)) {
-    return activity("Saving changes", "Saved changes");
+    return activity("Saving changes", "Saved changes", "edit");
   }
   if (/\b(?:python(?:3)?|node|deno|ruby|perl|jq|awk)\b/.test(normalized)) {
-    return activity("Analyzing information", "Analyzed information");
+    return activity("Analyzing information", "Analyzed information", "thinking");
   }
   if (/\b(?:rg|grep|find|ls|sed|cat|head|tail)\b/.test(normalized)) {
-    return activity("Finding relevant information", "Found relevant information");
+    return activity("Finding relevant information", "Found relevant information", "search");
   }
   if (/\b(?:mkdir|touch|cp|mv|apply_patch)\b/.test(normalized)) {
-    return activity("Updating files", "Updated files");
+    return activity("Updating files", "Updated files", "edit");
   }
 
   return GENERIC_ACTIVITY;
+}
+
+// screenpipe's MCP server exposes tools that mirror the local REST endpoints
+// (activity-summary → /activity-summary, list-pipes → /pipes, search-content →
+// /search, …). ACP agents surface these as `mcp__screenpipe__<name>` tool calls
+// carrying a structured rawInput object, where raw pi sent a curl string. Map
+// such a call back to the equivalent local request as a synthesized curl
+// command so the SAME curl classifier drives both the label and the endpoint
+// card — no duplicated endpoint vocabulary, no risk to the raw-pi path.
+const MCP_PREFIX_RE = /^mcp__[a-z0-9_-]+__/i;
+
+const MCP_SCREENPIPE_ENDPOINTS: Record<string, { path: string; method: string }> = {
+  "activity-summary": { path: "/activity-summary", method: "GET" },
+  "search-content": { path: "/search", method: "GET" },
+  "keyword-search": { path: "/search", method: "GET" },
+  "search-elements": { path: "/search", method: "GET" },
+  "get-frame-elements": { path: "/search", method: "GET" },
+  "frame-context": { path: "/search", method: "GET" },
+  "team-search": { path: "/search", method: "GET" },
+  screenpipe: { path: "/search", method: "GET" },
+  "list-pipes": { path: "/pipes", method: "GET" },
+  "pipe-logs": { path: "/pipes", method: "GET" },
+  "run-pipe": { path: "/pipes", method: "POST" },
+  "create-pipe": { path: "/pipes", method: "POST" },
+  "list-meetings": { path: "/meetings", method: "GET" },
+  "get-meeting": { path: "/meetings", method: "GET" },
+  "start-meeting": { path: "/meetings", method: "POST" },
+  "stop-meeting": { path: "/meetings", method: "POST" },
+  "update-meeting": { path: "/meetings", method: "PATCH" },
+  "list-unnamed-speakers": { path: "/speakers/unnamed", method: "GET" },
+  "search-speakers": { path: "/speakers/search", method: "GET" },
+  "merge-speakers": { path: "/speakers/merge", method: "POST" },
+  "update-speaker": { path: "/speakers", method: "PATCH" },
+  "update-memory": { path: "/memories", method: "POST" },
+  "add-tags": { path: "/tags", method: "POST" },
+  "health-check": { path: "/health", method: "GET" },
+  "export-video": { path: "/export", method: "GET" },
+  "list-audio-devices": { path: "/list-audio-devices", method: "GET" },
+  "list-monitors": { path: "/list-monitors", method: "GET" },
+};
+
+// Arg-key → REST query-param name. Search and activity share this shape.
+const MCP_QUERY_ALIASES: Record<string, string> = {
+  q: "q",
+  query: "q",
+  search: "q",
+  app_name: "app_name",
+  app: "app_name",
+  window_name: "window_name",
+  window: "window_name",
+  content_type: "content_type",
+  content: "content_type",
+  start_time: "start_time",
+  end_time: "end_time",
+  limit: "limit",
+};
+
+// Strip an `mcp__<server>__` prefix if present.
+function bareMcpName(toolName: string): string {
+  return toolName.replace(MCP_PREFIX_RE, "");
+}
+
+// codex-acp reports an MCP server that could not start as a failed tool call
+// named `mcp__<server>__startup`. It emits one per server on every turn, so a
+// user with several unauthenticated servers gets a stack of them.
+const MCP_STARTUP_RE = /^mcp__([a-z0-9_.-]+)__startup$/i;
+
+/** The server name behind an `mcp__<server>__startup` diagnostic, if that's what
+ *  this is. Never a real tool the agent chose to call. */
+export function mcpStartupServerName(toolName: string): string | null {
+  return toolName.match(MCP_STARTUP_RE)?.[1] ?? null;
+}
+
+export type McpStartupState =
+  | "connecting"
+  | "connected"
+  | "auth-required"
+  | "error";
+
+export interface McpStartupPresentation {
+  serverName: string;
+  state: McpStartupState;
+  detail?: string;
+}
+
+const MCP_AUTH_REQUIRED_RE =
+  /(?:not logged in|log in|login required|sign in|authenticate|authentication required|unauthorized|\b401\b|oauth|authorization header|missing authorization)/i;
+
+/** Remove credential-shaped values from adapter diagnostics before they reach
+ *  React, persisted screenshots, or copied accessibility text. */
+function redactAssignedCredential(
+  _match: string,
+  prefix: string,
+  value: string,
+): string {
+  if (value.startsWith('"')) return `${prefix}"…"`;
+  if (value.startsWith("'")) return `${prefix}'…'`;
+  return `${prefix}…`;
+}
+
+export function redactMcpStartupDetail(detail: string): string {
+  return detail
+    .replace(/(\bbearer\s+)[a-z0-9._~+\/=\-]{8,}/gi, "$1…")
+    .replace(/(\bbasic\s+)[a-z0-9+/=:\-]{8,}/gi, "$1…")
+    .replace(
+      /(["']?authorization["']?\s*[:=]\s*)(?!bearer\s+|basic\s+)("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
+      redactAssignedCredential,
+    )
+    .replace(
+      /(["']?(?:(?:x[-_ ]?)?api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|token|client[-_ ]?secret|secret|password)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
+      redactAssignedCredential,
+    );
+}
+
+function displayMcpServerName(serverName: string): string {
+  if (serverName.toLowerCase() === "screenpipe") return "screenpipe";
+  if (/[A-Z]/.test(serverName)) return serverName;
+  return serverName
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+/** Convert codex-acp's synthetic `mcp__<server>__startup` tool call into a
+ *  connection state. Returns null for real MCP tool calls. */
+export function presentMcpStartup(
+  toolCall: PresentableToolCall,
+): McpStartupPresentation | null {
+  const rawServerName = mcpStartupServerName(toolCall.toolName);
+  if (!rawServerName) return null;
+
+  const serverName = displayMcpServerName(rawServerName);
+  if (toolCall.isRunning) return { serverName, state: "connecting" };
+  if (!toolCall.isError) return { serverName, state: "connected" };
+
+  const rawDetail = formatToolResult(toolCall.result)?.replace(
+    /^MCP server\s+[`"']?[^`"']+[`"']?\s+failed to start:\s*/i,
+    "",
+  );
+  const detail = rawDetail
+    ? trunc(redactMcpStartupDetail(rawDetail).replace(/\s+/g, " ").trim(), 280)
+    : undefined;
+
+  return {
+    serverName,
+    state: detail && MCP_AUTH_REQUIRED_RE.test(detail) ? "auth-required" : "error",
+    detail,
+  };
+}
+
+/**
+ * If `toolName` is a screenpipe MCP tool, synthesize the equivalent local curl
+ * command from its rawInput args, so the existing curl classifier and endpoint
+ * card can present it exactly like raw pi's curl call. Returns null for any
+ * other tool (bash, a different MCP server, a native ACP tool).
+ */
+export function mcpScreenpipeCommand(
+  toolName: string,
+  args: Record<string, unknown> = {},
+): string | null {
+  let name: string;
+  if (/^mcp__screenpipe__/i.test(toolName)) {
+    name = toolName.replace(/^mcp__screenpipe__/i, "");
+  } else if (!MCP_PREFIX_RE.test(toolName) && MCP_SCREENPIPE_ENDPOINTS[toolName]) {
+    // Some agents drop the mcp__ prefix; still recognize a known screenpipe tool.
+    name = toolName;
+  } else {
+    return null;
+  }
+
+  const base = "http://localhost:3030";
+  const endpoint = MCP_SCREENPIPE_ENDPOINTS[name];
+  if (!endpoint) {
+    // A screenpipe MCP tool we haven't mapped: a bare local URL still reads as
+    // "Working in Screenpipe" rather than a generic background step.
+    return `curl '${base}/${name.replace(/^\/+/, "")}'`;
+  }
+
+  const { path, method } = endpoint;
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(args)) {
+    const param = MCP_QUERY_ALIASES[key.toLowerCase()];
+    if (!param) continue;
+    if (typeof value === "string" && value) query.set(param, value);
+    else if (typeof value === "number") query.set(param, String(value));
+  }
+  const qs = query.toString();
+  const url = `${base}${path}${qs ? `?${qs}` : ""}`;
+  const parts = ["curl"];
+  if (method !== "GET") parts.push("-X", method);
+  parts.push(`'${url}'`);
+  if (method !== "GET" && Object.keys(args).length > 0) {
+    parts.push("-d", `'${JSON.stringify(args)}'`);
+  }
+  return parts.join(" ");
+}
+
+// Map an ACP tool `kind` to a coarse label, for native agent tools whose human
+// title doesn't match a known tool name (e.g. Claude's "Read /a/b.ts").
+function kindActivity(kind: string): ToolActivityPresentation | null {
+  switch (kind.toLowerCase()) {
+    case "read":
+      return activity("Reviewing a file", "Reviewed a file", "file");
+    case "edit":
+      return activity("Updating files", "Updated files", "edit");
+    case "delete":
+      return activity("Removing files", "Removed files", "delete");
+    case "move":
+      return activity("Moving files", "Moved files", "edit");
+    case "search":
+      return activity("Finding relevant information", "Found relevant information", "search");
+    case "execute":
+      return activity("Running a command", "Ran a command", "terminal");
+    case "fetch":
+      return activity("Fetching content", "Fetched content", "web");
+    case "think":
+      return activity("Thinking it through", "Thought it through", "thinking");
+    default:
+      return null;
+  }
+}
+
+// Last-resort label from a raw tool name: strip an mcp__server__ prefix and
+// de-slugify (activity-summary → "Activity summary"). Beats a generic step.
+function humanizeToolName(toolName: string): string {
+  const bare = bareMcpName(toolName).replace(/[_-]+/g, " ").trim();
+  if (!bare) return "";
+  return bare.charAt(0).toUpperCase() + bare.slice(1);
 }
 
 /**
@@ -617,17 +959,61 @@ function commandActivity(command: string): ToolActivityPresentation {
  * disclosure step in the chat UI.
  */
 export function presentToolActivity(toolCall: PresentableToolCall): ToolActivityPresentation {
-  const toolName = toolCall.toolName.toLowerCase();
+  const rawName = toolCall.toolName;
+  const toolName = rawName.toLowerCase();
   const args = toolCall.args ?? {};
+  const kind = toolCall.kind?.toLowerCase();
+
+  // A subagent launch is a container for its nested transcript, not a step. The
+  // adapter puts the task description in the title (surfaced here as toolName),
+  // so use that as the real label instead of the generic "Thought it through"
+  // its `think` kind would otherwise produce. Fall back to the subagent type,
+  // then a plain "subagent", when there is no description.
+  if (toolCall.subagent) {
+    const type = toolCall.subagentType?.trim();
+    const desc = toolCall.toolName?.trim();
+    const title =
+      desc && desc.toLowerCase() !== "task"
+        ? desc
+        : type
+          ? `${type} subagent`
+          : "subagent";
+    return activity(title, title, "subagent");
+  }
+
+  // An MCP server that failed to start is a setup problem, not a step the agent
+  // took. Naming the server is the whole point: `mcp__<server>__startup` strips
+  // down to a bare "Startup", so several failing servers rendered as a stack of
+  // identical anonymous rows and the one fact worth reading was only visible
+  // after expanding one of them.
+  const mcpStartupServer = mcpStartupServerName(rawName);
+  if (mcpStartupServer) {
+    return activity(
+      `Starting the ${mcpStartupServer} MCP server`,
+      toolCall.isError
+        ? `${mcpStartupServer} MCP server failed to start`
+        : `Started the ${mcpStartupServer} MCP server`,
+      "connection",
+    );
+  }
+
+  // screenpipe MCP tools mirror the local REST endpoints — reuse the curl path.
+  const mcpCommand = mcpScreenpipeCommand(rawName, args);
+  if (mcpCommand) return commandActivity(mcpCommand);
+
+  // Claude's native screenpipe bridge uses this legacy tool title instead of
+  // the MCP-prefixed name. Present the user job, not the adapter's method.
+  if (toolName === "query_recordings" || toolName === "query-recordings") {
+    return activity("Searching recordings", "Searched recordings", "search");
+  }
 
   if (toolName === "bash" || toolName === "shell" || toolName === "exec" || toolName === "exec_command") {
     return commandActivity(String(args.command ?? args.cmd ?? ""));
   }
-  if (toolName === "read" || toolName === "read_file" || toolName === "open_file") {
-    const path = String(args.path ?? "").toLowerCase();
-    return path.endsWith("skill.md")
-      ? activity("Reviewing instructions", "Reviewed instructions")
-      : activity("Reviewing a file", "Reviewed a file");
+  if (toolName === "read" || toolName === "read_file" || toolName === "open_file" || kind === "read") {
+    const path = String(args.path ?? args.file_path ?? args.file ?? args.abs_path ?? "");
+    const skill = skillActivity(path) ?? skillActivity(rawName);
+    return skill ?? activity("Reviewing a file", "Reviewed a file", "file");
   }
   if (
     toolName === "grep" ||
@@ -636,7 +1022,7 @@ export function presentToolActivity(toolCall: PresentableToolCall): ToolActivity
     toolName === "search" ||
     toolName === "search_files"
   ) {
-    return activity("Finding relevant information", "Found relevant information");
+    return activity("Finding relevant information", "Found relevant information", "search");
   }
   if (
     toolName === "edit" ||
@@ -644,19 +1030,35 @@ export function presentToolActivity(toolCall: PresentableToolCall): ToolActivity
     toolName === "write_file" ||
     toolName === "apply_patch"
   ) {
-    return activity("Updating files", "Updated files");
+    return activity("Updating files", "Updated files", "edit");
   }
   if (toolName.includes("browser")) {
-    return activity("Using the browser", "Used the browser");
+    return activity("Using the browser", "Used the browser", "web");
   }
   if (toolName.includes("web") && toolName.includes("search")) {
-    return activity("Searching the web", "Searched the web");
+    return activity("Searching the web", "Searched the web", "web");
   }
   if (toolName === "ask_user") {
-    return activity("Waiting for your input", "Asked for your input");
+    return activity("Waiting for your input", "Asked for your input", "approval");
   }
 
-  return GENERIC_ACTIVITY;
+  // ACP native tools carry a `kind`; use it before the generic fallback.
+  if (kind) {
+    const byKind = kindActivity(kind);
+    if (byKind) return byKind;
+  }
+
+  // Humanize the raw tool name only for agent-provided tools — ACP tools carry
+  // a `kind`, and MCP tools carry an `mcp__server__` prefix. Tools with neither
+  // keep the coarse generic label, so internal tool names are never surfaced to
+  // the user.
+  if (kind || MCP_PREFIX_RE.test(rawName)) {
+    const humanized = humanizeToolName(rawName);
+    if (humanized && humanized !== "Unknown" && humanized !== "Tool") {
+      return activity(humanized, humanized, "work");
+    }
+  }
+  return providerToolActivity(toolCall.agentId) ?? GENERIC_ACTIVITY;
 }
 
 /**

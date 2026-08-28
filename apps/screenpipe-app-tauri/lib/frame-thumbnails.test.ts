@@ -5,7 +5,11 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { configureApi } from "@/lib/api";
 import {
+  FRAME_PREVIEW_THUMBNAIL_QUALITY,
+  FRAME_PREVIEW_THUMBNAIL_WIDTH,
   FRAME_THUMBNAIL_QUALITY,
+  getFramePreviewMediaUrl,
+  getFramePreviewThumbnailUrl,
   getFrameThumbnailSources,
 } from "@/lib/frame-thumbnails";
 
@@ -34,5 +38,31 @@ describe("getFrameThumbnailSources", () => {
     expect(sources.src).toContain("retry=2");
     expect(sources.src).toContain("token=secret%20key");
     expect(sources.srcSet.match(/token=secret%20key/g)).toHaveLength(2);
+  });
+
+  it("disables nearby-frame fallback for truth-sensitive thumbnails", () => {
+    const sources = getFrameThumbnailSources(42, undefined, {
+      fallback: false,
+    });
+
+    expect(sources.src).toContain("fallback=false");
+    expect(sources.srcSet.match(/fallback=false/g)).toHaveLength(2);
+  });
+
+  it("builds one small exact thumbnail URL for activity previews", () => {
+    const url = getFramePreviewThumbnailUrl(42);
+
+    expect(url).toBe(
+      `http://localhost:3030/frames/42/thumbnail?width=${FRAME_PREVIEW_THUMBNAIL_WIDTH}&quality=${FRAME_PREVIEW_THUMBNAIL_QUALITY}&fallback=false`,
+    );
+    expect(url).not.toContain("768");
+  });
+
+  it("builds an authenticated existing-media URL for compacted previews", () => {
+    configureApi({ port: 4040, apiKey: "secret key", authEnabled: true });
+
+    expect(getFramePreviewMediaUrl(17)).toBe(
+      "http://localhost:4040/frames/preview-media/17?token=secret%20key",
+    );
   });
 });

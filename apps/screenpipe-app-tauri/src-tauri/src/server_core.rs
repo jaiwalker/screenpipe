@@ -56,8 +56,7 @@ pub struct ServerCore {
     /// Local API auth key — exposed to the frontend via Tauri command so
     /// localFetch can inject it synchronously (no async store race).
     pub local_api_key: Option<String>,
-    /// Runtime free-plan retention guard shared with the local HTTP API.
-    pub enforce_free_plan_retention: Arc<std::sync::atomic::AtomicBool>,
+    pub history_access: screenpipe_engine::history_access::HistoryAccessPolicy,
     /// Shutdown signal for the redaction reconciliation workers. Fired
     /// from `shutdown()` so the workers exit before the tokio runtime
     /// tears down — otherwise their in-flight sqlx queries (which use
@@ -73,9 +72,18 @@ pub struct ServerCore {
     external_memory_sync:
         Option<Arc<screenpipe_engine::external_memory_sync::ExternalMemorySyncScheduler>>,
     /// Tasks spawned by `start()` that would otherwise outlive the engine:
-    /// the HTTP serve task (whose `Server` owns a `db` clone + secret store)
-    /// and the HD meeting-event listeners. Aborted in `shutdown()`.
+    /// the HD meeting-event listeners and background monitors. Aborted in
+    /// `shutdown()`.
     owned_tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Tells the HTTP serve loop to stop accepting and tear down every
+    /// connection task. Connection handlers hold clones of the router state
+    /// (db pool + secret store), so `shutdown()` must drain them *before*
+    /// closing the pools — otherwise surviving keep-alive/WebSocket
+    /// connections keep serving 500s from a dead generation.
+    http_shutdown: tokio::sync::watch::Sender<bool>,
+    /// The HTTP serve task. Resolves only once every connection task has
+    /// finished; `shutdown()` awaits it (bounded) after signaling above.
+    http_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Bind attempts before giving up on the HTTP port. Together with
@@ -136,11 +144,12 @@ fn monitor_openai_compatible_transcription_failures(
                 last_notification,
                 now,
             ) {
-                crate::notifications::client::send_typed(
+                crate::notifications::client::send_typed_with_priority(
                     "OpenAI Compatible transcription is failing",
                     "Screenpipe is still recording audio, but the endpoint is failing or returning empty transcripts, so new audio may not be searchable. Check Settings and run Test and enable again.",
                     "system",
                     Some(20_000),
+                    crate::notifications::store::NotificationPriority::High,
                 );
                 last_notification = Some(now);
             }
@@ -204,7 +213,7 @@ async fn identify_port_holder(port: u16) -> Option<String> {
         // netstat -ano → parse lines matching our exact port in LISTENING state.
         // We filter in Rust rather than piping through findstr because
         // `findstr :<port>` matches substrings (e.g. :3030 matches :30300).
-        let mut netstat = tokio::process::Command::new("netstat");
+        let mut netstat = screenpipe_core::no_window_command_async("netstat");
         netstat.args(["-ano"]).kill_on_drop(true);
         let output = tokio::time::timeout(PORT_HOLDER_LOOKUP_TIMEOUT, netstat.output())
             .await
@@ -214,7 +223,7 @@ async fn identify_port_holder(port: u16) -> Option<String> {
         let pid = parse_windows_listener_pid(&stdout, port)?;
 
         let pid_filter = format!("PID eq {}", pid);
-        let mut tasklist = tokio::process::Command::new("tasklist");
+        let mut tasklist = screenpipe_core::no_window_command_async("tasklist");
         tasklist
             .args(["/FI", pid_filter.as_str(), "/FO", "CSV", "/NH"])
             .kill_on_drop(true);
@@ -293,9 +302,11 @@ impl ServerCore {
         // replaced with this Arc so all three observers (cloud_proxy.rs,
         // PiExecutor, the Tauri command writer) share one storage cell.
         cloud_token_handle: std::sync::Arc<arc_swap::ArcSwap<Option<String>>>,
+        history_access: screenpipe_engine::history_access::HistoryAccessPolicy,
     ) -> Result<Self, String> {
         info!("Starting server core on port {}", config.port);
         crate::health::set_boot_phase("starting", Some("starting server"));
+        let ai_gateway_url = crate::config::screenpipe_ai_gateway_url()?;
 
         // --- Environment setup ---
         std::env::set_var("SCREENPIPE_FD_LIMIT", "8192");
@@ -541,11 +552,6 @@ impl ServerCore {
         server.manual_meeting = Some(manual_meeting.clone());
         server.api_auth = config.api_auth;
         server.api_auth_key = config.api_auth_key.clone();
-        server.enforce_free_plan_retention.store(
-            config.enforce_free_plan_retention,
-            std::sync::atomic::Ordering::SeqCst,
-        );
-        let enforce_free_plan_retention = server.enforce_free_plan_retention.clone();
         // Cloud JWT for /v1/chat/completions proxy. config.user_id carries
         // the Clerk JWT (despite the name — see line 96 where the same value
         // is used as the cloud transcription bearer). Pi's bash deliberately
@@ -559,6 +565,7 @@ impl ServerCore {
         // restart — paying users who signed in after the sidecar started got
         // anonymous-tier 403s on every Sonnet/Opus pipe.
         server.cloud_token = cloud_token_handle.clone();
+        server.history_access = history_access.clone();
         // Seed the shared cell from persisted settings, but ONLY when empty
         // — if `set_cloud_token` has already pushed a fresher value (e.g. the
         // user signed in between sidecar boots), don't clobber it with the
@@ -585,18 +592,15 @@ impl ServerCore {
             ));
         }
 
-        // Secret store — read-only keychain access on startup.
-        // Never create a key automatically (that triggers a macOS modal).
-        // Users opt in via onboarding or Settings > Privacy.
+        // Secret-store readers always resolve an existing OS-vault key. The
+        // read path never creates a key, so optional encryption remains
+        // unchanged while every process can read encrypted credentials.
         {
-            let secret_key = match crate::secrets::get_key_if_encryption_enabled() {
-                crate::secrets::KeyResult::Found(k) => Some(k),
-                _ => {
-                    info!("keychain: no encryption key found — secrets stored unencrypted until user opts in");
-                    None
-                }
-            };
-            match screenpipe_secrets::SecretStore::new(db.pool.clone(), secret_key).await {
+            match screenpipe_secrets::SecretStore::open_for_data_dir_with_vault_key(
+                &config.data_dir,
+            )
+            .await
+            {
                 Ok(store) => {
                     let fixed = screenpipe_secrets::fix_secret_file_permissions(&config.data_dir);
                     if fixed > 0 {
@@ -673,10 +677,12 @@ impl ServerCore {
         // so a fresh sign-in or sign-out takes effect on the very next pipe
         // run without restarting the engine.
         let cloud_token_handle = server.cloud_token.clone();
+        let acp_gateway_url = ai_gateway_url.clone();
         let pi_executor = Arc::new(
             screenpipe_core::agents::pi::PiExecutor::with_shared_user_token(
                 cloud_token_handle.clone(),
             )
+            .with_api_url(ai_gateway_url)
             .with_api_auth_key(config.api_auth_key.clone()),
         );
         let mut agent_executors: std::collections::HashMap<
@@ -684,6 +690,25 @@ impl ServerCore {
             Arc<dyn screenpipe_core::agents::AgentExecutor>,
         > = std::collections::HashMap::new();
         agent_executors.insert("pi".to_string(), pi_executor.clone());
+        agent_executors.insert(
+            "acp".to_string(),
+            Arc::new(
+                screenpipe_core::agents::acp::AcpExecutor::with_shared_user_token(
+                    cloud_token_handle.clone(),
+                    acp_gateway_url,
+                    config.port,
+                    config.api_auth_key.clone(),
+                ),
+            ),
+        );
+        let cloud_agent_executor = Arc::new(
+            screenpipe_core::agents::cloud::CloudAgentExecutor::new(
+                config.port,
+                config.api_auth_key.clone(),
+            )
+            .with_secret_store(server.secret_store.clone()),
+        );
+        agent_executors.insert("cloud-agent".to_string(), cloud_agent_executor);
 
         let pipe_store: Option<Arc<dyn screenpipe_core::pipes::PipeStore>> = Some(Arc::new(
             screenpipe_engine::pipe_store::SqlitePipeStore::new(db.clone()),
@@ -714,21 +739,24 @@ impl ServerCore {
         if let Some(cb) = on_pipe_output {
             pipe_manager.set_on_output_line(cb);
         }
+        // Give scheduled runs the same Live View target authority the foreground
+        // refresh button sends, so a Pipe feeding several dashboards refreshes
+        // all of them instead of leaving the ones it skipped stale until a
+        // manual click.
+        {
+            let screenpipe_dir_for_live_views = config.data_dir.clone();
+            pipe_manager.set_scheduled_run_context(Arc::new(move |pipe_name: &str| {
+                screenpipe_engine::live_views::scheduled_live_view_run_context_for_dir(
+                    &screenpipe_dir_for_live_views,
+                    pipe_name,
+                    chrono::Local::now(),
+                )
+                .map(|context| screenpipe_engine::pipes_api::format_run_context(&context))
+            }));
+        }
         // Inject local API key so pipe subprocesses can authenticate to localhost
         if config.api_auth {
             pipe_manager.set_local_api_key(config.api_auth_key.clone());
-        }
-        {
-            let secret_store_for_check = server.secret_store.clone();
-            let screenpipe_dir_for_check = config.data_dir.clone();
-            pipe_manager.set_connection_check(Arc::new(move |required| {
-                let ss = secret_store_for_check.clone();
-                let dir = screenpipe_dir_for_check.clone();
-                Box::pin(async move {
-                    screenpipe_connect::missing_pipe_connections(ss.as_deref(), &dir, &required)
-                        .await
-                })
-            }));
         }
         pipe_manager.install_builtin_pipes().ok();
         if let Err(e) = pipe_manager.load_pipes().await {
@@ -958,21 +986,36 @@ impl ServerCore {
 
         let vision_manager_handle = server.vision_manager.clone();
 
-        // Start serving in background. The handle is kept on Self and aborted
-        // in `shutdown()`: the Router state owns a `db` clone + the secret
-        // store, so a task that outlives the engine restart keeps old SQLite
-        // connections (and the shared -shm WAL-index) alive — the core of the
-        // 2026-07-02 unrecoverable-522 wedge. Aborting also frees the listener
-        // so the next spawn can rebind the port.
+        // Start serving in background. The Router state owns a `db` clone +
+        // the secret store, so the serve loop must not outlive the engine:
+        // `shutdown()` fires `http_shutdown` and awaits this task, which
+        // returns only after every connection task is gone. Draining (rather
+        // than aborting the accept loop) is what guarantees no keep-alive or
+        // WebSocket handler still reaches the pools once they close — the
+        // core of both the 2026-07-02 unrecoverable-522 wedge and the
+        // Windows closed-pool-while-serving zombie (2026-08-04 report).
+        // Returning also frees the listener so the next spawn can rebind.
         let server_addr = SocketAddr::new(IpAddr::V4(config.listen_address), config.port);
-        owned_tasks.push(tokio::spawn(async move {
-            let outcome = AssertUnwindSafe(SCServer::serve_router_with_listener(
+        let (http_shutdown, http_shutdown_rx) = tokio::sync::watch::channel(false);
+        let shutdown_requested = http_shutdown_rx.clone();
+        let http_task = tokio::spawn(async move {
+            let mut shutdown_rx = http_shutdown_rx;
+            let outcome = AssertUnwindSafe(SCServer::serve_router_with_listener_graceful(
                 server_addr,
                 listener,
                 router,
+                async move {
+                    // Err means the sender dropped, which only happens when
+                    // the whole ServerCore is gone — treat as shutdown.
+                    let _ = shutdown_rx.wait_for(|stop| *stop).await;
+                },
             ))
             .catch_unwind()
             .await;
+            if *shutdown_requested.borrow() {
+                info!("local API server drained after shutdown request");
+                return;
+            }
             let message = match outcome {
                 Ok(Ok(())) => "local API server stopped unexpectedly".to_string(),
                 Ok(Err(error)) => format!("local API server failed: {error}"),
@@ -981,7 +1024,7 @@ impl ServerCore {
             error!("{message}");
             crate::health::set_boot_error(&message);
             crate::health::set_recording_status(crate::health::RecordingStatus::Error);
-        }));
+        });
 
         info!("Server core started successfully");
         crate::health::set_boot_phase("ready", None);
@@ -1028,6 +1071,12 @@ impl ServerCore {
         // One shutdown signal, shared across both worker spawn paths and
         // stored on Self for `shutdown()` to fire on app quit.
         let redact_shutdown = Arc::new(Notify::new());
+        let redact_database_error_hook: screenpipe_redact::DatabaseErrorHook = {
+            let db = Arc::clone(&db);
+            Arc::new(move |error| {
+                db.report_sqlite_error(error);
+            })
+        };
 
         // Opt-in (Settings → Privacy → "redact secrets in agent logs", default
         // off): strip secrets the pi agent persists into its session logs (bash
@@ -1051,7 +1100,12 @@ impl ServerCore {
                     poll_interval: std::time::Duration::from_secs(5 * 60),
                     ..Default::default()
                 };
-                let _ = Worker::new(db.pool.clone(), placeholder, cfg)
+                let _ = Worker::new_with_writer(
+                    db.pool.clone(),
+                    db.coordinated_writer(),
+                    placeholder,
+                    cfg,
+                )
                     .spawn_with_shutdown(redact_shutdown.clone());
             }
         }
@@ -1127,7 +1181,13 @@ impl ServerCore {
                     tables: ALL_TARGET_TABLES.to_vec(),
                     ..Default::default()
                 };
-                let _ = Worker::new(db.pool.clone(), pipeline_arc, cfg)
+                let _ = Worker::new_with_writer(
+                    db.pool.clone(),
+                    db.coordinated_writer(),
+                    pipeline_arc,
+                    cfg,
+                )
+                    .with_database_error_hook(redact_database_error_hook.clone())
                     .spawn_with_shutdown(redact_shutdown.clone());
             } else {
                 // Local mode: spawn the download+load off the boot path
@@ -1135,9 +1195,11 @@ impl ServerCore {
                 // launch. The worker is created inside the spawned
                 // task once the model is ready.
                 let pool = db.pool.clone();
+                let writer = db.coordinated_writer();
                 let shutdown = redact_shutdown.clone();
                 let labels = pii_labels.clone();
                 let pseudonymizer = pseudonymizer.clone();
+                let database_error_hook = redact_database_error_hook.clone();
                 tokio::spawn(async move {
                     let policy = TextRedactionPolicy::from_labels(&labels);
                     // Prefer the local ONNX text redactor (~278 MB INT8,
@@ -1208,14 +1270,17 @@ impl ServerCore {
                     let pipeline = pipeline.with_pseudonyms(pseudonymizer);
                     let pipeline_arc = Arc::new(pipeline) as Arc<dyn Redactor>;
                     let cfg = WorkerConfig {
-                        // Local inference is CPU-bound. Keep bursts short so
-                        // the adaptive whole-process 30% controller can react
-                        // quickly; cloud/enclave batching remains at 16.
-                        batch_size: 4,
+                        // Keep 16 as the throughput ceiling. The worker starts
+                        // each table at four rows and adapts toward a 250 ms
+                        // work slice, while the whole-process governor still
+                        // enforces the sustained 30% CPU budget.
+                        batch_size: 16,
                         tables: ALL_TARGET_TABLES.to_vec(),
                         ..Default::default()
                     };
-                    let _ = Worker::new(pool, pipeline_arc, cfg).spawn_with_shutdown(shutdown);
+                    let _ = Worker::new_with_writer(pool, writer, pipeline_arc, cfg)
+                        .with_database_error_hook(database_error_hook)
+                        .spawn_with_shutdown(shutdown);
                 });
             }
         }
@@ -1230,6 +1295,7 @@ impl ServerCore {
             use screenpipe_redact::ImageRedactor;
 
             let pool = db.pool.clone();
+            let writer = db.coordinated_writer();
             if use_tinfoil {
                 let detector = Arc::new(TinfoilImageRedactor::new(TinfoilImageConfig {
                     api_key: tinfoil_api_key.clone(),
@@ -1242,14 +1308,16 @@ impl ServerCore {
                     has_api_key = tinfoil_api_key.is_some(),
                     "starting async image-PII worker (backend=tinfoil)"
                 );
-                let _ = ImageWorker::new(
+                let _ = ImageWorker::new_with_writer(
                     pool,
+                    writer,
                     detector,
                     ImageWorkerConfig {
                         policy: ImageRedactionPolicy::from_labels(&pii_labels),
                         ..Default::default()
                     },
                 )
+                .with_database_error_hook(redact_database_error_hook.clone())
                 .spawn_with_shutdown(redact_shutdown.clone());
             } else {
                 // Local mode: rfdetr ONNX. First-run downloads ~108 MB
@@ -1259,6 +1327,7 @@ impl ServerCore {
                 // loads, so they never drift on a model bump.
                 let shutdown = redact_shutdown.clone();
                 let labels = pii_labels.clone();
+                let database_error_hook = redact_database_error_hook.clone();
                 tokio::spawn(async move {
                     match RfdetrRedactor::load_or_download(RfdetrConfig::default()).await {
                         Ok(detector) => {
@@ -1268,14 +1337,16 @@ impl ServerCore {
                                 "starting async image-PII worker (backend=local)"
                             );
                             let detector_arc = Arc::new(detector) as Arc<dyn ImageRedactor>;
-                            let _ = ImageWorker::new(
+                            let _ = ImageWorker::new_with_writer(
                                 pool,
+                                writer,
                                 detector_arc,
                                 ImageWorkerConfig {
                                     policy: ImageRedactionPolicy::from_labels(&labels),
                                     ..Default::default()
                                 },
                             )
+                            .with_database_error_hook(database_error_hook)
                             .spawn_with_shutdown(shutdown);
                         }
                         Err(e) => {
@@ -1304,16 +1375,18 @@ impl ServerCore {
             data_path,
             port: config.port,
             local_api_key: config.api_auth_key.clone(),
-            enforce_free_plan_retention,
+            history_access,
             redact_shutdown,
             oauth_refresher: oauth_refresher_handle,
             external_memory_sync: external_memory_sync_handle,
             owned_tasks,
+            http_shutdown,
+            http_task: Some(http_task),
         })
     }
 
     /// Shut down the server core. Called only on app quit.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
         info!("Shutting down server core");
         screenpipe_connect::mdns::shutdown();
 
@@ -1347,8 +1420,27 @@ impl ServerCore {
             sync.stop();
         }
 
-        // Abort the HTTP serve task (its `Server` owns a db clone + secret
-        // store and the bound listener) and the HD meeting-event listeners.
+        // Drain the HTTP server before the pools close below: the serve loop
+        // stops accepting, then aborts + awaits every connection task, so no
+        // keep-alive or WebSocket handler still holds a clone of the db pool
+        // or secret store when `db.close()` runs. Without this, surviving
+        // connections keep answering on the port with closed pools — the
+        // Windows "Screenpipe isn't reachable" zombie (2026-08-04 report).
+        // Bounded so a wedged connection task can't hang app quit (the quit
+        // path budgets 5s total, the DB-wedge path 15s).
+        let _ = self.http_shutdown.send(true);
+        if let Some(http_task) = self.http_task.take() {
+            let abort_handle = http_task.abort_handle();
+            match tokio::time::timeout(Duration::from_secs(3), http_task).await {
+                Ok(_) => info!("HTTP server drained: no connection task outlives the pools"),
+                Err(_) => {
+                    warn!("HTTP server drain timed out after 3s; aborting serve task");
+                    abort_handle.abort();
+                }
+            }
+        }
+
+        // Abort the HD meeting-event listeners and background monitors.
         for task in &self.owned_tasks {
             task.abort();
         }

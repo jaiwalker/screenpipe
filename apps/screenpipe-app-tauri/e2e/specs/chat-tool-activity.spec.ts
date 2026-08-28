@@ -20,6 +20,7 @@ const RAW_JAVASCRIPT_MARKER = "RAW_JAVASCRIPT_SHOULD_NOT_BE_VISIBLE";
 type SeedAssistantPayload = {
   content?: string;
   contentBlocks?: unknown[];
+  storeOnlyActive?: boolean;
 };
 
 async function waitForChatSeedHooks(): Promise<void> {
@@ -120,7 +121,7 @@ describe("Chat tool activity progressive disclosure", function () {
           toolCall: {
             id: "read-skill",
             toolName: "read",
-            args: { path: "/private/workspace/SKILL.md" },
+            args: { path: "/private/workspace/skills/pdf/SKILL.md" },
             result: "private instructions",
             isRunning: false,
             startedAtMs,
@@ -186,6 +187,12 @@ describe("Chat tool activity progressive disclosure", function () {
       interval: 100,
       timeoutMsg: "running activity never became a friendly test status",
     });
+    const runningIndicator = await summary.$('[data-testid="tool-activity-running-indicator"]');
+    await runningIndicator.waitForExist({
+      timeout: t(2_000),
+      timeoutMsg: "collapsed running tool activity has no visible loading indicator",
+    });
+    expect(await runningIndicator.isDisplayed()).toBe(true);
     expect(await summary.getAttribute("aria-expanded")).toBe("false");
     expect((await $$('[data-testid="tool-activity-list"]')).length).toBe(0);
 
@@ -208,7 +215,7 @@ describe("Chat tool activity progressive disclosure", function () {
     const list = await $('[data-testid="tool-activity-list"]');
     await list.waitForExist({ timeout: t(5_000) });
     const listText = await list.getText();
-    expect(listText).toContain("Reviewed instructions");
+    expect(listText).toContain("Loaded PDF skill");
     expect(listText).toContain("Checked available automations");
     expect(listText).toContain("Analyzed information");
     expect(listText).toContain("Checking the work");
@@ -219,8 +226,53 @@ describe("Chat tool activity progressive disclosure", function () {
     expect(body).not.toContain(RAW_PYTHON_MARKER);
     expect(body).not.toContain(RAW_JAVASCRIPT_MARKER);
 
+    const skillIcon = await list.$('[data-activity-kind="skill"]');
+    expect(await skillIcon.isDisplayed()).toBe(true);
+
     await browser.pause(500);
     const filepath = await saveScreenshot("chat-tool-activity-running-expanded");
+    expect(existsSync(filepath)).toBe(true);
+  });
+
+  it("keeps store-routed tool work active until the outer Pi turn ends", async () => {
+    const startedAtMs = Date.now() - 5_000;
+    await seedConversation(randomUUID(), "Run the requested check.", {
+      content: "",
+      storeOnlyActive: true,
+      contentBlocks: [
+        {
+          type: "tool",
+          toolCall: {
+            id: "completed-before-final-answer",
+            toolName: "read",
+            args: { path: "/private/workspace/AGENTS.md" },
+            result: "instructions loaded",
+            isRunning: false,
+            startedAtMs,
+            endedAtMs: startedAtMs + 1_000,
+          },
+        },
+      ],
+    });
+
+    const summary = await lastSummary();
+    await browser.waitUntil(
+      async () => !(await summary.getText()).toLowerCase().includes("done"),
+      {
+        timeout: t(8_000),
+        interval: 100,
+        timeoutMsg: "completed tool was presented as done while its Pi turn was active",
+      },
+    );
+    const runningIndicator = await summary.$(
+      '[data-testid="tool-activity-running-indicator"]',
+    );
+    await runningIndicator.waitForDisplayed({
+      timeout: t(2_000),
+      timeoutMsg: "store-routed active turn has no visible running indicator",
+    });
+
+    const filepath = await saveScreenshot("chat-tool-activity-store-routed-active");
     expect(existsSync(filepath)).toBe(true);
   });
 
@@ -277,6 +329,9 @@ describe("Chat tool activity progressive disclosure", function () {
     );
     const summary = await lastSummary();
     expect(await summary.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      await summary.$('[data-testid="tool-activity-running-indicator"]').isExisting(),
+    ).toBe(false);
 
     const body = await visibleBodyText();
     expect(body).toContain("I reviewed the information and prepared the summary.");
@@ -286,6 +341,114 @@ describe("Chat tool activity progressive disclosure", function () {
 
     await browser.pause(300);
     const filepath = await saveScreenshot("chat-tool-activity-completed");
+    expect(existsSync(filepath)).toBe(true);
+  });
+
+  it("keeps the final assistant answer visible when a tool finishes afterward", async () => {
+    const startedAtMs = Date.now() - 8_000;
+    const finalAnswer =
+      "The renderer now keeps the assistant’s final answer visible, even when a completed tool event arrives afterward.";
+
+    await seedConversation(randomUUID(), "Summarize the files you checked.", {
+      content: finalAnswer,
+      contentBlocks: [
+        {
+          type: "text",
+          text: "I will inspect the relevant files before answering.",
+        },
+        {
+          type: "tool",
+          toolCall: {
+            id: "inspect-files",
+            toolName: "read",
+            args: { path: "/private/workspace/src" },
+            result: "files inspected",
+            isRunning: false,
+            startedAtMs,
+            endedAtMs: startedAtMs + 3_000,
+          },
+        },
+        { type: "text", text: finalAnswer },
+        {
+          type: "tool",
+          toolCall: {
+            id: "verify-answer",
+            toolName: "bash",
+            args: { command: "git diff --check" },
+            result: "",
+            isRunning: false,
+            startedAtMs: startedAtMs + 3_100,
+            endedAtMs: startedAtMs + 8_000,
+          },
+        },
+      ],
+    });
+
+    await browser.waitUntil(
+      async () => (await visibleBodyText()).includes(finalAnswer),
+      {
+        timeout: t(5_000),
+        timeoutMsg: "assistant answer disappeared behind the trailing tool event",
+      },
+    );
+
+    const body = await visibleBodyText();
+    expect(body).toContain(finalAnswer);
+    expect(body).not.toContain("I will inspect the relevant files before answering.");
+
+    const filepath = await saveScreenshot(
+      "chat-tool-activity-trailing-tool-answer",
+    );
+    expect(existsSync(filepath)).toBe(true);
+  });
+
+  it("keeps MCP startup health out of the chat transcript", async () => {
+    const startup = (
+      server: string,
+      state: "connecting" | "connected" | "auth" | "error",
+    ) => ({
+      type: "tool",
+      toolCall: {
+        id: `startup-${server}`,
+        toolName: `mcp__${server}__startup`,
+        args: {},
+        isRunning: state === "connecting",
+        isError: state === "auth" || state === "error",
+        result:
+          state === "auth"
+            ? `MCP server \`${server}\` failed to start: Not logged in. Run \`codex mcp login ${server}\`.`
+            : state === "error"
+              ? `MCP server \`${server}\` failed to start: HTTP 404: No workspace here`
+              : undefined,
+      },
+    });
+
+    await seedConversation(randomUUID(), "Configure my fallback order.", {
+      content: "I configured the fallback order.",
+      contentBlocks: [
+        startup("screenpipe", "connected"),
+        startup("linear", "connecting"),
+        startup("notion", "auth"),
+        startup("n8n", "error"),
+        { type: "text", text: "I configured the fallback order." },
+      ],
+    });
+
+    await browser.waitUntil(
+      async () => (await visibleBodyText()).includes("I configured the fallback order."),
+      { timeout: t(5_000), timeoutMsg: "assistant answer never appeared" },
+    );
+
+    expect((await $$('[data-testid="mcp-startup-status"]')).length).toBe(0);
+    expect((await $$('[data-testid="tool-activity-summary"]')).length).toBe(0);
+    const body = await visibleBodyText();
+    expect(body).toContain("I configured the fallback order.");
+    expect(body).not.toContain("MCP connections");
+    expect(body).not.toContain("Sign in required");
+    expect(body).not.toContain("Needs attention");
+    expect(body).not.toContain("No workspace here");
+
+    const filepath = await saveScreenshot("chat-mcp-startup-hidden");
     expect(existsSync(filepath)).toBe(true);
   });
 

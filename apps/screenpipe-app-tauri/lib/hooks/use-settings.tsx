@@ -8,9 +8,16 @@ import { commands } from "@/lib/utils/tauri";
 import { platform } from "@tauri-apps/plugin-os";
 import { Store } from "@tauri-apps/plugin-store";
 import { emit, listen } from "@tauri-apps/api/event";
+import {
+	createSettingsWriteQueue,
+	enqueueSettingsWrite,
+	flushSettingsWrites,
+} from "@/components/settings/settings-write-queue";
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import posthog from "posthog-js";
 import { cacheAnalyticsId, cacheAnalyticsEnabled } from "@/lib/analytics-id";
+import { captureSettingsChange } from "@/lib/analytics/settings-change";
+import { resolveTelemetryDisabledByEnv, shouldIdentifyInPostHog } from "@/lib/telemetry-env";
 import { User } from "../utils/tauri";
 import { SettingsStore } from "../utils/tauri";
 import { installAuthInterceptor } from "../auth-guard";
@@ -19,10 +26,6 @@ import {
 	hasAppEntitlement,
 	normalizeAppUser,
 } from "@/lib/app-entitlement";
-import {
-	resolveFreePlanRetentionTransition,
-	type LocalRetentionPreference,
-} from "@/lib/free-plan-retention";
 import { screenpipeWebUrl } from "@/lib/web-url";
 import type { SourceCitation } from "@/lib/source-citations";
 import type {
@@ -34,6 +37,7 @@ import {
 	applyManagedOverrides,
 	type ManagedSettingValue,
 } from "./managed-settings";
+import { isResolvedConsumerBuild } from "./use-is-enterprise-build";
 import {
 	clearLegacyUserGoalCategory,
 	DEFAULT_USER_GOAL_CATEGORY,
@@ -41,6 +45,18 @@ import {
 	readLegacyUserGoalCategory,
 	type UserGoalCategory,
 } from "@/lib/live-views/onboarding-activation";
+import {
+	cloneLocalDesktopRemotePolicy,
+	NEW_INSTALL_REMOTE_CONTROL_PREFERENCES,
+	normalizeDesktopRemotePolicySnapshot,
+	normalizeDesktopRemotePreferences,
+	type DesktopRemotePolicySnapshot,
+	type DesktopRemotePreferences,
+} from "@/lib/desktop-remote-control";
+import {
+	DEFAULT_SIDEBAR_NAV_LAYOUT,
+	type SidebarNavLayout,
+} from "@/lib/utils/sidebar-nav-layout";
 export type VadSensitivity = "low" | "medium" | "high";
 
 export type AIProviderType =
@@ -51,7 +67,26 @@ export type AIProviderType =
 	| "custom"
 	| "embedded"
 	| "screenpipe-cloud"
+	| "acp"
 	| "pi";
+
+export type AcpAgentPresetConfig = {
+	/** Stable adapter id from the ACP registry, or "custom". */
+	id: string;
+	/** Only needed for custom/local adapters. Curated adapters are resolved by id. */
+	command?: string;
+	args?: string[];
+	/** Empty values mean "inherit this variable from the app environment". */
+	env?: Record<string, string>;
+	/** Session option defaults advertised by the selected adapter. */
+	config?: Record<string, string>;
+	/** Session mode default advertised by the selected adapter. */
+	modeId?: string | null;
+	/** Screenpipe-owned ACP permission response policy. */
+	approvalMode?: "ask" | "allow-all" | null;
+	/** True when this ACP agent's model calls use Screenpipe Cloud allowance. */
+	useScreenpipeCloud?: boolean | null;
+};
 
 export type EmbeddedLLMConfig = {
 	enabled: boolean;
@@ -85,6 +120,10 @@ export type AIPreset = {
 			provider: "screenpipe-cloud";
 	  }
 	| {
+			provider: "acp";
+			acpAgent: AcpAgentPresetConfig;
+	  }
+	| {
 			provider: "anthropic";
 			apiKey: string;
 	  }
@@ -100,13 +139,15 @@ export type AIPreset = {
 	  }
 );
 
-export type UpdateChannel = "stable" | "beta";
+export type UpdateChannel = "stable" | "pre-release";
 
 // Chat history types
 export interface ChatMessage {
 	id: string;
 	role: "user" | "assistant";
 	content: string;
+	/** Local history source for messages copied from another agent client. */
+	importedFrom?: "claude-code" | "codex";
 	intent?: "steer";
 	turnIntentId?: string;
 	timestamp: number;
@@ -133,6 +174,7 @@ export interface ChatMessage {
 	interruptedBySteer?: boolean;
 	steeredResponse?: boolean;
 	stoppedByUser?: boolean;
+	interruptedByQuit?: boolean;
 	/** Wall-clock work duration for coalesced assistant messages (pipe
 	 *  runs). Used by the chat renderer as a fallback when no thinking
 	 *  blocks contributed a duration, so the work-group can still show
@@ -153,6 +195,9 @@ export interface ChatMessage {
  *                    rather than "Recents". */
 export type ConversationKind = "chat" | "pipe-watch" | "pipe-run";
 
+/** The client surface that hosted an imported agent conversation. */
+export type AgentHarness = "terminal" | "cursor" | "github-copilot" | "screenpipe";
+
 /** Pipe-specific context attached to `pipe-watch` / `pipe-run`
  *  conversations. Drives the in-panel banner and the sidebar
  *  grouping. */
@@ -168,6 +213,14 @@ export interface ChatConversation {
 	messages: ChatMessage[];
 	createdAt: number;
 	updatedAt: number;
+	/** Provenance for an explicitly imported local agent conversation. */
+	importedFrom?: {
+		source: "claude-code" | "codex";
+		sourceId: string;
+		importedAt: number;
+		/** Optional when the transcript exposes which client hosted the run. */
+		harness?: AgentHarness;
+	};
 	/** User pinned this conversation in the chat sidebar — keeps it at the top.
 	 *  Persists across app restarts via the on-disk conversation file. */
 	pinned?: boolean;
@@ -199,6 +252,12 @@ export interface ChatConversation {
 	 *  "branch in new chat". Exempts the branch from first-user-message
 	 *  dedup — it deliberately shares its parent's opening message. */
 	branchedFrom?: string;
+	/** Monotonic write counter, bumped by `saveConversationFile` on every
+	 *  persist. Drives compare-and-swap: a writer whose `rev` is behind the
+	 *  on-disk copy lost a race, so its save merges instead of overwriting.
+	 *  Absent on files written before CAS landed — treated as 0, which makes
+	 *  legacy writers merge rather than clobber. */
+	rev?: number;
 	/** Last URL the agent navigated the embedded browser sidebar to.
 	 *  Drives the right-side `<BrowserSidebar />` panel: when the user
 	 *  re-opens this conversation the panel restores to this URL.
@@ -220,6 +279,10 @@ export interface ChatConversation {
 	 *  the model selection when switching between chats. Persisted to disk
 	 *  so the selection survives app restart. */
 	presetId?: string;
+	/** The last live ACP session id for this conversation. Persisted so a
+	 *  reopen after the agent process is gone can reattach to that session
+	 *  (session/resume) instead of starting fresh. */
+	acpSessionId?: string;
 }
 
 export interface ChatHistoryStore {
@@ -230,24 +293,51 @@ export interface ChatHistoryStore {
 
 // Extend SettingsStore with fields added before Rust types are regenerated
 export type Settings = SettingsStore & {
+	/** Enable account data sync for this device. Default false. */
+	dataSyncEnabled?: boolean;
+	/** Friendly name used to partition this device's synced data. */
+	dataSyncDeviceName?: string;
+	/** Start boundary for this device's current explicit opt-in. */
+	dataSyncEnabledAt?: string;
+	/** Account that explicitly enabled Data Sync on this device. */
+	dataSyncAccountId?: string;
+	/** Enable automatic Activities generation. Default false. */
+	activitiesEnabled?: boolean;
+	/** Native Activity generation cadence in minutes. Default 15. */
+	activitiesIntervalMinutes?: number;
+	/** AI preset used by native Activity generation. */
+	activitiesAiPresetId?: string;
+	/** Next native Activity generation run as an ISO timestamp. */
+	activitiesNextRunAt?: string;
 	/** Goal used to prioritize the Home cards. Persisted in store.bin. */
 	userGoalCategory?: UserGoalCategory;
-	/** Internal marker/snapshot used to unwind the forced free-plan policy. */
-	_freePlanRetentionApplied?: boolean;
-	_preFreePlanRetention?: LocalRetentionPreference | null;
+	/** Where the user says they found screenpipe, answered once during setup.
+	 *  A fixed enum from the onboarding step — never free text. */
+	acquisitionSource?: string;
+	/** Stable local identifier used for device-scoped behavior. */
 	deviceId?: string;
 	/** Device-key values enforced by the current enterprise policy. */
 	enterpriseManagedSettings?: Record<string, ManagedSettingValue>;
+	/** @deprecated PR #5878 transition field; migrated into remoteControlPreferences. */
+	semanticContextPreference?: boolean | null;
+	/** Explicit local choices. null means inherit that control's remote rollout default. */
+	remoteControlPreferences?: DesktopRemotePreferences;
+	/** Last valid bounded policies, persisted for offline restarts and Rust enforcement. */
+	remoteControlPolicy?: DesktopRemotePolicySnapshot;
 	updateChannel?: UpdateChannel;
 	chatHistory?: ChatHistoryStore;
-	ignoredUrls?: string[];
+	/**
+	 * Entries the capture-category switches created, so turning a category off
+	 * removes only those and never a rule the user wrote by hand.
+	 */
+	categoryOwnedFilters?: { apps: string[]; domains: string[] };
 	searchShortcut?: string;
 	lockVaultShortcut?: string;
 	/** When true, audio devices follow system default and auto-switch on changes */
 	useSystemDefaultAudio?: boolean;
 	/** Enable AI workflow event detection (cloud, triggers event-based pipes) */
 	enableWorkflowEvents?: boolean;
-	/** Audio transcription scheduling: "realtime" (default) or "batch" (longer chunks for quality) */
+	/** Audio transcription scheduling: "batch" (default, longer chunks for quality) or "realtime". */
 	transcriptionMode?: "realtime" | "smart" | "batch";
 	/** Live notes for manually-started meetings. Separate from background 24/7 transcription. */
 	meetingLiveTranscriptionEnabled?: boolean;
@@ -312,6 +402,10 @@ export type Settings = SettingsStore & {
 	powerMode?: "auto" | "performance" | "battery_saver";
 	/** Show restart notifications when audio/vision capture stalls (default: false for now) */
 	showRestartNotifications?: boolean;
+	/** Hide only overlay windows from screen recordings and sharing. Default false. */
+	hideOverlayInScreenRecording?: boolean;
+	/** @deprecated Retained for settings compatibility. */
+	hideAppInScreenShare?: boolean;
 	/** Pause all screen capture when a DRM-protected streaming app (Netflix, Disney+, etc.) or a remote-desktop client (Omnissa/VMware Horizon) is focused — they blank their windows during screen recording */
 	pauseOnDrmContent?: boolean;
 	/** Skip clipboard capture in the UI recorder (events + content). Defaults to true (clipboard capture OFF) — passwords / API keys often pass through the clipboard, so it's opt-in. */
@@ -320,8 +414,9 @@ export type Settings = SettingsStore & {
 	disableKeyboardCapture?: boolean;
 	/** Skip mouse-click rows in the UI recorder. Defaults to false (click capture ON) — clicks carry no text payload and drive workflow/task mining. Clicks still wake event-driven capture when disabled. */
 	disableClickCapture?: boolean;
-	/** Experimental: capture System Audio via CoreAudio Process Tap (macOS 14.4+) instead of ScreenCaptureKit.
-	 *  Off by default. Ignored on macOS <14.4 and non-macOS — falls back to SCK. */
+	/** Capture System Audio via CoreAudio Process Tap on macOS 14.4+ instead of ScreenCaptureKit.
+	 *  Desktop migration V3 enables it automatically. Initial tap failures fall back to SCK;
+	 *  ignored on macOS <14.4 and non-macOS. */
 	experimentalCoreaudioSystemAudio?: boolean;
 	/** Beta ("Smart recording" in the app): during meetings, capture only the meeting app's audio
 	 *  and the microphone it actually uses (per-process piggyback). Off by default. Engages in ANY
@@ -359,6 +454,10 @@ export type Settings = SettingsStore & {
 	localRetentionMode?: "media" | "lean" | "all";
 	/** Apply macOS vibrancy effect to sidebar for a translucent glass look */
 	translucentSidebar?: boolean;
+	/** User-customized Home sidebar: row order plus the ids kept out of it.
+	 *  Meetings ships hidden, which is what puts its compact icon in the
+	 *  top-left chrome strip instead. See `lib/utils/sidebar-nav-layout`. */
+	sidebarNavLayout?: SidebarNavLayout;
 	/** Show the chat suggestion chips above the input — the "follow up"
 	 *  questions and the connection-aware suggested prompts. The single inline
 	 *  X on the chips flips this to false; re-enable from Settings → Display.
@@ -388,6 +487,9 @@ export type Settings = SettingsStore & {
 		captureStalls: boolean;
 		appUpdates: boolean;
 		pipeNotifications: boolean;
+		/** In-app /notify before background scheduled tasks burn most of hosted-AI allowance.
+		 *  Default true; still gated by master notifications and pipe notifications. */
+		pipeAllowanceWarnings?: boolean;
 		/** Toast when a monitor is plugged, unplugged, or switched (clamshell, dock). Default true. */
 		displayChanges?: boolean;
 		/** Live-note prompt when a meeting is detected. Default true. */
@@ -571,30 +673,6 @@ const DEFAULT_CLOUD_PRESET: AIPreset = makeDefaultPresets(false)[0];
 
 const DEFAULT_AUDIO_ENGINE = "whisper-large-v3-turbo-quantized";
 
-async function configureLocalRetention(
-	policy: LocalRetentionPreference,
-): Promise<void> {
-	try {
-		const { localFetch } = await import("@/lib/api");
-		const response = await localFetch("/retention/configure", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				enabled: policy.enabled,
-				retention_days: policy.days,
-				mode: policy.mode,
-			}),
-		});
-		if (!response.ok) {
-			console.warn(`failed to configure local retention (${response.status})`);
-		}
-	} catch (error) {
-		// Persisted settings are still applied by the native startup path on the
-		// next launch. A temporarily unavailable local server must not fail login.
-		console.warn("failed to configure local retention", error);
-	}
-}
-
 // "Paid" = any active app entitlement (Basic / Business / Enterprise / Lifetime)
 // OR the legacy cloud-sync subscription. Broadened from `cloud_subscribed`-only so
 // every paying user — not just Cloud Sync subscribers — gets Screenpipe Cloud
@@ -633,6 +711,9 @@ const applyProCloudAudioDefaults = (settings: Settings): Settings => {
 };
 
 let DEFAULT_SETTINGS: Settings = {
+			dataSyncEnabled: false,
+			activitiesEnabled: false,
+			activitiesIntervalMinutes: 15,
 			aiPresets: makeDefaultPresets(false) as any,
 			userGoalCategory: DEFAULT_USER_GOAL_CATEGORY,
 			deviceId: crypto.randomUUID(),
@@ -667,6 +748,7 @@ let DEFAULT_SETTINGS: Settings = {
 			],
 			includedWindows: [],
 			ignoredUrls: [],
+			includedUrls: [],
 			ignoredMeetingApps: [],
 			teamFilters: { ignoredWindows: [], includedWindows: [], ignoredUrls: [] },
 
@@ -682,7 +764,7 @@ let DEFAULT_SETTINGS: Settings = {
 				port: 11434,
 			},
 		updateChannel: "stable",
-			autoUpdate: false,
+			autoUpdate: true,
 			autoUpdatePipes: true,
 			autoStartEnabled: true,
 			platform: "unknown",
@@ -720,9 +802,12 @@ let DEFAULT_SETTINGS: Settings = {
 			disableVision: false,
 			disableScreenshots: false,
 			enableSemanticContext: false,
+			remoteControlPreferences: {
+				...NEW_INSTALL_REMOTE_CONTROL_PREFERENCES,
+			},
+			remoteControlPolicy: cloneLocalDesktopRemotePolicy(),
 			semanticContextMode: "memory",
 			useAllMonitors: true,
-			showShortcutOverlay: true,
 			chatHistory: {
 				conversations: [],
 				activeConversationId: null,
@@ -730,6 +815,8 @@ let DEFAULT_SETTINGS: Settings = {
 			},
 			overlayMode: "fullscreen",
 			showOverlayInScreenRecording: false,
+			hideOverlayInScreenRecording: false,
+			hideAppInScreenShare: true,
 			disableTimeline: false,
 			firstRunGuideDone: false,
 			videoQuality: "balanced",
@@ -737,7 +824,12 @@ let DEFAULT_SETTINGS: Settings = {
 			cloudArchiveEnabled: false,
 			cloudArchiveRetentionDays: 7,
 			meetingSummaryPipeSlug: "meeting-summary",
-			filterMusic: false,
+			filterMusic: true,
+			prioritizeInputLatency: false,
+			allowHidingShortcutOverlay: false,
+			showShortcutOverlay: true,
+			shortcutOverlaySnoozedUntil: null,
+			sidebarNavLayout: { ...DEFAULT_SIDEBAR_NAV_LAYOUT },
 			ignoreIncognitoWindows: true,
 			enhancedIncognitoDetection: false,
 			pauseOnDrmContent: false,
@@ -746,7 +838,7 @@ let DEFAULT_SETTINGS: Settings = {
 			disableClickCapture: false,
 			keepComputerAwake: false,
 			showRestartNotifications: false,
-			experimentalCoreaudioSystemAudio: false,
+			experimentalCoreaudioSystemAudio: true,
 			experimentalMeetingPiggyback: false,
 			alwaysRecordBluetoothMic: false,
 			windowsInputAecEnabled: false,
@@ -794,8 +886,66 @@ export function createDefaultSettingsObject(): Settings {
 	}
 }
 
+export function normalizeSettingsArrays(settings: Settings): boolean {
+	const defaults = {
+		...createDefaultSettingsObject(),
+		aiPresets: makeDefaultPresets(settings.user?.cloud_subscribed === true),
+	};
+	let changed = false;
+
+	for (const [key, fallback] of Object.entries(defaults)) {
+		if (!Array.isArray(fallback) || Array.isArray(settings[key])) continue;
+		settings[key] = [...fallback];
+		changed = true;
+	}
+
+	return changed;
+}
+
 // Store singleton
 let _store: Promise<Store> | undefined;
+
+// Settings writes are whole-object read/merge/save operations. Keep them in one
+// FIFO so two controls cannot both read the same snapshot and let the slower
+// save erase the faster one. The updater also drains this queue before a
+// banner-triggered relaunch, which closes the "toggle Auto-update, then click
+// Restart to update" race where process exit could beat the preference save.
+const settingsWriteQueue = createSettingsWriteQueue();
+
+async function waitForE2eSettingsWriteDelay(): Promise<void> {
+	if (
+		process.env.NEXT_PUBLIC_SCREENPIPE_E2E !== "true" ||
+		typeof document === "undefined"
+	) {
+		return;
+	}
+	const delayMs = Number(
+		document.documentElement.dataset.e2eSettingsWriteDelayMs ?? 0,
+	);
+	if (Number.isFinite(delayMs) && delayMs > 0) {
+		await new Promise((resolve) => setTimeout(resolve, delayMs));
+	}
+}
+
+function enqueueSettingsStoreWrite(write: () => Promise<void>): Promise<void> {
+	const queuedWrite = async () => {
+		await waitForE2eSettingsWriteDelay();
+		await write();
+		if (
+			process.env.NEXT_PUBLIC_SCREENPIPE_E2E === "true" &&
+			typeof document !== "undefined"
+		) {
+			document.documentElement.dataset.e2eSettingsWriteFinishedAt = String(
+				performance.now(),
+			);
+		}
+	};
+	return enqueueSettingsWrite(settingsWriteQueue, queuedWrite);
+}
+
+export async function flushPendingSettingsWrites(): Promise<void> {
+	await flushSettingsWrites(settingsWriteQueue);
+}
 
 export const getStore = async () => {
 	if (!_store) {
@@ -844,6 +994,8 @@ export const saveAndEncrypt = async (store: Store) => {
  * pre-hydration state can't sign the user out.
  */
 async function setSettingsStripped(store: Store, settings: Settings) {
+	normalizeSettingsArrays(settings);
+
 	const token = settings?.user?.token;
 	// Default to "safe to write as-is" when there's no token to protect.
 	let persisted = !token;
@@ -892,6 +1044,30 @@ async function hydrateCloudToken(settings: Settings): Promise<Settings> {
 	return settings;
 }
 
+/**
+ * The managed values that should actually be enforced right now, or `undefined`
+ * on a confirmed consumer build.
+ *
+ * Enterprise and consumer installs share `~/.screenpipe`, so a machine that ran
+ * the enterprise binary once keeps its `enterpriseManagedSettings` blob. The UI
+ * layer gates on `isEnterprise` (`use-enterprise-policy`), but this persistence
+ * layer did not — so on a consumer build the switch rendered as a normal,
+ * interactive control while every write was clamped straight back on both write
+ * and read, with no lock shown and no way to clear the blob. Toggling
+ * "screenshot images" off simply did nothing, forever.
+ *
+ * Fails closed: `isResolvedConsumerBuild` only reports true on an authoritative
+ * `false` from Rust, so an unresolved or failed check keeps enforcing policy and
+ * a managed device cannot escape it by racing the IPC.
+ */
+async function activeManagedValues(
+	settings: Partial<Settings>
+): Promise<Record<string, ManagedSettingValue> | undefined> {
+	const managed = settings.enterpriseManagedSettings;
+	if (!managed) return undefined;
+	return (await isResolvedConsumerBuild()) ? undefined : managed;
+}
+
 // Store utilities similar to Cap's implementation
 function createSettingsStore() {
 	const get = async (): Promise<Settings> => {
@@ -904,8 +1080,9 @@ function createSettingsStore() {
 		// #3943: re-hydrate the cloud token that no longer persists in store.bin.
 		await hydrateCloudToken(settings);
 
+		let needsUpdate = normalizeSettingsArrays(settings);
+
 		// Migration: Ensure existing users have deviceId for free tier tracking
-		let needsUpdate = false;
 		const existingUserGoal = normalizeUserGoalCategory(
 			settings.userGoalCategory,
 		);
@@ -946,6 +1123,67 @@ function createSettingsStore() {
 			needsUpdate = true;
 		}
 
+		// One-time migration (V3 — supersedes V2): flip CoreAudio Process Tap
+		// back ON. The toggle was removed from the UI and the runtime falls back
+		// through normal backend selection if tap initialization fails (#5236).
+		if (!(settings as any).coreaudioTapMigrationV3) {
+			settings.experimentalCoreaudioSystemAudio = true;
+			(settings as any).coreaudioTapMigrationV3 = true;
+			needsUpdate = true;
+		}
+
+		// Existing installs predate the typed remote-control registry. Preserve
+		// the post-migration effective values as explicit choices. Rust seeds an
+		// all-null object for genuinely new installs, so those can inherit rollout
+		// defaults without changing any established user preference.
+		const normalizedRemotePreferences = normalizeDesktopRemotePreferences(settings);
+		if (
+			JSON.stringify(settings.remoteControlPreferences) !==
+			JSON.stringify(normalizedRemotePreferences)
+		) {
+			settings.remoteControlPreferences = normalizedRemotePreferences;
+			needsUpdate = true;
+		}
+		const legacyRemoteSettings = settings as Settings & {
+			semanticContextRemoteDefault?: boolean;
+			semanticContextRemoteForceDisabled?: boolean;
+		};
+		const normalizedRemotePolicy = normalizeDesktopRemotePolicySnapshot(
+			settings.remoteControlPolicy,
+			{
+				defaultEnabled: legacyRemoteSettings.semanticContextRemoteDefault,
+				forceDisabled:
+					legacyRemoteSettings.semanticContextRemoteForceDisabled,
+			},
+		);
+		if (
+			JSON.stringify(settings.remoteControlPolicy) !==
+			JSON.stringify(normalizedRemotePolicy)
+		) {
+			settings.remoteControlPolicy = normalizedRemotePolicy;
+			needsUpdate = true;
+		}
+		if (settings.semanticContextPreference !== undefined) {
+			delete settings.semanticContextPreference;
+			needsUpdate = true;
+		}
+		if (legacyRemoteSettings.semanticContextRemoteDefault !== undefined) {
+			delete legacyRemoteSettings.semanticContextRemoteDefault;
+			needsUpdate = true;
+		}
+		if (legacyRemoteSettings.semanticContextRemoteForceDisabled !== undefined) {
+			delete legacyRemoteSettings.semanticContextRemoteForceDisabled;
+			needsUpdate = true;
+		}
+
+		// One-time migration: default filterMusic to ON — transcribing music
+		// as speech is noise, users can turn it off in advanced settings (#5236).
+		if (!(settings as any).filterMusicDefaultedOn) {
+			settings.filterMusic = true;
+			(settings as any).filterMusicDefaultedOn = true;
+			needsUpdate = true;
+		}
+
 		if (settings.meetingLiveTranscriptionEnabled === undefined) {
 			settings.meetingLiveTranscriptionEnabled = true;
 			needsUpdate = true;
@@ -967,7 +1205,7 @@ function createSettingsStore() {
 		// get() returns directly when there are no stored settings).
 
 		// Migration: Add default presets if user has none
-		if (!settings.aiPresets || settings.aiPresets.length === 0) {
+		if (!Array.isArray(settings.aiPresets) || settings.aiPresets.length === 0) {
 			const isPro = settings.user?.cloud_subscribed === true;
 			settings.aiPresets = makeDefaultPresets(isPro) as any;
 			needsUpdate = true;
@@ -1159,7 +1397,7 @@ function createSettingsStore() {
 
 			// Migrations may touch recording defaults. Enterprise values are the
 			// final authority and must survive reads as well as explicit writes.
-			const managedValues = settings.enterpriseManagedSettings;
+			const managedValues = await activeManagedValues(settings);
 			if (managedValues) {
 				const managedChanged = Object.entries(managedValues).some(
 					([key, value]) => JSON.stringify(settings[key]) !== JSON.stringify(value)
@@ -1168,6 +1406,11 @@ function createSettingsStore() {
 					Object.assign(settings, applyManagedOverrides(settings, managedValues));
 					needsUpdate = true;
 				}
+			} else if (settings.enterpriseManagedSettings) {
+				// Confirmed consumer build carrying a stale policy blob: drop it so
+				// the machine stops re-clamping on every read.
+				delete settings.enterpriseManagedSettings;
+				needsUpdate = true;
 			}
 
 		// Save migrations if needed
@@ -1184,40 +1427,43 @@ function createSettingsStore() {
 		return settings;
 	};
 
-	const set = async (value: Partial<Settings>) => {
-		const store = await getStore();
-		const current = await get();
-		const managedValues = current.enterpriseManagedSettings;
-		let newSettings = { ...current, ...value } as Settings;
-		if ("user" in value) {
-			// On logout / Pro→non-Pro transition, clear the V2 marker so a future
-			// Pro login re-evaluates cloud defaults (handles account switching).
-			if (!isLoggedInProUser(newSettings.user)) {
-				delete (newSettings as any)._proCloudAudioDefaultsAppliedV2;
+	const set = (value: Partial<Settings>) =>
+		enqueueSettingsStoreWrite(async () => {
+			const store = await getStore();
+			const current = await get();
+			const managedValues = await activeManagedValues(current);
+			let newSettings = { ...current, ...value } as Settings;
+			if ("user" in value) {
+				// On logout / Pro→non-Pro transition, clear the V2 marker so a future
+				// Pro login re-evaluates cloud defaults (handles account switching).
+				if (!isLoggedInProUser(newSettings.user)) {
+					delete (newSettings as any)._proCloudAudioDefaultsAppliedV2;
+				}
+				newSettings = applyProCloudAudioDefaults(newSettings);
 			}
-			newSettings = applyProCloudAudioDefaults(newSettings);
-		}
-		newSettings = applyManagedOverrides(
-			newSettings as Record<string, unknown>,
-			managedValues
-		) as Settings;
-		if (managedValues) newSettings.enterpriseManagedSettings = managedValues;
-		await setSettingsStripped(store, newSettings);
-		await saveAndEncrypt(store);
-	};
+			newSettings = applyManagedOverrides(
+				newSettings as Record<string, unknown>,
+				managedValues
+			) as Settings;
+			if (managedValues) newSettings.enterpriseManagedSettings = managedValues;
+			else delete newSettings.enterpriseManagedSettings;
+			await setSettingsStripped(store, newSettings);
+			await saveAndEncrypt(store);
+		});
 
-	const reset = async () => {
-		const store = await getStore();
-		const current = await get();
-		const managedValues = current.enterpriseManagedSettings;
-		const defaults = applyManagedOverrides(
-			createDefaultSettingsObject() as Record<string, unknown>,
-			managedValues
-		) as Settings;
-		if (managedValues) defaults.enterpriseManagedSettings = managedValues;
-		await store.set("settings", defaults);
-		await saveAndEncrypt(store);
-	};
+	const reset = () =>
+		enqueueSettingsStoreWrite(async () => {
+			const store = await getStore();
+			const current = await get();
+			const managedValues = await activeManagedValues(current);
+			const defaults = applyManagedOverrides(
+				createDefaultSettingsObject() as Record<string, unknown>,
+				managedValues
+			) as Settings;
+			if (managedValues) defaults.enterpriseManagedSettings = managedValues;
+			await store.set("settings", defaults);
+			await saveAndEncrypt(store);
+		});
 
 	const resetSetting = async <K extends keyof Settings>(key: K) => {
 		const current = await get();
@@ -1235,6 +1481,7 @@ function createSettingsStore() {
 			return store.onKeyChange("settings", async (newValue: Settings | null | undefined) => {
 				const mySeq = ++seq;
 				const next = await hydrateCloudToken(newValue || createDefaultSettingsObject());
+				normalizeSettingsArrays(next);
 				if (mySeq === seq) callback(next);
 			});
 		});
@@ -1329,6 +1576,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	// Install global fetch interceptor to catch 401s from screenpipe.com
 	const settingsRef = useRef(settings);
 	settingsRef.current = settings;
+	const settingsUpdateGenerationRef = useRef(0);
 
 	// Monotonic auth generation, bumped on every explicit sign-out. A
 	// loadUser() call snapshots this at entry; if a sign-out bumps it while the
@@ -1433,36 +1681,65 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 		// PostHog opt-in/out on the next boot. See lib/analytics-id.
 		cacheAnalyticsEnabled(settings.analyticsEnabled);
 
-		const clerkId = settings.user?.clerk_id || undefined;
-		const distinctId = clerkId || settings.analyticsId;
+		let cancelled = false;
 
-		if (clerkId) {
-			try { posthog.alias(clerkId); } catch {}
-		}
+		const identifyNow = () => {
+			const clerkId = settings.user?.clerk_id || undefined;
+			const distinctId = clerkId || settings.analyticsId;
 
-		const baseProps = {
-			email: settings.user?.email,
-			name: settings.user?.name,
-			user_id: settings.user?.id,
-			clerk_id: clerkId,
-			github_username: settings.user?.github_username,
-			website: settings.user?.website,
-			contact: settings.user?.contact,
-			cloud_subscribed: !!settings.user?.cloud_subscribed,
-			app_entitled: !!(settings.user as any)?.app_entitled,
-			subscription_plan: (settings.user as any)?.subscription_plan,
-			machine_analytics_id: settings.analyticsId,
+			if (clerkId) {
+				try { posthog.alias(clerkId); } catch {}
+			}
+
+			const baseProps = {
+				email: settings.user?.email,
+				name: settings.user?.name,
+				user_id: settings.user?.id,
+				clerk_id: clerkId,
+				github_username: settings.user?.github_username,
+				website: settings.user?.website,
+				contact: settings.user?.contact,
+				cloud_subscribed: !!settings.user?.cloud_subscribed,
+				app_entitled: !!(settings.user as any)?.app_entitled,
+				subscription_plan: (settings.user as any)?.subscription_plan,
+				machine_analytics_id: settings.analyticsId,
+			};
+
+			getVersion()
+				.then((appVersion) => {
+					if (cancelled) return;
+					posthog.identify(distinctId, { ...baseProps, app_version: appVersion });
+				})
+				.catch(() => {
+					if (cancelled) return;
+					posthog.identify(distinctId, baseProps);
+				});
 		};
 
-		getVersion()
-			.then((appVersion) => {
-				posthog.identify(distinctId, { ...baseProps, app_version: appVersion });
-			})
-			.catch(() => {
-				posthog.identify(distinctId, baseProps);
-			});
+		// alias()/identify() are what actually mint a PostHog person under
+		// `person_profiles: "identified_only"`, so they must clear BOTH opt-out
+		// signals before running:
+		//
+		//  - settings.analyticsEnabled — the user's own preference. providers.tsx
+		//    can only read the localStorage cache, which is EMPTY on a fresh
+		//    profile, so it opt_in's by default. Without this check a user who
+		//    has analytics turned off is still identified once on first boot.
+		//  - the environment guard (CI / SCREENPIPE_DISABLE_TELEMETRY), which is
+		//    known only to Rust. See lib/telemetry-env.
+		void resolveTelemetryDisabledByEnv().then((envDisabled) => {
+			if (cancelled) return;
+			if (!shouldIdentifyInPostHog({ analyticsEnabled: settings.analyticsEnabled, envDisabled })) {
+				try { posthog.opt_out_capturing(); } catch {}
+				return;
+			}
+			identifyNow();
+		});
+
+		return () => {
+			cancelled = true;
+		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [settings.analyticsId, settings.user?.id, settings.user?.clerk_id, settings.user?.cloud_subscribed, (settings.user as any)?.app_entitled, (settings.user as any)?.subscription_plan]);
+	}, [settings.analyticsId, settings.analyticsEnabled, settings.user?.id, settings.user?.clerk_id, settings.user?.cloud_subscribed, (settings.user as any)?.app_entitled, (settings.user as any)?.subscription_plan]);
 
 	// When user becomes a Pro subscriber, default to cloud transcription (one-time)
 	useEffect(() => {
@@ -1514,6 +1791,23 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 	}, [settings.fontSize]);
 
 	const updateSettings = async (updates: Partial<Settings>) => {
+		const updateGeneration = ++settingsUpdateGenerationRef.current;
+		const settingsBeforeUpdate = settingsRef.current;
+
+		// Controlled switches and checkboxes must reflect the click immediately.
+		// Waiting for the asynchronous store listener makes React render the old
+		// value again, so the first click appears to undo itself. Persistence stays
+		// authoritative: a failed latest write is rolled back below.
+		setSettings((current) => ({ ...current, ...updates }) as Settings);
+
+		// Every settings mutation funnels through here, which makes this the one
+		// place that can answer "which controls do people actually change" without
+		// wiring ~40 call sites. The payload is redacted to booleans and numbers
+		// before it leaves — see lib/analytics/settings-change.
+		captureSettingsChange(
+			updates as Record<string, unknown>,
+			typeof window === "undefined" ? undefined : window.location.pathname,
+		);
 		const clearsAccount = "user" in updates && !updates.user;
 		// Sign-out (user → null) must invalidate any loadUser() request that is
 		// currently in flight so the cleared session can't be resurrected when a
@@ -1529,21 +1823,28 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 			// session. Fire-and-forget; the listener above bumps each window's ref.
 			emit("screenpipe-auth-signout").catch(() => {});
 		}
-		await settingsStore.set(updates);
+		try {
+			await settingsStore.set(updates);
+		} catch (error) {
+			// Do not let an older failed write overwrite a newer optimistic click.
+			// The queued newer write (and its store event) owns reconciliation.
+			if (settingsUpdateGenerationRef.current === updateGeneration) {
+				try {
+					setSettings(await settingsStore.get());
+				} catch {
+					setSettings(settingsBeforeUpdate);
+				}
+			}
+			throw error;
+		}
 		// Settings will be updated via the listener
 		if (clearsAccount) {
-			// Signed-out state is Unknown. Apply the non-destructive feature cap and
-			// stop any cleanup loop left running by a previously verified account.
+			// Account changes must not alter the user's local retention policy.
 			try {
 				await commands.setCloudToken(null);
 			} catch (error) {
 				console.warn("failed to clear cloud token after sign-out:", error);
 			}
-			await configureLocalRetention({
-				enabled: false,
-				days: 14,
-				mode: "media",
-			});
 		}
 
 		// Only update the port in the API module immediately — auth changes
@@ -1662,20 +1963,10 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				} catch (e) {
 					console.warn("failed to apply unknown-plan restrictions:", e);
 				}
-				// A free-plan cleanup loop may already be running from the prior
-				// verified state. Pause it without overwriting the saved preference;
-				// unknown evidence can cap features, but it cannot authorize deletion.
-				await configureLocalRetention({
-					enabled: false,
-					days: 14,
-					mode: "media",
-				});
 				throw new Error(
 					"account response did not contain verified free or paid plan truth",
 				);
 			}
-			const isFreePlan = localPlanPolicy === "verified-free";
-			const isPaidPlan = localPlanPolicy === "verified-paid";
 
 			// if user was not logged in, send posthog event and bridge identity
 			if (!settings.user?.id) {
@@ -1695,29 +1986,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				}
 			}
 
-			const retentionTransition = resolveFreePlanRetentionTransition(
-				settingsRef.current,
-				isFreePlan,
-				isPaidPlan,
-			);
-			const retentionUpdates =
-				retentionTransition.kind === "enforce"
-					? {
-							_freePlanRetentionApplied: true,
-							_preFreePlanRetention: retentionTransition.previous,
-							localRetentionEnabled: retentionTransition.policy.enabled,
-							localRetentionDays: retentionTransition.policy.days,
-							localRetentionMode: retentionTransition.policy.mode,
-						}
-					: retentionTransition.kind === "restore"
-						? {
-								_freePlanRetentionApplied: false,
-								localRetentionEnabled: retentionTransition.policy.enabled,
-								localRetentionDays: retentionTransition.policy.days,
-								localRetentionMode: retentionTransition.policy.mode,
-							}
-						: {};
-			await updateSettings({ user: userData, ...retentionUpdates } as any);
+			await updateSettings({ user: userData });
 
 			// Push the fresh token into the running sidecar so the
 			// `Server.cloud_token` (used by /v1/chat/completions proxy) and
@@ -1732,21 +2001,6 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 				console.warn("failed to push cloud token to sidecar:", e);
 			}
 
-			const verifiedRetentionPolicy =
-				retentionTransition.kind !== "none"
-					? retentionTransition.policy
-					: isPaidPlan
-						? {
-								enabled: settingsRef.current.localRetentionEnabled === true,
-								days: settingsRef.current.localRetentionDays ?? 14,
-								mode: settingsRef.current.localRetentionMode ?? "media",
-							}
-						: null;
-			if (verifiedRetentionPolicy) {
-				// setCloudToken updates native enforcement first. Then apply or resume
-				// the verified policy on the already-running retention task.
-				await configureLocalRetention(verifiedRetentionPolicy);
-			}
 		} catch (err) {
 			console.error("failed to load user:", err instanceof Error ? err.message : err);
 			throw err;

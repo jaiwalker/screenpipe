@@ -8,16 +8,25 @@ use chrono::{DateTime, Utc};
 use screenpipe_db::DatabaseManager;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
+use url::Url;
 
 /// Calendar event signal received from the event bus (published by calendar.rs in src-tauri).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CalendarEventSignal {
+    /// Stable provider event id (`CalendarEventItem::id`). Empty for feeds that
+    /// don't supply one — such events are never bound, only matched.
+    #[serde(default)]
+    pub id: String,
     pub title: String,
     pub start: String,
     pub end: String,
     #[serde(default)]
     pub attendees: Vec<String>,
+    /// Conference URL supplied by the calendar provider. The audio-process
+    /// detector compares this with the browser URL it observed in the call.
+    #[serde(default)]
+    pub meeting_url: Option<String>,
     #[serde(default)]
     pub is_all_day: bool,
 }
@@ -35,32 +44,401 @@ pub(crate) struct DetectorStopSignal {
     pub app: String,
 }
 
-/// Check if any non-all-day calendar event overlaps with the current time.
-/// Returns (title, attendees) of the first matching event, or (None, None).
-pub(crate) fn find_overlapping_calendar_event(
-    events: &[CalendarEventSignal],
-) -> (Option<String>, Option<Vec<String>>) {
-    let now = Utc::now();
-    for cal_event in events {
-        if let (Ok(start), Ok(end)) = (
-            DateTime::parse_from_rfc3339(&cal_event.start),
-            DateTime::parse_from_rfc3339(&cal_event.end),
-        ) {
-            let start_utc = start.with_timezone(&Utc);
-            let end_utc = end.with_timezone(&Utc);
-            if start_utc <= now && end_utc >= now {
-                return (
-                    Some(cal_event.title.clone()),
-                    if cal_event.attendees.is_empty() {
-                        None
-                    } else {
-                        Some(cal_event.attendees.clone())
-                    },
-                );
-            }
+/// How early a meeting may start and still belong to a scheduled event.
+/// People join a minute or two before the hour; without this the row lands
+/// with no title and no attendees even though the event is right there.
+const CALENDAR_JOIN_LEAD: chrono::TimeDelta = chrono::TimeDelta::minutes(3);
+
+/// A conference URL is stronger evidence than clock overlap, so allow the
+/// normal human behavior of opening the room well before its scheduled start.
+const CALENDAR_EXACT_URL_JOIN_LEAD: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+
+/// Exact room identity also tolerates a calendar that ended a little early.
+/// Time-only matching deliberately gets no end grace.
+const CALENDAR_EXACT_URL_END_GRACE: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+
+/// Epoch milliseconds for an RFC3339 timestamp, falling back to the raw string
+/// when it will not parse. Used only for the binding key: two publishers can
+/// describe the same instant as `...:00Z` and `...:00.000+00:00`, and the key
+/// has to be identical either way or the same event would be claimed twice.
+fn timestamp_key_part(raw: &str) -> String {
+    DateTime::parse_from_rfc3339(raw)
+        .map(|t| t.timestamp_millis().to_string())
+        .unwrap_or_else(|_| raw.to_string())
+}
+
+/// A calendar event resolved for a meeting, with the identity used to keep it
+/// bound to exactly one meeting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CalendarBinding {
+    /// Dedupe identity, persisted in `meetings.calendar_event_id`.
+    pub key: String,
+    pub title: String,
+    /// Pre-joined for storage; `None` when the event lists nobody.
+    pub attendees: Option<String>,
+    pub match_method: CalendarMatchMethod,
+}
+
+impl CalendarBinding {
+    fn from_event(event: &CalendarEventSignal, match_method: CalendarMatchMethod) -> Self {
+        // Prefer the provider id. Some feeds omit it, so fall back to the
+        // event's natural identity — an event is the same event when its
+        // title and exact window match.
+        let key = if event.id.is_empty() {
+            format!(
+                "{}|{}|{}",
+                event.title,
+                timestamp_key_part(&event.start),
+                timestamp_key_part(&event.end)
+            )
+        } else {
+            event.id.clone()
+        };
+        Self {
+            key,
+            title: event.title.clone(),
+            attendees: if event.attendees.is_empty() {
+                None
+            } else {
+                Some(event.attendees.join(", "))
+            },
+            match_method,
         }
     }
-    (None, None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CalendarMatchMethod {
+    ExactConferenceUrl,
+    TimeOnly,
+}
+
+impl CalendarMatchMethod {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactConferenceUrl => "exact_conference_url",
+            Self::TimeOnly => "time_only",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CalendarCandidate<'a> {
+    event: &'a CalendarEventSignal,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    meeting_identity: Option<String>,
+}
+
+#[derive(Debug)]
+struct CalendarSelection {
+    binding: Option<CalendarBinding>,
+    eligible_candidates: usize,
+    exact_candidates: usize,
+}
+
+fn normalized_url(raw: &str) -> Option<Url> {
+    let trimmed = raw
+        .trim()
+        .trim_matches(|c| matches!(c, '<' | '>' | '"' | '\''))
+        .trim_end_matches([')', ']', ',', '.', ';']);
+    if trimmed.is_empty() {
+        return None;
+    }
+    let with_scheme = if trimmed.contains("://") {
+        trimmed.to_string()
+    } else {
+        format!("https://{}", trimmed.trim_start_matches('/'))
+    };
+    let parsed = Url::parse(&with_scheme).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then_some(parsed)
+}
+
+/// Stable provider + room identity for URLs that can safely be compared.
+/// Provider-specific parsing keeps true room keys while dropping auth and
+/// tracking parameters.
+fn meeting_url_identity(raw: &str) -> Option<String> {
+    let parsed = normalized_url(raw)?;
+    let host = parsed
+        .host_str()?
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let segments: Vec<String> = parsed
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_ascii_lowercase())
+        .collect();
+
+    if host == "meet.google.com" {
+        return segments.first().map(|room| format!("google-meet:{room}"));
+    }
+
+    if host == "zoom.us" || host.ends_with(".zoom.us") {
+        let room = match segments.first().map(String::as_str) {
+            Some("j") | Some("my") => segments.get(1),
+            Some("wc") => segments
+                .iter()
+                .skip(1)
+                .find(|segment| segment.as_str() != "join"),
+            _ => None,
+        }?;
+        return Some(format!("zoom:{room}"));
+    }
+
+    let path = segments.join("/");
+    if path.is_empty() {
+        return None;
+    }
+    if host == "teams.microsoft.com" || host == "teams.live.com" {
+        return Some(format!("teams:{host}/{path}"));
+    }
+    if host == "webex.com" || host.ends_with(".webex.com") {
+        if segments.last().is_some_and(|segment| segment == "j.php") {
+            let meeting_token = parsed
+                .query_pairs()
+                .find(|(key, _)| key.eq_ignore_ascii_case("mtid"))?
+                .1
+                .to_ascii_lowercase();
+            return Some(format!("webex:{host}/{path}?mtid={meeting_token}"));
+        }
+        return Some(format!("webex:{host}/{path}"));
+    }
+    None
+}
+
+fn fallback_time_rank(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<(u8, i64)> {
+    if start <= now && end >= now {
+        Some((0, (start - now).num_seconds().abs()))
+    } else if start > now && start <= now + CALENDAR_JOIN_LEAD {
+        Some((1, (start - now).num_seconds()))
+    } else {
+        None
+    }
+}
+
+fn exact_url_time_rank(
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<(u8, i64)> {
+    if start <= now && end >= now {
+        Some((0, (start - now).num_seconds().abs()))
+    } else if start > now && start <= now + CALENDAR_EXACT_URL_JOIN_LEAD {
+        Some((1, (start - now).num_seconds()))
+    } else if end < now && end + CALENDAR_EXACT_URL_END_GRACE >= now {
+        Some((1, (now - end).num_seconds()))
+    } else {
+        None
+    }
+}
+
+fn stable_event_key(event: &CalendarEventSignal) -> String {
+    if event.id.is_empty() {
+        format!(
+            "{}|{}|{}",
+            event.title,
+            timestamp_key_part(&event.start),
+            timestamp_key_part(&event.end)
+        )
+    } else {
+        event.id.clone()
+    }
+}
+
+fn choose_candidate<'a>(
+    candidates: impl Iterator<Item = &'a CalendarCandidate<'a>>,
+    now: DateTime<Utc>,
+    exact: bool,
+) -> Option<&'a CalendarEventSignal> {
+    candidates
+        .filter_map(|candidate| {
+            let rank = if exact {
+                exact_url_time_rank(candidate.start, candidate.end, now)
+            } else {
+                fallback_time_rank(candidate.start, candidate.end, now)
+            }?;
+            Some((rank, stable_event_key(candidate.event), candidate.event))
+        })
+        .min_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)))
+        .map(|(_, _, event)| event)
+}
+
+fn select_calendar_event(
+    events: &[CalendarEventSignal],
+    now: DateTime<Utc>,
+    observed_meeting_url: Option<&str>,
+) -> CalendarSelection {
+    let observed_identity = observed_meeting_url.and_then(meeting_url_identity);
+    let candidates: Vec<CalendarCandidate<'_>> = events
+        .iter()
+        .filter(|event| !event.is_all_day)
+        .filter_map(|event| {
+            let start = DateTime::parse_from_rfc3339(&event.start)
+                .ok()?
+                .with_timezone(&Utc);
+            let end = DateTime::parse_from_rfc3339(&event.end)
+                .ok()?
+                .with_timezone(&Utc);
+            Some(CalendarCandidate {
+                event,
+                start,
+                end,
+                meeting_identity: event.meeting_url.as_deref().and_then(meeting_url_identity),
+            })
+        })
+        .collect();
+
+    let eligible: Vec<&CalendarCandidate<'_>> = candidates
+        .iter()
+        .filter(|candidate| fallback_time_rank(candidate.start, candidate.end, now).is_some())
+        .collect();
+
+    if let Some(observed_identity) = observed_identity.as_ref() {
+        let exact: Vec<&CalendarCandidate<'_>> = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.meeting_identity.as_ref() == Some(observed_identity)
+                    && exact_url_time_rank(candidate.start, candidate.end, now).is_some()
+            })
+            .collect();
+        if let Some(event) = choose_candidate(exact.iter().copied(), now, true) {
+            return CalendarSelection {
+                binding: Some(CalendarBinding::from_event(
+                    event,
+                    CalendarMatchMethod::ExactConferenceUrl,
+                )),
+                eligible_candidates: eligible.len(),
+                exact_candidates: exact.len(),
+            };
+        }
+
+        // A known browser room plus several plausible calendar events is an
+        // ambiguity, not permission to choose whichever event appears first.
+        // Preserve the old time fallback only for one URL-less candidate.
+        let binding = match eligible.as_slice() {
+            [only] if only.meeting_identity.is_none() => Some(CalendarBinding::from_event(
+                only.event,
+                CalendarMatchMethod::TimeOnly,
+            )),
+            _ => None,
+        };
+        return CalendarSelection {
+            binding,
+            eligible_candidates: eligible.len(),
+            exact_candidates: 0,
+        };
+    }
+
+    CalendarSelection {
+        binding: choose_candidate(eligible.iter().copied(), now, false)
+            .map(|event| CalendarBinding::from_event(event, CalendarMatchMethod::TimeOnly)),
+        eligible_candidates: eligible.len(),
+        exact_candidates: 0,
+    }
+}
+
+/// Best non-all-day calendar event for a meeting starting at `now`.
+///
+/// An event that is already in progress wins over one about to start; ties
+/// break toward the event whose start is nearest `now`. Deterministic — it
+/// never depends on the order the publisher happened to emit events in.
+pub(crate) fn find_overlapping_calendar_event(
+    events: &[CalendarEventSignal],
+    now: DateTime<Utc>,
+) -> Option<CalendarBinding> {
+    select_calendar_event(events, now, None).binding
+}
+
+#[cfg(test)]
+pub(crate) fn find_calendar_event_for_meeting(
+    events: &[CalendarEventSignal],
+    now: DateTime<Utc>,
+    observed_meeting_url: Option<&str>,
+) -> Option<CalendarBinding> {
+    select_calendar_event(events, now, observed_meeting_url).binding
+}
+
+/// Resolve the calendar event that should name a meeting about to start.
+///
+/// Returns `None` when the best match already belongs to another meeting. One
+/// calendar event describes one meeting: a 30-minute event that is still
+/// running when an unrelated second call begins must not stamp its title and
+/// attendee list onto that call too.
+pub(crate) async fn resolve_calendar_binding(
+    db: &DatabaseManager,
+    events: &[CalendarEventSignal],
+    now: DateTime<Utc>,
+    observed_meeting_url: Option<&str>,
+) -> Option<CalendarBinding> {
+    let selection = select_calendar_event(events, now, observed_meeting_url);
+    let Some(binding) = selection.binding else {
+        if observed_meeting_url
+            .and_then(meeting_url_identity)
+            .is_some()
+            && selection.eligible_candidates > 0
+        {
+            info!(
+                "meeting calendar match skipped: no exact conference identity (eligible_candidates={}, exact_candidates={})",
+                selection.eligible_candidates, selection.exact_candidates
+            );
+        }
+        return None;
+    };
+    info!(
+        "meeting calendar match selected (method={}, eligible_candidates={}, exact_candidates={}, provider_event_id={})",
+        binding.match_method.as_str(),
+        selection.eligible_candidates,
+        selection.exact_candidates,
+        !binding.key.contains('|')
+    );
+    match db.meeting_id_for_calendar_event(&binding.key).await {
+        Ok(None) => Some(binding),
+        Ok(Some(owner)) => {
+            info!(
+                "calendar event {:?} already belongs to meeting {} — leaving this meeting to be named from its own content",
+                binding.title, owner
+            );
+            None
+        }
+        Err(e) => {
+            // Fail closed: a wrong title with wrong attendees is worse than
+            // no title, which the summarizer fills in from content anyway.
+            warn!("failed to check calendar event ownership: {e}");
+            None
+        }
+    }
+}
+
+/// Feature-gated seam used by the packaged desktop E2E. It drives the same
+/// matcher and persistence path as production without requiring a real third-
+/// party call or the reviewer's private calendar account.
+#[cfg(feature = "e2e")]
+pub async fn e2e_start_calendar_matched_meeting(
+    db: &DatabaseManager,
+    observed_meeting_url: &str,
+    events_json: &str,
+    now: DateTime<Utc>,
+) -> Result<i64, String> {
+    let events: Vec<CalendarEventSignal> =
+        serde_json::from_str(events_json).map_err(|error| error.to_string())?;
+    let binding = resolve_calendar_binding(db, &events, now, Some(observed_meeting_url)).await;
+    db.insert_meeting_with_calendar(
+        "Google Meet",
+        "audio_process",
+        binding.as_ref().map(|candidate| candidate.title.as_str()),
+        binding
+            .as_ref()
+            .and_then(|candidate| candidate.attendees.as_deref()),
+        binding.as_ref().map(|candidate| candidate.key.as_str()),
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// True if a non-all-day calendar event is happening at `now`. Used as a
@@ -93,10 +471,20 @@ pub(crate) fn has_active_calendar_event(
 pub(crate) async fn insert_new_meeting(
     db: &DatabaseManager,
     app: &str,
-    title: Option<&str>,
-    attendees: Option<&str>,
+    calendar: Option<&CalendarBinding>,
 ) -> i64 {
-    match db.insert_meeting(app, "ui_scan", title, attendees).await {
+    let title = calendar.map(|c| c.title.as_str());
+    let attendees = calendar.and_then(|c| c.attendees.as_deref());
+    match db
+        .insert_meeting_with_calendar(
+            app,
+            "ui_scan",
+            title,
+            attendees,
+            calendar.map(|c| c.key.as_str()),
+        )
+        .await
+    {
         Ok(id) => {
             info!(
                 "meeting v2: meeting started (id={}, app={}, title={:?})",

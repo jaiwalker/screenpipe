@@ -23,6 +23,9 @@ import {
   sanitizeCommand,
   presentToolActivity,
   presentToolActivityStatus,
+  presentMcpStartup,
+  redactMcpStartupDetail,
+  mcpScreenpipeCommand,
 } from "../tool-presentation";
 
 const LOCAL = "http://localhost:3030";
@@ -136,7 +139,7 @@ describe("endpointFamily", () => {
     expect(endpointFamily("/memories/5")).toBe("Memory");
     expect(endpointFamily("/connections/google-calendar/events")).toBe("Calendar");
     expect(endpointFamily("/connections/slack/x")).toBe("Slack");
-    expect(endpointFamily("/pipes")).toBe("Pipes");
+    expect(endpointFamily("/pipes")).toBe("Scheduled tasks");
     expect(endpointFamily("/anything-else")).toBe("Screenpipe");
   });
 });
@@ -196,6 +199,7 @@ describe("presentToolActivity", () => {
     expect(python).toEqual({
       runningLabel: "Analyzing information",
       completedLabel: "Analyzed information",
+      icon: "thinking",
     });
     expect(javascript).toEqual(python);
     expect(JSON.stringify([python, javascript])).not.toContain("PRIVATE_");
@@ -210,6 +214,7 @@ describe("presentToolActivity", () => {
     expect(presentation).toEqual({
       runningLabel: "Checking the work",
       completedLabel: "Checked the work",
+      icon: "test",
     });
     expect(JSON.stringify(presentation)).not.toContain("secret-regression-file");
   });
@@ -223,6 +228,7 @@ describe("presentToolActivity", () => {
     ).toEqual({
       runningLabel: "Searching Slack",
       completedLabel: "Searched Slack",
+      icon: "search",
     });
 
     expect(
@@ -233,25 +239,49 @@ describe("presentToolActivity", () => {
     ).toEqual({
       runningLabel: "Reviewing your information",
       completedLabel: "Reviewed your information",
+      icon: "database",
     });
   });
 
   it("uses a safe fallback for arbitrary commands and unknown tools", () => {
+    // An unrecognized bash command stays fully generic — never echoes command text.
     const command = presentToolActivity({
       toolName: "bash",
       args: { command: "mystery-binary --token SUPER_SECRET_VALUE" },
     });
+    expect(command).toEqual({
+      runningLabel: "Working on your request",
+      completedLabel: "Completed a background step",
+      icon: "work",
+    });
+
+    // A tool with no `kind` and no mcp__ prefix keeps the coarse generic label,
+    // so an internal tool name is never surfaced.
     const tool = presentToolActivity({
       toolName: "unfamiliar_internal_tool",
       args: { payload: "SUPER_SECRET_VALUE" },
     });
-
-    expect(command).toEqual({
+    expect(tool).toEqual({
       runningLabel: "Working on your request",
       completedLabel: "Completed a background step",
+      icon: "work",
     });
-    expect(tool).toEqual(command);
-    expect(JSON.stringify([command, tool])).not.toContain("SUPER_SECRET_VALUE");
+
+    // An agent-provided tool (carries a `kind`) surfaces its humanized name,
+    // but still never its args.
+    const acpTool = presentToolActivity({
+      toolName: "unfamiliar_internal_tool",
+      kind: "other",
+      args: { payload: "SUPER_SECRET_VALUE" },
+    });
+    expect(acpTool).toEqual({
+      runningLabel: "Unfamiliar internal tool",
+      completedLabel: "Unfamiliar internal tool",
+      icon: "work",
+    });
+
+    // None of the paths leak the args into the label.
+    expect(JSON.stringify([command, tool, acpTool])).not.toContain("SUPER_SECRET_VALUE");
   });
 
   it("hides file paths while preserving broad read and write intent", () => {
@@ -261,8 +291,9 @@ describe("presentToolActivity", () => {
         args: { path: "/private/customer/path/SKILL.md" },
       }),
     ).toEqual({
-      runningLabel: "Reviewing instructions",
-      completedLabel: "Reviewed instructions",
+      runningLabel: "Loading a skill",
+      completedLabel: "Loaded a skill",
+      icon: "skill",
     });
     expect(
       presentToolActivity({
@@ -272,7 +303,31 @@ describe("presentToolActivity", () => {
     ).toEqual({
       runningLabel: "Updating files",
       completedLabel: "Updated files",
+      icon: "edit",
     });
+  });
+
+  it("names manifest-style skills without exposing their path", () => {
+    const read = presentToolActivity({
+      toolName: "read",
+      args: { path: "/Users/private/.codex/skills/pdf/SKILL.md" },
+    });
+    const command = presentToolActivity({
+      toolName: "bash",
+      args: { command: "sed -n '1,200p' /Users/private/.codex/skills/app-ux-research/SKILL.md" },
+    });
+
+    expect(read).toEqual({
+      runningLabel: "Loading PDF skill",
+      completedLabel: "Loaded PDF skill",
+      icon: "skill",
+    });
+    expect(command).toEqual({
+      runningLabel: "Loading app UX research skill",
+      completedLabel: "Loaded app UX research skill",
+      icon: "skill",
+    });
+    expect(JSON.stringify([read, command])).not.toContain("/Users/private");
   });
 });
 
@@ -289,7 +344,7 @@ describe("presentToolActivityStatus", () => {
         ],
         true,
       ),
-    ).toBe("Reviewed instructions");
+    ).toBe("Loaded a skill");
 
     expect(
       presentToolActivityStatus(
@@ -333,5 +388,239 @@ describe("presentToolActivityStatus", () => {
   it("uses the preparation label only before any tool activity exists", () => {
     expect(presentToolActivityStatus([], true)).toBe("Preparing your answer");
     expect(presentToolActivityStatus([], false)).toBe("Working on your request");
+  });
+});
+
+describe("mcpScreenpipeCommand", () => {
+  it("maps a screenpipe MCP read tool to the equivalent local GET curl", () => {
+    const cmd = mcpScreenpipeCommand("mcp__screenpipe__activity-summary", {
+      start_time: "today",
+      end_time: "now",
+    });
+    expect(cmd).toContain("http://localhost:3030/activity-summary");
+    expect(cmd).toContain("start_time=today");
+    expect(cmd).not.toContain("-X"); // GET
+  });
+
+  it("maps search args to the /search query shape", () => {
+    const cmd = mcpScreenpipeCommand("mcp__screenpipe__search-content", {
+      query: "invoice",
+      app_name: "Safari",
+    });
+    expect(cmd).toContain("/search?");
+    expect(cmd).toContain("q=invoice");
+    expect(cmd).toContain("app_name=Safari");
+  });
+
+  it("uses -X and a body for write tools", () => {
+    const cmd = mcpScreenpipeCommand("mcp__screenpipe__update-memory", { id: "1", note: "x" });
+    expect(cmd).toContain("-X POST");
+    expect(cmd).toContain("/memories");
+    expect(cmd).toContain("-d");
+  });
+
+  it("recognizes a known screenpipe tool name even without the mcp__ prefix", () => {
+    expect(mcpScreenpipeCommand("list-pipes", {})).toContain("/pipes");
+  });
+
+  it("returns null for non-screenpipe tools", () => {
+    expect(mcpScreenpipeCommand("bash", { command: "ls" })).toBeNull();
+    expect(mcpScreenpipeCommand("mcp__notion__search", { q: "x" })).toBeNull();
+    expect(mcpScreenpipeCommand("Read", { path: "/a.ts" })).toBeNull();
+  });
+});
+
+describe("presentToolActivity — ACP tool calls", () => {
+  it("labels screenpipe MCP tools like their curl equivalents", () => {
+    expect(
+      presentToolActivity({ toolName: "mcp__screenpipe__activity-summary", args: {} }).completedLabel,
+    ).toBe("Reviewed your activity");
+    expect(
+      presentToolActivity({ toolName: "mcp__screenpipe__list-pipes", args: {} }).completedLabel,
+    ).toBe("Checked available automations");
+  });
+
+  it("describes Claude recording queries as a user-facing search", () => {
+    expect(
+      presentToolActivity({
+        toolName: "query_recordings",
+        agentId: "claude-acp",
+        kind: "other",
+        args: {},
+      }),
+    ).toMatchObject({
+      runningLabel: "Searching recordings",
+      completedLabel: "Searched recordings",
+      icon: "search",
+    });
+  });
+
+  it("falls back to the ACP kind for native tools whose title isn't a known name", () => {
+    expect(
+      presentToolActivity({ toolName: "Read /repo/a.ts", kind: "read", args: {} }).completedLabel,
+    ).toBe("Reviewed a file");
+    expect(
+      presentToolActivity({ toolName: "Edit config", kind: "edit", args: {} }).completedLabel,
+    ).toBe("Updated files");
+    expect(
+      presentToolActivity({ toolName: "Fetch docs", kind: "fetch", args: {} }).completedLabel,
+    ).toBe("Fetched content");
+  });
+
+  it("detects a skill read via kind", () => {
+    expect(
+      presentToolActivity({ toolName: "Read", kind: "read", args: { path: "/x/SKILL.md" } }).completedLabel,
+    ).toBe("Loaded a skill");
+  });
+
+  it("humanizes an unknown tool name instead of a generic step", () => {
+    expect(
+      presentToolActivity({ toolName: "mcp__acme__do-a-thing", args: {} }).completedLabel,
+    ).toBe("Do a thing");
+  });
+
+  it("still uses the generic label when there is nothing to go on", () => {
+    expect(presentToolActivity({ toolName: "tool", args: {} }).completedLabel).toBe(
+      "Completed a background step",
+    );
+  });
+
+  it("identifies the provider when ACP supplies no meaningful tool metadata", () => {
+    expect(
+      presentToolActivity({ toolName: "MCP: tool", agentId: "cursor", args: {} }),
+    ).toMatchObject({
+      runningLabel: "Using a Cursor tool",
+      completedLabel: "Used a Cursor tool",
+    });
+    expect(
+      presentToolActivity({ toolName: "MCP: tool", agentId: "pi-acp", args: {} }).completedLabel,
+    ).toBe("Used a Pi tool");
+    expect(
+      presentToolActivity({ toolName: "MCP: tool", agentId: "custom", args: {} }).completedLabel,
+    ).toBe("Used an ACP tool");
+  });
+});
+
+describe("MCP server startup diagnostics", () => {
+  // codex-acp reports each MCP server that could not start as a failed tool
+  // call named `mcp__<server>__startup`. Stripping the prefix left a bare
+  // "Startup", so a user with several unauthenticated servers saw a stack of
+  // identical anonymous rows and had to expand one to learn which server.
+  it("names the server instead of collapsing to an anonymous 'Startup'", () => {
+    expect(
+      presentToolActivity({
+        toolName: "mcp__Notion__startup",
+        args: {},
+        isError: true,
+      }).completedLabel,
+    ).toBe("Notion MCP server failed to start");
+  });
+
+  it("keeps two failing servers distinguishable", () => {
+    const labelFor = (server: string) =>
+      presentToolActivity({
+        toolName: `mcp__${server}__startup`,
+        args: {},
+        isError: true,
+      }).completedLabel;
+    expect(labelFor("Notion")).not.toBe(labelFor("figma"));
+  });
+
+  it("does not call a server that started fine a failure", () => {
+    expect(
+      presentToolActivity({ toolName: "mcp__linear__startup", args: {} }).completedLabel,
+    ).toBe("Started the linear MCP server");
+  });
+
+  it("labels the in-flight state as startup, not generic work", () => {
+    expect(
+      presentToolActivity({ toolName: "mcp__dropboxmcp__startup", args: {} }).runningLabel,
+    ).toBe("Starting the dropboxmcp MCP server");
+  });
+
+  // Only the exact `__startup` suffix is a diagnostic; a real MCP tool that
+  // merely mentions startup stays on the humanized path.
+  it("leaves a real MCP tool alone", () => {
+    expect(
+      presentToolActivity({ toolName: "mcp__acme__startup-check", args: {} }).completedLabel,
+    ).toBe("Startup check");
+  });
+
+  it("maps the four ACP startup states", () => {
+    expect(
+      presentMcpStartup({
+        toolName: "mcp__screenpipe__startup",
+        isRunning: true,
+      }),
+    ).toEqual({ serverName: "screenpipe", state: "connecting" });
+    expect(
+      presentMcpStartup({ toolName: "mcp__linear__startup" }),
+    ).toEqual({ serverName: "Linear", state: "connected" });
+    expect(
+      presentMcpStartup({
+        toolName: "mcp__notion__startup",
+        isError: true,
+        result:
+          "[codex-acp forwarded startup error] MCP server `notion` failed to start: Not logged in. Run `codex mcp login notion`.",
+      }),
+    ).toEqual({
+      serverName: "Notion",
+      state: "auth-required",
+      detail: "Not logged in. Run `codex mcp login notion`.",
+    });
+    expect(
+      presentMcpStartup({
+        toolName: "mcp__n8n__startup",
+        isError: true,
+        result: "MCP server `n8n` failed to start: HTTP 404: No workspace here",
+      }),
+    ).toEqual({
+      serverName: "N8n",
+      state: "error",
+      detail: "HTTP 404: No workspace here",
+    });
+  });
+
+  it("does not treat a real MCP tool as a startup state", () => {
+    expect(
+      presentMcpStartup({ toolName: "mcp__notion__search", isError: true }),
+    ).toBeNull();
+  });
+
+  it("redacts bearer tokens and credential-shaped values", () => {
+    const detail = redactMcpStartupDetail(
+      'Authorization: Bearer abcdefghijklmnop== api_key=super-secret refresh_token: another-secret {"client_secret":"json-secret","token":"json-token"}',
+    );
+    expect(detail).toContain("Bearer …");
+    expect(detail).toContain("api_key=…");
+    expect(detail).toContain("refresh_token: …");
+    expect(detail).toContain('"client_secret":"…"');
+    expect(detail).toContain('"token":"…"');
+    expect(detail).not.toContain("abcdefghijklmnop");
+    expect(detail).not.toContain("super-secret");
+    expect(detail).not.toContain("another-secret");
+    expect(detail).not.toContain("json-secret");
+    expect(detail).not.toContain("json-token");
+  });
+});
+
+describe("adapter relay tags in tool results", () => {
+  // codex-acp prefixes messages it relays from codex with its own name. The
+  // actionable sentence is what the user needs; the tag only delays it.
+  it("drops the adapter's relay tag and keeps the actionable message", () => {
+    expect(
+      formatToolResult(
+        "[codex-acp forwarded startup error] MCP server `Notion` failed to start: " +
+          "The Notion MCP server is not logged in. Run `codex mcp login Notion`.",
+      ),
+    ).toBe(
+      "MCP server `Notion` failed to start: The Notion MCP server is not logged in. " +
+        "Run `codex mcp login Notion`.",
+    );
+  });
+
+  it("leaves an ordinary result untouched", () => {
+    expect(formatToolResult("[warn] disk almost full")).toBe("[warn] disk almost full");
+    expect(formatToolResult("plain output")).toBe("plain output");
   });
 });

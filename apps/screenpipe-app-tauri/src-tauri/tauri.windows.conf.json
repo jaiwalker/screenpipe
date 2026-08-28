@@ -6,7 +6,8 @@
                 "headerImage": "assets/nsis-header.bmp",
                 "sidebarImage": "assets/nsis-sidebar.bmp",
                 "installerIcon": "icons/icon.ico",
-                "installerHooks": "windows/hooks.nsh"
+                "installerHooks": "windows/hooks.nsh",
+                "compression": "zlib"
             }
         },
         "externalBin": [
@@ -20,7 +21,8 @@
             "ffmpeg\\bin\\ffprobe.exe": "./",
             "ffmpeg\\bin\\*.dll": "./",
             "ffmpeg\\lib\\*": "./",
-            "onnxruntime*\\lib\\onnxruntime.dll": "./",
+            "onnxruntime*\\lib\\*.dll": "./",
+            "wer\\*.dll": "./",
             "openblas\\bin\\*.dll": "./",
             "vcredist\\*.dll": "./",
             "assets/*": "./assets/"

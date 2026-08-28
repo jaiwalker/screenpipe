@@ -7,6 +7,7 @@ import {
   APP_ENTITLEMENT_CLOCK_SKEW_MS,
   APP_ENTITLEMENT_MAX_STALE_MS,
   getLocalPlanPolicy,
+  getBusinessCapacityUpgrade,
   getPaidPlanPolicyDeadlineMs,
   hasAppEntitlement,
   hasCloudEntitlement,
@@ -15,6 +16,7 @@ import {
   hasPersistedEntitlementEvidence,
   hasVerifiedPaidPlan,
   isAuthenticatedFreeUser,
+  isFreeOrUnattributedUser,
   isSignedInCloudSubscriber,
   isTokenHydrationCandidate,
   isTokenHydrationPending,
@@ -48,6 +50,22 @@ describe("app entitlement", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllEnvs();
+  });
+
+  it("maps capacity plans without upselling org or top-tier accounts", () => {
+    expect(getBusinessCapacityUpgrade("pro")).toEqual({
+      targetPlan: "pro_max",
+      name: "Business Max",
+      monthlyPrice: 100,
+    });
+    expect(getBusinessCapacityUpgrade("business_max")).toEqual({
+      targetPlan: "pro_ultra",
+      name: "Business Ultra",
+      monthlyPrice: 200,
+    });
+    expect(getBusinessCapacityUpgrade("pro_ultra")).toBeNull();
+    expect(getBusinessCapacityUpgrade("team")).toBeNull();
+    expect(getBusinessCapacityUpgrade("enterprise")).toBeNull();
   });
 
   it("allows fresh active app access", () => {
@@ -268,6 +286,32 @@ describe("app entitlement", () => {
     ).toBe(false);
   });
 
+  it.each(["pro_max", "pro_ultra"] as const)(
+    "recognizes %s as a consumer plan when the user also belongs to an enterprise workspace",
+    (plan) => {
+      const capacityUser = user({
+        cloud_subscribed: true,
+        app_entitled: true,
+        subscription_plan: plan,
+        entitlement: {
+          active: true,
+          plan,
+          checked_at: "2026-06-05T11:00:00.000Z",
+          source: "manual",
+          features: { app: true, cloud: true, enterprise: false },
+        },
+        enterprise_account: {
+          org_name: "Screenpipe",
+          role: "admin",
+          requires_enterprise_app: true,
+        },
+      });
+
+      expect(getLocalPlanPolicy(capacityUser)).toBe("verified-paid");
+      expect(hasConsumerAppSubscription(capacityUser)).toBe(true);
+    },
+  );
+
   it("does not unlock new cloud features from stale entitlement data", () => {
     expect(
       hasCloudEntitlement(user({ cloud_subscribed: true, entitlement: null })),
@@ -323,6 +367,141 @@ describe("app entitlement", () => {
     });
     expect(hasAppEntitlement(normalized)).toBe(true);
     expect(hasCloudEntitlement(normalized)).toBe(true);
+  });
+
+  it("normalizes an authenticated legacy cloud denial as verified free", () => {
+    const normalized = normalizeAppUser(
+      {
+        id: "user_legacy_free",
+        cloud_subscribed: false,
+      },
+      "token",
+    );
+
+    expect(getLocalPlanPolicy(normalized)).toBe("verified-free");
+    expect(isAuthenticatedFreeUser(normalized)).toBe(true);
+    expect(hasVerifiedPaidPlan(normalized)).toBe(false);
+    expect(hasAppEntitlement(normalized)).toBe(false);
+  });
+
+  it("keeps a partial newer entitlement unknown instead of synthesizing verified free", () => {
+    const normalized = normalizeAppUser(
+      {
+        id: "user_partial_entitlement",
+        cloud_subscribed: false,
+        entitlement: { plan: "none" },
+      },
+      "token",
+    );
+
+    expect(getLocalPlanPolicy(normalized)).toBe("unknown");
+  });
+
+  it("requires explicit feature evidence before accepting newer free evidence", () => {
+    const normalized = normalizeAppUser(
+      {
+        id: "user_incomplete_free",
+        cloud_subscribed: false,
+        entitlement: {
+          active: false,
+          plan: "none",
+          source: "none",
+        },
+      },
+      "token",
+    );
+
+    expect(getLocalPlanPolicy(normalized)).toBe("unknown");
+  });
+
+  // The server computes `subscription_plan` per request and may omit it while
+  // still returning a complete entitlement. Falling back to an invented label
+  // ("pro"/"standard") then contradicted the entitlement's own plan, and
+  // hasVerifiedPaidPlanAt requires the two to match exactly — so a fully paid
+  // account collapsed to "unknown" policy and was shown the enterprise-app gate.
+  it("adopts entitlement.plan when the API omits subscription_plan", () => {
+    const normalized = normalizeAppUser(
+      {
+        id: "user_lifetime",
+        app_entitled: true,
+        cloud_subscribed: false,
+        entitlement: {
+          active: true,
+          plan: "lifetime",
+          source: "lifetime",
+          checked_at: NOW.toISOString(),
+          features: { app: true },
+        },
+      },
+      "token",
+    );
+
+    expect(normalized.subscription_plan).toBe("lifetime");
+    expect(getLocalPlanPolicy(normalized)).toBe("verified-paid");
+    expect(hasConsumerAppSubscription(normalized)).toBe(true);
+  });
+
+  it("does not fabricate 'pro' over a richer entitlement plan", () => {
+    const normalized = normalizeAppUser(
+      {
+        id: "user_pro_ultra",
+        app_entitled: true,
+        cloud_subscribed: true,
+        entitlement: {
+          active: true,
+          plan: "pro_ultra",
+          source: "subscription",
+          checked_at: NOW.toISOString(),
+          features: { app: true, cloud: true },
+        },
+      },
+      "token",
+    );
+
+    expect(normalized.subscription_plan).toBe("pro_ultra");
+    expect(getLocalPlanPolicy(normalized)).toBe("verified-paid");
+  });
+
+  it("still prefers an explicit server subscription_plan over the entitlement", () => {
+    const normalized = normalizeAppUser(
+      {
+        id: "user_explicit",
+        app_entitled: true,
+        subscription_plan: "team",
+        entitlement: {
+          active: true,
+          plan: "team",
+          source: "subscription",
+          checked_at: NOW.toISOString(),
+          features: { app: true },
+        },
+      },
+      "token",
+    );
+
+    expect(normalized.subscription_plan).toBe("team");
+    expect(getLocalPlanPolicy(normalized)).toBe("verified-paid");
+  });
+
+  it("keeps explicit server denial at 'none' even when the entitlement names a plan", () => {
+    const normalized = normalizeAppUser(
+      {
+        id: "user_revoked",
+        app_entitled: false,
+        cloud_subscribed: false,
+        entitlement: {
+          active: true,
+          plan: "lifetime",
+          source: "lifetime",
+          checked_at: NOW.toISOString(),
+          features: { app: true },
+        },
+      },
+      "token",
+    );
+
+    expect(normalized.subscription_plan).toBe("none");
+    expect(hasAppEntitlement(normalized)).toBe(false);
   });
 
   it("does not let cloud_subscribed override explicit server app denial", () => {
@@ -423,6 +602,7 @@ describe("isAuthenticatedFreeUser", () => {
 
   it("recognizes only a signed-in account with explicit verified free-plan truth", () => {
     expect(isAuthenticatedFreeUser(explicitFree())).toBe(true);
+    expect(isFreeOrUnattributedUser(explicitFree())).toBe(true);
     const tokenlessCachedFreeUser = explicitFree({ token: null });
     expect(isAuthenticatedFreeUser(tokenlessCachedFreeUser)).toBe(false);
     expect(hasFreePlanPolicy(tokenlessCachedFreeUser)).toBe(true);
@@ -443,10 +623,17 @@ describe("isAuthenticatedFreeUser", () => {
             plan: "none",
             source: "none",
             checked_at: "2026-06-01T11:59:59.000Z",
+            features: { app: true },
           },
         }),
       ),
     ).toBe(true);
+  });
+
+  it("rejects a whitespace-only authentication token", () => {
+    expect(isAuthenticatedFreeUser(explicitFree({ token: "   " }))).toBe(
+      false,
+    );
   });
 
   it("fails safe on missing or conflicting plan fields", () => {
@@ -502,7 +689,15 @@ describe("isAuthenticatedFreeUser", () => {
     ).toBe("unknown");
   });
 
-  it.each(["standard", "pro", "team", "enterprise", "lifetime"])(
+  it.each([
+    "basic",
+    "standard",
+    "business",
+    "pro",
+    "team",
+    "enterprise",
+    "lifetime",
+  ])(
     "preserves retention choice for the paid %s plan",
     (plan) => {
       const paid = user({
@@ -519,6 +714,7 @@ describe("isAuthenticatedFreeUser", () => {
       });
       expect(isAuthenticatedFreeUser(paid)).toBe(false);
       expect(hasVerifiedPaidPlan(paid)).toBe(true);
+      expect(isFreeOrUnattributedUser(paid)).toBe(false);
     },
   );
 
@@ -537,6 +733,7 @@ describe("isAuthenticatedFreeUser", () => {
     });
     expect(hasVerifiedPaidPlan(fabricated)).toBe(false);
     expect(getLocalPlanPolicy(fabricated)).toBe("unknown");
+    expect(isFreeOrUnattributedUser(fabricated)).toBe(true);
   });
 
   it("does not classify manual, enterprise, lifetime, dev, grace, or cloud grants as free", () => {
@@ -705,6 +902,8 @@ describe("planDisplayName", () => {
   it("maps the self-serve tiers the same on every build", () => {
     expect(planDisplayName("standard")).toBe("Basic");
     expect(planDisplayName("pro")).toBe("Business");
+    expect(planDisplayName("pro_max")).toBe("Business Max");
+    expect(planDisplayName("pro_ultra")).toBe("Business Ultra");
     expect(planDisplayName("lifetime")).toBe("Lifetime");
     expect(planDisplayName("none")).toBe("Free");
     expect(planDisplayName(null)).toBe("Free");

@@ -33,6 +33,128 @@ use objc2_app_kit::NSPasteboard;
 /// and cause a SIGABRT in CFDictionarySetValue / __CFBasicHashRehash.
 static AX_QUERY_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
+/// Process-wide ceiling for any AX call that does not set its own timeout.
+///
+/// macOS defaults to roughly 6s per message. AX reads are synchronous IPC
+/// serviced on the *target app's* main thread, so an unbounded read against a
+/// busy app stalls that app's UI — including drag loops — for as long as we are
+/// willing to wait. Several focus-path reads (`focused_app`, `focused_window`,
+/// `focused_ui_element`, `element_at_pos`) run straight off AX notifications
+/// with no debounce and previously inherited that 6s default.
+///
+/// 1s is deliberately looser than the 0.1–0.2s per-element bounds the walker
+/// sets, so it only ever acts as a backstop: `AXUIElementSetMessagingTimeout`
+/// on a specific element still overrides it for that element.
+const AX_DEFAULT_TIMEOUT_SECS: f32 = 1.0;
+
+/// Keep click attribution recent enough that a delayed AX hit-test cannot
+/// accidentally describe a window that moved under the recorded coordinate.
+const CLICK_ATTRIBUTION_MAX_AGE: Duration = Duration::from_secs(2);
+const CLICK_ATTRIBUTION_QUEUE_MIN: usize = 4;
+const CLICK_ATTRIBUTION_QUEUE_MAX: usize = 64;
+
+/// Apply [`AX_DEFAULT_TIMEOUT_SECS`] as this process's default AX timeout.
+///
+/// Passing the system-wide element to `AXUIElementSetMessagingTimeout` sets the
+/// default for every message the app sends, so this only needs to land once —
+/// hence the `Once`, which also keeps it off the hot notification path.
+pub(crate) fn ensure_global_ax_timeout() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        let sys = ax::UiElement::sys_wide();
+        match sys.set_messaging_timeout_secs(AX_DEFAULT_TIMEOUT_SECS) {
+            Ok(()) => debug!(
+                "AX default messaging timeout set to {}s (was the ~6s system default)",
+                AX_DEFAULT_TIMEOUT_SECS
+            ),
+            Err(e) => warn!(
+                "failed to set AX default messaging timeout: {:?} — unbounded AX reads \
+                 can stall the target app's main thread for ~6s",
+                e
+            ),
+        }
+    });
+}
+
+#[repr(C)]
+struct ProcessSerialNumber {
+    high_long_of_psn: u32,
+    low_long_of_psn: u32,
+}
+
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    fn GetFrontProcess(psn: *mut ProcessSerialNumber) -> i16;
+    fn GetProcessPID(psn: *const ProcessSerialNumber, pid: *mut i32) -> i32;
+}
+
+/// Return the currently frontmost process with two scalar Process Manager
+/// calls. Unlike NSWorkspace notifications, this is synchronous and does not
+/// require an AppKit run loop to have processed an activation event.
+pub fn get_focused_pid_fresh() -> Option<i32> {
+    let mut psn = ProcessSerialNumber {
+        high_long_of_psn: 0,
+        low_long_of_psn: 0,
+    };
+    let mut pid = 0i32;
+    let status = unsafe { GetFrontProcess(&mut psn) };
+    if status == 0 {
+        let status = unsafe { GetProcessPID(&psn, &mut pid) };
+        if status == 0 && pid > 0 {
+            return Some(pid);
+        }
+    }
+
+    // Failure-only fallback for systems where the deprecated Process Manager
+    // symbols stop resolving correctly. This allocates a WindowServer list,
+    // so it must not be the normal capture path.
+    get_focused_pid_via_window_server()
+}
+
+fn get_focused_pid_via_window_server() -> Option<i32> {
+    use core_foundation::array::{CFArrayGetCount, CFArrayGetValueAtIndex};
+    use core_foundation::base::TCFType;
+    use core_foundation::dictionary::{CFDictionaryGetValueIfPresent, CFDictionaryRef};
+    use core_foundation::number::{CFNumber, CFNumberRef};
+    use core_graphics::window::{
+        copy_window_info, kCGNullWindowID, kCGWindowLayer, kCGWindowListExcludeDesktopElements,
+        kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
+    };
+
+    let options = kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements;
+    let list = copy_window_info(options, kCGNullWindowID)?;
+    let count = unsafe { CFArrayGetCount(list.as_concrete_TypeRef()) };
+    for i in 0..count {
+        unsafe {
+            let dict_ref = CFArrayGetValueAtIndex(list.as_concrete_TypeRef(), i);
+            if dict_ref.is_null() {
+                continue;
+            }
+            let dict = dict_ref as CFDictionaryRef;
+            let get_i64 = |key| -> Option<i64> {
+                let mut value = std::ptr::null();
+                if CFDictionaryGetValueIfPresent(dict, key as *const _, &mut value) != 0
+                    && !value.is_null()
+                {
+                    CFNumber::wrap_under_get_rule(value as CFNumberRef).to_i64()
+                } else {
+                    None
+                }
+            };
+
+            // Layer 0 = normal application windows. Menus, overlays, and
+            // status items live on higher layers and must not own focus.
+            if get_i64(kCGWindowLayer) != Some(0) {
+                continue;
+            }
+            if let Some(pid) = get_i64(kCGWindowOwnerPID) {
+                return Some(pid as i32);
+            }
+        }
+    }
+    None
+}
+
 /// Process-wide ground truth for macOS Input Monitoring, learned from the ONE
 /// real CGEventTap we create in `run_event_tap` / `run_activity_only_tap`.
 ///
@@ -54,6 +176,26 @@ fn record_input_monitoring_truth(granted: bool) {
 }
 
 // Keycodes for clipboard operations (macOS)
+/// Did `run_in_mode` come back without having waited at all?
+///
+/// `Finished` (no sources or timers left in this mode) and `Stopped`
+/// (`CFRunLoopStop`) both return immediately, so a caller that loops straight
+/// back in spins a core. `TimedOut` already waited out the slice, and
+/// `HandledSource` is the healthy busy path that must stay hot.
+fn ax_run_loop_returned_without_waiting(result: cf::RunLoopRunResult) -> bool {
+    matches!(
+        result,
+        cf::RunLoopRunResult::Finished | cf::RunLoopRunResult::Stopped
+    )
+}
+
+/// How long one AX run-loop slice waits when the mode is idle but healthy.
+const AX_RUN_LOOP_SLICE_SECS: f64 = 0.1;
+/// Yield for a full slice when `run_in_mode` returned without waiting at all.
+/// Matching the slice keeps a sourceless observer thread at roughly the same
+/// wake rate as a healthy idle one instead of at 100% of a core.
+const AX_RUN_LOOP_IDLE_BACKOFF: Duration = Duration::from_millis(100);
+
 const KEY_C: u16 = 8;
 const KEY_X: u16 = 7;
 const KEY_V: u16 = 9;
@@ -118,6 +260,13 @@ extern "C" {
 extern "C" {
     fn pthread_main_np() -> i32;
 }
+
+#[link(name = "proc")]
+extern "C" {
+    fn proc_name(pid: i32, buffer: *mut c_void, buffersize: u32) -> i32;
+}
+
+const PROCESS_NAME_BUFFER_SIZE: usize = 1024;
 
 /// Permission status for UI capture
 #[derive(Debug, Clone)]
@@ -254,6 +403,9 @@ impl UiRecorder {
                 perms.input_monitoring
             );
         }
+
+        // Bound every AX read this process makes before any of them can run.
+        ensure_global_ax_timeout();
 
         let (tx, rx) = bounded::<UiEvent>(self.config.max_buffer_size);
         let stop = Arc::new(AtomicBool::new(false));
@@ -565,17 +717,40 @@ fn get_clipboard_change_count() -> Option<i64> {
 // Event Tap Implementation
 // ============================================================================
 
-/// Request to capture element context for a click — processed by a
-/// dedicated worker thread instead of spawning a thread per click.
+/// Immutable mouse-down facts captured from CGEvent before focus can change.
+/// Target app/window resolution stays on the dedicated worker so the event-tap
+/// callback never performs AX IPC or trusts the asynchronously updated focus
+/// cache for click attribution.
 struct ContextCaptureRequest {
     x: f64,
     y: f64,
-    config: UiCaptureConfig,
     app_pid: i32,
-    app_name: Option<String>,
-    window_title: Option<String>,
-    start: Instant,
-    tx: Sender<UiEvent>,
+    captured_at: Instant,
+    timestamp: chrono::DateTime<Utc>,
+    relative_ms: u64,
+    button: u8,
+    click_count: u8,
+    modifiers: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickDropReason {
+    UnsupportedEventType,
+    InvalidTargetPid,
+    InvalidClickCount,
+    NonFiniteCoordinates,
+    CoordinatesOutOfRange,
+    StaleRequest,
+    MenuBar,
+    OwnProcess,
+    MissingAppName,
+    FilteredApp,
+    MissingElementPid,
+    MismatchedElementPid,
+    OwnElement,
+    MissingWindowTitle,
+    FilteredTarget,
+    PrivateWindow,
 }
 
 /// Clipboard capture request — processed by a dedicated worker thread.
@@ -618,8 +793,9 @@ struct TapState {
     current_window: Arc<ArcSwap<Option<String>>>,
     current_pid: Arc<AtomicI32>,
     activity_feed: Option<ActivityFeed>,
-    /// Bounded channel for context capture requests — a single worker thread
-    /// processes these instead of spawning a thread per click.
+    /// Bounded channel for authoritative click capture — a single worker
+    /// resolves the CGEvent target's app/window and optional AX element without
+    /// blocking the event tap or spawning a thread per click.
     context_tx: Sender<ContextCaptureRequest>,
     /// Bounded channel for clipboard capture — avoids spawning a thread per
     /// Cmd+C/X/V and blocks the event tap with get_clipboard().
@@ -789,58 +965,27 @@ fn run_event_tap(
             | cg::EventType::RIGHT_MOUSE_DRAGGED.mask();
     }
 
-    // Single worker thread for context capture — avoids spawning a thread per click
-    let (context_tx, context_rx) = bounded::<ContextCaptureRequest>(4);
-    thread::Builder::new()
+    // A single worker owns click attribution and optional element context. The
+    // queue follows small recorder bounds but caps its own backlog because an
+    // old coordinate is no longer trustworthy after windows can move.
+    let (context_tx, context_rx) =
+        bounded::<ContextCaptureRequest>(click_attribution_queue_capacity(config.max_buffer_size));
+    let context_config = config.clone();
+    let context_event_tx = tx.clone();
+    if let Err(err) = thread::Builder::new()
         .name("ctx-capture".into())
         .spawn(move || {
             while let Ok(req) = context_rx.recv() {
-                // Excluded apps / ignored windows / private-browsing windows
-                // are never AX-inspected — parity with the tree walker's
-                // gating. The bare click row is filtered downstream by the
-                // same config; this stops the enriched element/ancestor
-                // context at the source so excluded surfaces never even get
-                // an AX round-trip.
-                if let Some(app) = req.app_name.as_deref() {
-                    if !req
-                        .config
-                        .should_capture_target(app, req.window_title.as_deref())
-                    {
-                        continue;
+                if let Some(click) = capture_click_at_position(&req, &context_config) {
+                    if let Err(err) = context_event_tx.try_send(click) {
+                        debug!(?err, "click output queue full; dropping attributed click");
                     }
-                }
-                if req
-                    .window_title
-                    .as_deref()
-                    .is_some_and(crate::incognito::is_title_private)
-                {
-                    continue;
-                }
-                if let Some(element) =
-                    get_element_at_position(req.x, req.y, &req.config, req.app_pid)
-                {
-                    let ctx_event = UiEvent {
-                        id: None,
-                        timestamp: Utc::now(),
-                        relative_ms: req.start.elapsed().as_millis() as u64,
-                        data: EventData::Click {
-                            x: req.x as i32,
-                            y: req.y as i32,
-                            button: 0,
-                            click_count: 0,
-                            modifiers: 0,
-                        },
-                        app_name: req.app_name,
-                        window_title: req.window_title,
-                        browser_url: None,
-                        element: Some(element),
-                        frame_id: None,
-                    };
-                    let _ = req.tx.try_send(ctx_event);
                 }
             }
         })
-        .ok();
+    {
+        error!(?err, "failed to spawn click attribution worker");
+    }
 
     // Single worker thread for clipboard capture — avoids spawning a thread per
     // Cmd+C/X and avoids blocking the event tap callback on Cmd+V.
@@ -1052,22 +1197,27 @@ extern "C" fn tap_callback(
     // Lock-free reads — no mutex contention in the input event path
     let app_name = (**state.current_app.load()).clone();
     let window_title = (**state.current_window.load()).clone();
-    let event_target_pid = event.field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID) as i32;
-    let app_pid = if event_target_pid > 0 {
-        event_target_pid
-    } else {
-        state.current_pid.load(Ordering::Acquire)
-    };
+    let event_target_pid =
+        i32::try_from(event.field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID)).unwrap_or(0);
 
-    // Check if we should capture based on app/window exclusions
-    if let Some(ref app) = app_name {
-        if !state.config.should_capture_app(app) {
-            return Some(event);
+    let is_click = matches!(
+        event_type,
+        cg::EventType::LEFT_MOUSE_DOWN | cg::EventType::RIGHT_MOUSE_DOWN
+    );
+
+    // Keyboard/move/scroll events describe the current focus. Clicks do not:
+    // macOS sends mouse-down to the window under the pointer before the focus
+    // observer updates, so their filters run later against the CGEvent target.
+    if !is_click {
+        if let Some(ref app) = app_name {
+            if !state.config.should_capture_app(app) {
+                return Some(event);
+            }
         }
-    }
-    if let Some(ref window) = window_title {
-        if !state.config.should_capture_window(window) {
-            return Some(event);
+        if let Some(ref window) = window_title {
+            if !state.config.should_capture_window(window) {
+                return Some(event);
+            }
         }
     }
 
@@ -1082,39 +1232,18 @@ extern "C" fn tap_callback(
                 return Some(event);
             }
 
-            let btn = if event_type == cg::EventType::LEFT_MOUSE_DOWN {
-                0
-            } else {
-                1
+            // kCGEventTargetUnixProcessID is the receiver of this mouse-down.
+            // Never fall back to current_pid here: it is intentionally stale
+            // during the click-to-focus transition described in issue #6709.
+            let request = match snapshot_click_request(event_type, event, timestamp, t) {
+                Ok(request) => request,
+                Err(reason) => {
+                    debug!(?reason, "dropping invalid mouse-down snapshot");
+                    return Some(event);
+                }
             };
-            let clicks = event.field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE) as u8;
-
-            let mut ui_event = UiEvent::click(
-                timestamp,
-                t,
-                loc.x as i32,
-                loc.y as i32,
-                btn,
-                clicks,
-                mods.0,
-            );
-            ui_event.app_name = app_name.clone();
-            ui_event.window_title = window_title.clone();
-
-            let _ = state.tx.try_send(ui_event);
-
-            // Send context capture request to dedicated worker (non-blocking)
-            if state.config.capture_context {
-                let _ = state.context_tx.try_send(ContextCaptureRequest {
-                    x: loc.x,
-                    y: loc.y,
-                    config: state.config.clone(),
-                    app_pid,
-                    app_name: app_name.clone(),
-                    window_title: window_title.clone(),
-                    start: state.start,
-                    tx: state.tx.clone(),
-                });
+            if let Err(err) = state.context_tx.try_send(request) {
+                debug!(?err, "click attribution queue full; dropping click");
             }
         }
 
@@ -1334,7 +1463,42 @@ struct ObserverCallbackState {
     refresh_requested: Arc<AtomicBool>,
 }
 
-fn emit_focus_state(state: &ObserverCallbackState) {
+/// Every AX notification the focus observer subscribes to on the frontmost app.
+///
+/// Registration and teardown MUST walk this same list. Two hand-maintained
+/// copies are how a notification ends up added but never removed, which leaves
+/// Chromium/Electron in accessibility mode and makes it replay the keystrokes
+/// it buffered while we were attached (see the shutdown comment in
+/// `run_app_observer`).
+///
+/// Deliberately excluded, because every callback costs a system-wide AX focus
+/// query in `emit_focus_state` and these fire per keystroke or per frame:
+/// `value_changed` (text fields, progress bars, clocks), `selected_text_changed`
+/// (we already get typed text from the CGEventTap) and `layout_changed`
+/// (fires continuously on web content).
+fn observed_ax_notifications() -> [&'static ax::Notification; 5] {
+    [
+        ax::notification::app_activated(),
+        ax::notification::app_deactivated(),
+        ax::notification::focused_window_changed(),
+        ax::notification::focused_ui_element_changed(),
+        // The only signal for in-app navigation that leaves focus where it is:
+        // a browser tab loading a new page, an Obsidian note switch, a document
+        // being saved under a new name. Without it those transitions are
+        // invisible to the recorder until the capture loop's periodic visual
+        // check notices the pixels changed, up to `WARM_VISUAL_CHECK_INTERVAL`
+        // later, and the resulting frame has no `ui_events` row to link to.
+        ax::notification::title_changed(),
+    ]
+}
+
+/// `focused_elem` is the element the AX callback already handed us. When the
+/// notification is about the focused element itself we reuse it instead of
+/// asking the system for the focused element a second time: it saves an AX
+/// round trip per event and, more importantly, it is the element the
+/// notification actually described. A fresh query races the transition and can
+/// return the *next* element on a fast app switch.
+fn emit_focus_state(state: &ObserverCallbackState, focused_elem: Option<&ax::UiElement>) {
     let Some((pid, name)) = get_focused_app_info() else {
         return;
     };
@@ -1352,7 +1516,7 @@ fn emit_focus_state(state: &ObserverCallbackState) {
         state.current_app.store(Arc::new(Some(name.clone())));
 
         if state.config.capture_app_switch {
-            let focused_element = get_focused_element_context(&state.config);
+            let focused_element = focused_element_context(&state.config, focused_elem);
 
             let mut event = UiEvent::app_switch(
                 Utc::now(),
@@ -1378,7 +1542,7 @@ fn emit_focus_state(state: &ObserverCallbackState) {
         state.current_window.store(Arc::new(window_title.clone()));
 
         if state.config.capture_window_focus {
-            let focused_element = get_focused_element_context(&state.config);
+            let focused_element = focused_element_context(&state.config, focused_elem);
 
             let event = UiEvent {
                 id: None,
@@ -1401,10 +1565,16 @@ fn emit_focus_state(state: &ObserverCallbackState) {
     }
 }
 
+/// AXObserverCallbackWithInfo. The `info` dictionary is macOS's per-notification
+/// payload; we don't read it yet, but the info variant is the callback the
+/// element-carrying notifications are documented against, and taking it now
+/// means adding a notification that needs its payload later is a one-line
+/// change instead of re-creating every observer.
 extern "C" fn ax_focus_observer_callback(
     _observer: &mut ax::Observer,
-    _elem: &mut ax::UiElement,
+    elem: &mut ax::UiElement,
     notification: &ax::Notification,
+    _info: &cf::DictionaryOf<cf::String, cf::Type>,
     context: *mut std::ffi::c_void,
 ) {
     if context.is_null() {
@@ -1419,7 +1589,16 @@ extern "C" fn ax_focus_observer_callback(
         state.refresh_requested.store(true, Ordering::SeqCst);
     }
 
-    emit_focus_state(state);
+    // Only `focused_ui_element_changed` describes the focused element itself.
+    // For the others `elem` is the application or the window that changed, so
+    // reusing it as "the focused element" would mislabel the event.
+    let focused_elem = if notification == ax::notification::focused_ui_element_changed() {
+        Some(&*elem)
+    } else {
+        None
+    };
+
+    emit_focus_state(state, focused_elem);
 }
 
 fn run_app_observer(
@@ -1521,7 +1700,7 @@ fn run_app_observer(
         };
 
         if observed_pid == pid {
-            emit_focus_state(unsafe { &*callback_state_ptr });
+            emit_focus_state(unsafe { &*callback_state_ptr }, None);
             return;
         }
 
@@ -1530,7 +1709,7 @@ fn run_app_observer(
         }
 
         let app = ax::UiElement::with_app_pid(pid);
-        let mut new_observer = match ax::Observer::with_cb(pid, ax_focus_observer_callback) {
+        let mut new_observer = match ax::Observer::with_info_cb(pid, ax_focus_observer_callback) {
             Ok(observer) => observer,
             Err(err) => {
                 error!("failed to create AXObserver for pid {}: {:?}", pid, err);
@@ -1540,12 +1719,7 @@ fn run_app_observer(
         };
 
         let context = callback_state_ptr as *mut std::ffi::c_void;
-        for notification in [
-            ax::notification::app_activated(),
-            ax::notification::app_deactivated(),
-            ax::notification::focused_window_changed(),
-            ax::notification::focused_ui_element_changed(),
-        ] {
+        for notification in observed_ax_notifications() {
             if let Err(err) = new_observer.add_notification(&app, notification, context) {
                 debug!(
                     "failed to register AX notification {:?} for pid {}: {:?}",
@@ -1557,11 +1731,31 @@ fn run_app_observer(
         run_loop.add_src(new_observer.run_loop_src(), run_loop_mode);
         observed_pid = pid;
         observer = Some(new_observer);
-        emit_focus_state(unsafe { &*callback_state_ptr });
+        emit_focus_state(unsafe { &*callback_state_ptr }, None);
     };
 
     while !stop.load(Ordering::Acquire) {
-        cf::RunLoop::run_in_mode(run_loop_mode, 0.1, true);
+        let result = cf::RunLoop::run_in_mode(run_loop_mode, AX_RUN_LOOP_SLICE_SECS, true);
+
+        // `Finished` means this mode has no sources or timers left — the
+        // observed app exited, the observer was invalidated, or every
+        // `add_notification` above failed — and `Stopped` means someone called
+        // CFRunLoopStop. Both return *immediately* instead of waiting out the
+        // interval, so looping straight back into `run_in_mode` turns this
+        // thread into a spin at 100% of one core. Nothing re-adds a source
+        // unless `refresh_requested` fires, so it never recovers on its own.
+        //
+        // This is the shape behind the macOS pinned-core cohort: p98 CPU sits
+        // at ~112% (one saturated core) in every uptime bucket, and the pinned
+        // share climbs with uptime because a latched process never comes back
+        // — 99 users at a 55.8h median while their median peer sits near 8%.
+        //
+        // `HandledSource` must keep looping immediately; returning promptly
+        // after one source is the entire point of `return_after_source_handled`
+        // and is what keeps focus tracking responsive.
+        if ax_run_loop_returned_without_waiting(result) {
+            std::thread::sleep(AX_RUN_LOOP_IDLE_BACKOFF);
+        }
 
         if refresh_requested.swap(false, Ordering::SeqCst) {
             reattach_observer();
@@ -1586,12 +1780,7 @@ fn run_app_observer(
     if let Some(mut existing) = observer.take() {
         if observed_pid != 0 {
             let mut app = ax::UiElement::with_app_pid(observed_pid);
-            for notification in [
-                ax::notification::app_activated(),
-                ax::notification::app_deactivated(),
-                ax::notification::focused_window_changed(),
-                ax::notification::focused_ui_element_changed(),
-            ] {
+            for notification in observed_ax_notifications() {
                 let _ = existing.remove_notification(&app, notification);
             }
 
@@ -1630,16 +1819,51 @@ fn run_app_observer(
 }
 
 fn get_focused_app_info() -> Option<(i32, String)> {
-    cidre::objc::ar_pool(|| {
-        let sys = ax::UiElement::sys_wide();
-        let app = sys.focused_app().ok()?;
-        let pid = app.pid().ok()?;
-        let name = ns::RunningApp::with_pid(pid)
-            .and_then(|app| app.localized_name())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        Some((pid, name))
-    })
+    let sys = ax::UiElement::sys_wide();
+    let app = sys.focused_app().ok()?;
+    let pid = app.pid().ok()?;
+
+    // Do not use `NSRunningApplication.localizedName` in this callback path.
+    // During an AX focus transition macOS can hand cidre a null/invalid
+    // NSString even though the Objective-C result was represented as `Some`.
+    // Formatting that value calls CFStringGetLength and crashes at address 0.
+    // `proc_name` reads the stable process identity without touching a
+    // Foundation/CoreFoundation string, so a disappearing app degrades to a
+    // pid label instead of taking down the recorder.
+    let name = process_name_for_pid(pid).unwrap_or_else(|| format!("pid-{pid}"));
+    Some((pid, name))
+}
+
+fn process_name_for_pid(pid: i32) -> Option<String> {
+    if pid <= 0 {
+        return None;
+    }
+
+    let mut buffer = [0_u8; PROCESS_NAME_BUFFER_SIZE];
+    let written = unsafe {
+        proc_name(
+            pid,
+            buffer.as_mut_ptr().cast::<c_void>(),
+            buffer.len() as u32,
+        )
+    };
+    decode_process_name(&buffer, written)
+}
+
+fn decode_process_name(buffer: &[u8], written: i32) -> Option<String> {
+    if written <= 0 {
+        return None;
+    }
+
+    let end = (written as usize).min(buffer.len());
+    let bytes = &buffer[..end];
+    let nul = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    let without_nul = &bytes[..nul];
+    let name = String::from_utf8_lossy(without_nul).trim().to_owned();
+    (!name.is_empty()).then_some(name)
 }
 
 // ============================================================================
@@ -1697,7 +1921,7 @@ fn find_labeled_descendant_at(
         // app costs at most ~0.1s per read instead of the ~6s macOS default
         // (tree-walker pattern, tree/macos.rs).
         let _ = child.set_messaging_timeout_secs(0.1);
-        let Some(b) = get_element_bounds(&child) else {
+        let Some(b) = get_element_bounds(child) else {
             continue;
         };
         // only descend into elements that actually contain the cursor
@@ -1705,10 +1929,10 @@ fn find_labeled_descendant_at(
             continue;
         }
         // prefer the deepest (most specific) labeled match
-        if let Some(found) = find_labeled_descendant_at(&child, x, y, depth - 1, budget) {
+        if let Some(found) = find_labeled_descendant_at(child, x, y, depth - 1, budget) {
             return Some(found);
         }
-        if let (Some(role), Some(name)) = (role_string(&child), element_label(&child)) {
+        if let (Some(role), Some(name)) = (role_string(child), element_label(child)) {
             let area = b.width * b.height;
             let better = best
                 .as_ref()
@@ -1722,36 +1946,51 @@ fn find_labeled_descendant_at(
     best.map(|(r, n, b)| (r, n, Some(b)))
 }
 
-fn get_element_at_position(
-    x: f64,
-    y: f64,
+fn capture_click_at_position(
+    request: &ContextCaptureRequest,
     config: &UiCaptureConfig,
-    app_pid: i32,
-) -> Option<ElementContext> {
-    // Skip menu bar area (top ~30 pixels) to avoid conflicts with tray icon accessibility
-    // This prevents crashes when clicking tray icons while accessibility capture is active
-    if y < 30.0 {
+) -> Option<UiEvent> {
+    if let Err(reason) = validate_click_request_age(request.captured_at, Instant::now()) {
+        debug!(?reason, "dropping stale click attribution request");
         return None;
     }
-
-    if is_own_process(app_pid) {
+    let app_name = process_name_for_pid(request.app_pid);
+    if let Err(reason) = validate_click_preflight(
+        request,
+        config,
+        app_name.as_deref(),
+        std::process::id() as i32,
+    ) {
+        debug!(?reason, "dropping click during attribution preflight");
         return None;
     }
+    let app_name = app_name?;
 
     // Serialize accessibility queries to prevent concurrent calls that corrupt
-    // AppKit's internal accessibility caches. Use try_lock to avoid blocking
-    // the event tap callback path – if another query is in-flight, skip this one.
-    let _guard = AX_QUERY_LOCK.try_lock()?;
+    // AppKit's internal accessibility caches. This runs on the click worker,
+    // never the event-tap callback, so waiting for the current bounded AX read
+    // preserves the click instead of racing and dropping its attribution.
+    let _guard = AX_QUERY_LOCK.lock();
 
     let sys = ax::UiElement::sys_wide();
-    let elem = sys.element_at_pos(x as f32, y as f32).ok()?;
+    let elem = sys
+        .element_at_pos(request.x as f32, request.y as f32)
+        .ok()?;
 
-    // Skip elements belonging to our own process to avoid crashes when querying
-    // our overlay views (e.g. shortcut reminder) that may be mid-dismissal
-    if let Ok(pid) = elem.pid() {
-        if pid == std::process::id() as i32 {
-            return None;
-        }
+    // Cross-check the hit-test against the immutable CGEvent receiver. A focus
+    // transition can change the system-wide AX answer after mouse-down; mixing
+    // those two processes would recreate the attribution bug in a new form.
+    let element_pid = elem.pid().ok();
+    if let Err(reason) =
+        validate_click_element_pid(request.app_pid, element_pid, std::process::id() as i32)
+    {
+        debug!(
+            event_target_pid = request.app_pid,
+            ?element_pid,
+            ?reason,
+            "dropping click whose AX hit-test disagrees with CGEvent target"
+        );
+        return None;
     }
 
     // Every AX read below is IPC into the target app, and the macOS default
@@ -1761,17 +2000,199 @@ fn get_element_at_position(
     // next clicks' context. Cap it like the tree walker does (tree/macos.rs).
     let _ = elem.set_messaging_timeout_secs(0.1);
 
-    let role = role_string(&elem)?;
-    let bounds = get_element_bounds(&elem);
+    // AXWindow belongs to the hit-tested element, unlike AXFocusedWindow which
+    // can still describe the previously focused app at mouse-down time.
+    let window = elem.window().ok()?;
+    let _ = window.set_messaging_timeout_secs(0.1);
+    let raw_window_title = get_string_attr(&window, ax::attr::title())
+        .or_else(|| get_string_attr(&window, ax::attr::desc()));
+
+    // Attribution is resolved before any persistence or enrichment. This makes
+    // exclusions and private-window detection apply to the clicked surface,
+    // and intentionally drops unattributable clicks instead of labeling them
+    // with a different app/window from the focus cache.
+    let window_title =
+        match validate_click_window_title(config, &app_name, raw_window_title.as_deref()) {
+            Ok(title) => title,
+            Err(reason) => {
+                debug!(?reason, "dropping click without a capturable AXWindow");
+                return None;
+            }
+        };
+
+    let element = config
+        .capture_context
+        .then(|| build_click_element_context(&elem, request.x, request.y, config))
+        .flatten();
+
+    attributed_click_event(request, app_name, window_title, element)
+        .map_err(|reason| debug!(?reason, "dropping click with invalid event coordinates"))
+        .ok()
+}
+
+fn valid_event_target_pid(raw_pid: i64) -> Option<i32> {
+    i32::try_from(raw_pid).ok().filter(|pid| *pid > 0)
+}
+
+fn snapshot_click_request(
+    event_type: cg::EventType,
+    event: &cg::Event,
+    timestamp: chrono::DateTime<Utc>,
+    relative_ms: u64,
+) -> Result<ContextCaptureRequest, ClickDropReason> {
+    let button = match event_type {
+        cg::EventType::LEFT_MOUSE_DOWN => 0,
+        cg::EventType::RIGHT_MOUSE_DOWN => 1,
+        _ => return Err(ClickDropReason::UnsupportedEventType),
+    };
+    let app_pid = valid_event_target_pid(event.field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID))
+        .ok_or(ClickDropReason::InvalidTargetPid)?;
+    let click_count = u8::try_from(event.field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE))
+        .map_err(|_| ClickDropReason::InvalidClickCount)?;
+    let location = event.location();
+    let request = ContextCaptureRequest {
+        x: location.x,
+        y: location.y,
+        app_pid,
+        captured_at: Instant::now(),
+        timestamp,
+        relative_ms,
+        button,
+        click_count,
+        modifiers: Modifiers::from_cg_flags(event.flags().0).0,
+    };
+    click_event_coordinates(&request)?;
+    Ok(request)
+}
+
+fn click_attribution_queue_capacity(max_buffer_size: usize) -> usize {
+    max_buffer_size.clamp(CLICK_ATTRIBUTION_QUEUE_MIN, CLICK_ATTRIBUTION_QUEUE_MAX)
+}
+
+fn validate_click_request_age(captured_at: Instant, now: Instant) -> Result<(), ClickDropReason> {
+    if now.saturating_duration_since(captured_at) > CLICK_ATTRIBUTION_MAX_AGE {
+        return Err(ClickDropReason::StaleRequest);
+    }
+    Ok(())
+}
+
+fn click_event_coordinates(request: &ContextCaptureRequest) -> Result<(i32, i32), ClickDropReason> {
+    if !request.x.is_finite() || !request.y.is_finite() {
+        return Err(ClickDropReason::NonFiniteCoordinates);
+    }
+    let min = i32::MIN as f64;
+    let max = i32::MAX as f64;
+    if !(min..=max).contains(&request.x) || !(min..=max).contains(&request.y) {
+        return Err(ClickDropReason::CoordinatesOutOfRange);
+    }
+    Ok((request.x as i32, request.y as i32))
+}
+
+fn validate_click_preflight(
+    request: &ContextCaptureRequest,
+    config: &UiCaptureConfig,
+    app_name: Option<&str>,
+    own_pid: i32,
+) -> Result<(), ClickDropReason> {
+    if valid_event_target_pid(i64::from(request.app_pid)).is_none() {
+        return Err(ClickDropReason::InvalidTargetPid);
+    }
+    click_event_coordinates(request)?;
+    // Skip menu bar area (top ~30 pixels) to avoid conflicts with tray icon
+    // accessibility. This preserves the existing crash-avoidance boundary.
+    if request.y < 30.0 {
+        return Err(ClickDropReason::MenuBar);
+    }
+    if request.app_pid == own_pid {
+        return Err(ClickDropReason::OwnProcess);
+    }
+    let app_name = app_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or(ClickDropReason::MissingAppName)?;
+    // Preserve the existing privacy boundary: a fully excluded target app is
+    // never AX-inspected. Scoped/window filters necessarily run after AXWindow
+    // resolution below.
+    if !config.should_capture_app(app_name) {
+        return Err(ClickDropReason::FilteredApp);
+    }
+    Ok(())
+}
+
+fn validate_click_element_pid(
+    event_target_pid: i32,
+    element_pid: Option<i32>,
+    own_pid: i32,
+) -> Result<(), ClickDropReason> {
+    let element_pid = element_pid.ok_or(ClickDropReason::MissingElementPid)?;
+    if element_pid != event_target_pid {
+        return Err(ClickDropReason::MismatchedElementPid);
+    }
+    if element_pid == own_pid {
+        return Err(ClickDropReason::OwnElement);
+    }
+    Ok(())
+}
+
+fn validate_click_window_title(
+    config: &UiCaptureConfig,
+    app_name: &str,
+    window_title: Option<&str>,
+) -> Result<String, ClickDropReason> {
+    let window_title = window_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .ok_or(ClickDropReason::MissingWindowTitle)?;
+    if !config.should_capture_target(app_name, Some(window_title)) {
+        return Err(ClickDropReason::FilteredTarget);
+    }
+    if crate::incognito::is_title_private(window_title) {
+        return Err(ClickDropReason::PrivateWindow);
+    }
+    Ok(window_title.to_string())
+}
+
+fn attributed_click_event(
+    request: &ContextCaptureRequest,
+    app_name: String,
+    window_title: String,
+    element: Option<ElementContext>,
+) -> Result<UiEvent, ClickDropReason> {
+    let (x, y) = click_event_coordinates(request)?;
+    let mut event = UiEvent::click(
+        request.timestamp,
+        request.relative_ms,
+        x,
+        y,
+        request.button,
+        request.click_count,
+        request.modifiers,
+    );
+    event.app_name = Some(app_name);
+    event.window_title = Some(truncate(&window_title, 200));
+    event.element = element;
+    Ok(event)
+}
+
+/// Build optional rich element context from an already validated hit-test.
+/// Caller holds [`AX_QUERY_LOCK`] and has applied the per-element timeout.
+fn build_click_element_context(
+    elem: &ax::UiElement,
+    x: f64,
+    y: f64,
+    config: &UiCaptureConfig,
+) -> Option<ElementContext> {
+    let role = role_string(elem)?;
+    let bounds = get_element_bounds(elem);
 
     // Try multiple attributes to get the element name/label
     // Different elements use different attributes for their label
-    let name = get_string_attr(&elem, ax::attr::title())
-        .or_else(|| get_string_attr(&elem, ax::attr::desc()))
+    let name = get_string_attr(elem, ax::attr::title())
+        .or_else(|| get_string_attr(elem, ax::attr::desc()))
         .or_else(|| {
             // For buttons and many controls, the value contains the label
             if role.contains("Button") || role.contains("MenuItem") || role.contains("Link") {
-                get_string_attr(&elem, ax::attr::value())
+                get_string_attr(elem, ax::attr::value())
             } else {
                 None
             }
@@ -1787,7 +2208,7 @@ fn get_element_at_position(
     // recorded action is "click AXButton: Continue" instead of "click AXGroup".
     let (role, name, bounds) = if name.as_deref().map(str::trim).unwrap_or("").is_empty() {
         let mut budget: u32 = 96;
-        match find_labeled_descendant_at(&elem, x, y, 5, &mut budget) {
+        match find_labeled_descendant_at(elem, x, y, 5, &mut budget) {
             Some((r, n, b)) => (r, Some(n), b.or(bounds)),
             None => (role, name, bounds),
         }
@@ -1818,7 +2239,7 @@ fn get_element_at_position(
     // is a valid prefix either way). Budgeted: <=12 hops, 15 ms wall clock.
     // Hop names can mirror on-screen content (web group labels, document
     // titles), so they get the same hot-path PII scrub as element_value.
-    let mut chain = collect_ancestor_chain(&elem, 12, Duration::from_millis(15));
+    let mut chain = collect_ancestor_chain(elem, 12, Duration::from_millis(15));
     if config.apply_pii_removal {
         for hop in &mut chain {
             if let Some(n) = hop.name.take() {
@@ -1830,11 +2251,11 @@ fn get_element_at_position(
 
     let value =
         if role.contains("TextField") || role.contains("TextArea") || role.contains("ComboBox") {
-            get_string_attr(&elem, ax::attr::value())
+            get_string_attr(elem, ax::attr::value())
         } else {
             None
         };
-    let description = get_string_attr(&elem, ax::attr::desc());
+    let description = get_string_attr(elem, ax::attr::desc());
 
     Some(ElementContext {
         role,
@@ -1919,10 +2340,6 @@ fn collect_ancestor_chain(
     chain
 }
 
-fn is_own_process(pid: i32) -> bool {
-    pid > 0 && pid == std::process::id() as i32
-}
-
 fn get_element_bounds(elem: &ax::UiElement) -> Option<ElementBounds> {
     let pos = elem.attr_value(ax::attr::pos()).ok().and_then(|v| {
         if v.get_type_id() == ax::Value::type_id() {
@@ -1962,6 +2379,13 @@ fn get_string_attr(elem: &ax::UiElement, attr: &ax::Attr) -> Option<String> {
 
 fn get_focused_window_title(pid: i32) -> Option<String> {
     let app = ax::UiElement::with_app_pid(pid);
+
+    // Runs on every AX focus notification with no debounce, so it is the most
+    // frequent unbounded read we make. Match the 0.1s the click/context paths
+    // already use rather than leaning on the 1s process default: a slow app
+    // should cost us a missing title, not a stalled observer thread.
+    let _ = app.set_messaging_timeout_secs(0.1);
+
     let focused = app.attr_value(ax::attr::focused_window()).ok()?;
 
     if focused.get_type_id() == ax::UiElement::type_id() {
@@ -1969,6 +2393,25 @@ fn get_focused_window_title(pid: i32) -> Option<String> {
         get_string_attr(window, ax::attr::title())
     } else {
         None
+    }
+}
+
+/// Build the focused-element context, preferring an element the caller already
+/// holds. `hint` comes from the AX observer callback, which is handed the
+/// element the notification was about, so the common case skips the
+/// system-wide focused-element lookup entirely.
+fn focused_element_context(
+    config: &UiCaptureConfig,
+    hint: Option<&ax::UiElement>,
+) -> Option<ElementContext> {
+    match hint {
+        Some(elem) => {
+            // Same serialization guard as the query path: building the context
+            // still reads role/title/value/bounds attributes off the element.
+            let _guard = AX_QUERY_LOCK.try_lock()?;
+            build_element_context(elem, config)
+        }
+        None => get_focused_element_context(config),
     }
 }
 
@@ -1986,6 +2429,11 @@ fn get_focused_element_context(config: &UiCaptureConfig) -> Option<ElementContex
 
     let elem: &ax::UiElement = unsafe { std::mem::transmute(&*focused) };
 
+    build_element_context(elem, config)
+}
+
+/// Caller must already hold `AX_QUERY_LOCK`.
+fn build_element_context(elem: &ax::UiElement, config: &UiCaptureConfig) -> Option<ElementContext> {
     let role = elem.role().ok().map(|r| {
         let s = format!("{:?}", r);
         if let Some(start) = s.find("AX") {
@@ -2646,8 +3094,59 @@ extern "C" fn activity_only_callback(
 }
 
 #[cfg(test)]
+#[path = "macos_click_attribution_e2e.rs"]
+mod macos_click_attribution_e2e;
+
+#[cfg(test)]
+#[path = "macos_click_attribution_eval.rs"]
+mod macos_click_attribution_eval;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The AX observer thread loops on `run_in_mode`. Two of the four results
+    /// come back instantly: `Finished` when the mode has no sources or timers
+    /// left, and `Stopped` after `CFRunLoopStop`. Looping straight back in on
+    /// either pins the thread at 100% of one core, and nothing re-adds a source
+    /// unless a refresh is requested, so it never recovers — the shape behind
+    /// ~99 macOS users sitting at one saturated core with a 55.8h median
+    /// uptime while their median peer used ~8%.
+    #[test]
+    fn instant_run_loop_returns_back_off_and_waiting_ones_do_not() {
+        assert!(
+            ax_run_loop_returned_without_waiting(cf::RunLoopRunResult::Finished),
+            "no sources left returns immediately — looping on it is the spin"
+        );
+        assert!(
+            ax_run_loop_returned_without_waiting(cf::RunLoopRunResult::Stopped),
+            "CFRunLoopStop returns immediately too"
+        );
+
+        // These two must never back off. `TimedOut` already waited out the
+        // slice, and delaying `HandledSource` would add latency to every focus
+        // change — returning promptly after one source is the entire point of
+        // `return_after_source_handled`.
+        assert!(
+            !ax_run_loop_returned_without_waiting(cf::RunLoopRunResult::TimedOut),
+            "TimedOut already waited the full slice"
+        );
+        assert!(
+            !ax_run_loop_returned_without_waiting(cf::RunLoopRunResult::HandledSource),
+            "HandledSource is the healthy busy path and must stay hot"
+        );
+    }
+
+    /// A sourceless observer thread should wake at roughly the same rate as a
+    /// healthy idle one, not faster.
+    #[test]
+    fn idle_backoff_matches_one_healthy_slice() {
+        assert_eq!(
+            AX_RUN_LOOP_IDLE_BACKOFF.as_secs_f64(),
+            AX_RUN_LOOP_SLICE_SECS,
+            "backoff drifting from the slice changes the sourceless wake rate"
+        );
+    }
 
     #[test]
     fn test_permission_check() {
@@ -2693,11 +3192,112 @@ mod tests {
     }
 
     #[test]
-    fn test_own_process_detection() {
-        assert!(is_own_process(std::process::id() as i32));
-        assert!(!is_own_process(0));
-        assert!(!is_own_process(-1));
-        assert!(!is_own_process((std::process::id() as i32) + 1));
+    fn click_target_pid_never_falls_back_to_stale_focus() {
+        assert_eq!(valid_event_target_pid(42), Some(42));
+        assert_eq!(valid_event_target_pid(0), None);
+        assert_eq!(valid_event_target_pid(-1), None);
+        assert_eq!(valid_event_target_pid(i64::from(i32::MAX) + 1), None);
+    }
+
+    #[test]
+    fn click_snapshot_rejects_malformed_core_graphics_fields() {
+        let point = cg::Point::new(100.0, 100.0);
+        let mut event = cg::Event::mouse(
+            None,
+            cg::EventType::LEFT_MOUSE_DOWN,
+            point,
+            cg::MouseButton::Left,
+        )
+        .expect("create test mouse event");
+        let timestamp = Utc::now();
+
+        event.set_field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID, i64::from(i32::MAX) + 1);
+        assert!(matches!(
+            snapshot_click_request(cg::EventType::LEFT_MOUSE_DOWN, &event, timestamp, 1),
+            Err(ClickDropReason::InvalidTargetPid)
+        ));
+
+        event.set_field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID, 42);
+        event.set_field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE, 256);
+        assert!(matches!(
+            snapshot_click_request(cg::EventType::LEFT_MOUSE_DOWN, &event, timestamp, 1),
+            Err(ClickDropReason::InvalidClickCount)
+        ));
+
+        event.set_field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE, 1);
+        assert!(matches!(
+            snapshot_click_request(cg::EventType::LEFT_MOUSE_UP, &event, timestamp, 1),
+            Err(ClickDropReason::UnsupportedEventType)
+        ));
+    }
+
+    #[test]
+    fn attributed_click_preserves_original_mouse_down_facts() {
+        let timestamp = Utc::now();
+        let request = ContextCaptureRequest {
+            x: 321.75,
+            y: 654.25,
+            app_pid: 42,
+            captured_at: Instant::now(),
+            timestamp,
+            relative_ms: 987,
+            button: 1,
+            click_count: 2,
+            modifiers: Modifiers::CTRL | Modifiers::SHIFT,
+        };
+
+        let event = attributed_click_event(
+            &request,
+            "Google Chrome".to_string(),
+            "Inbox".to_string(),
+            None,
+        )
+        .expect("valid coordinates");
+
+        assert_eq!(event.timestamp, timestamp);
+        assert_eq!(event.relative_ms, 987);
+        assert_eq!(event.app_name.as_deref(), Some("Google Chrome"));
+        assert_eq!(event.window_title.as_deref(), Some("Inbox"));
+        assert!(event.element.is_none());
+        assert!(matches!(
+            event.data,
+            EventData::Click {
+                x: 321,
+                y: 654,
+                button: 1,
+                click_count: 2,
+                modifiers,
+            } if modifiers == Modifiers::CTRL | Modifiers::SHIFT
+        ));
+    }
+
+    #[test]
+    fn test_decode_process_name_rejects_empty_results() {
+        assert_eq!(decode_process_name(b"screenpipe", 0), None);
+        assert_eq!(decode_process_name(b"\0ignored", 8), None);
+    }
+
+    #[test]
+    fn test_decode_process_name_bounds_and_sanitizes_results() {
+        assert_eq!(
+            decode_process_name(b"screenpipe\0ignored", 18),
+            Some("screenpipe".to_string())
+        );
+        assert_eq!(
+            decode_process_name(b" screenpipe ", 12),
+            Some("screenpipe".to_string())
+        );
+        assert_eq!(
+            decode_process_name(b"app-\xFF", 5),
+            Some("app-�".to_string())
+        );
+    }
+
+    #[test]
+    fn test_process_name_for_current_pid_avoids_cfstring_path() {
+        let name = process_name_for_pid(std::process::id() as i32)
+            .expect("libproc should resolve the current process name");
+        assert!(!name.is_empty());
     }
 
     // The real system pasteboard is a single shared resource. `cargo test`
