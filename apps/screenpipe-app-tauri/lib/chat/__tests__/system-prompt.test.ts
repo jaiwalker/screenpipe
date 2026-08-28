@@ -21,6 +21,10 @@ describe("buildSystemPrompt", () => {
     expect(prompt).toContain("# Flip to technical mode");
     expect(prompt).toContain("# Activity recaps");
     expect(prompt).toContain("# Connection write policy");
+    expect(prompt).toContain("# Git repository and worktree safety");
+    expect(prompt).toContain("use a dedicated Git worktree for implementation by default");
+    expect(prompt).toContain("# Pull requests");
+    expect(prompt).toContain("create it from the dedicated worktree");
     expect(prompt).toContain("# Tool selection");
     expect(prompt).toContain("# Links and rich references");
     expect(prompt).toContain("canonical URL");
