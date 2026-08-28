@@ -47,6 +47,12 @@ static AX_QUERY_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 /// on a specific element still overrides it for that element.
 const AX_DEFAULT_TIMEOUT_SECS: f32 = 1.0;
 
+/// Keep click attribution recent enough that a delayed AX hit-test cannot
+/// accidentally describe a window that moved under the recorded coordinate.
+const CLICK_ATTRIBUTION_MAX_AGE: Duration = Duration::from_secs(2);
+const CLICK_ATTRIBUTION_QUEUE_MIN: usize = 4;
+const CLICK_ATTRIBUTION_QUEUE_MAX: usize = 64;
+
 /// Apply [`AX_DEFAULT_TIMEOUT_SECS`] as this process's default AX timeout.
 ///
 /// Passing the system-wide element to `AXUIElementSetMessagingTimeout` sets the
@@ -719,6 +725,7 @@ struct ContextCaptureRequest {
     x: f64,
     y: f64,
     app_pid: i32,
+    captured_at: Instant,
     timestamp: chrono::DateTime<Utc>,
     relative_ms: u64,
     button: u8,
@@ -728,8 +735,12 @@ struct ContextCaptureRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClickDropReason {
+    UnsupportedEventType,
     InvalidTargetPid,
+    InvalidClickCount,
     NonFiniteCoordinates,
+    CoordinatesOutOfRange,
+    StaleRequest,
     MenuBar,
     OwnProcess,
     MissingAppName,
@@ -955,22 +966,26 @@ fn run_event_tap(
     }
 
     // A single worker owns click attribution and optional element context. The
-    // queue uses the recorder's event-buffer bound because every mouse-down now
-    // passes through it; requests are small immutable CGEvent snapshots.
+    // queue follows small recorder bounds but caps its own backlog because an
+    // old coordinate is no longer trustworthy after windows can move.
     let (context_tx, context_rx) =
         bounded::<ContextCaptureRequest>(click_attribution_queue_capacity(config.max_buffer_size));
     let context_config = config.clone();
     let context_event_tx = tx.clone();
-    thread::Builder::new()
+    if let Err(err) = thread::Builder::new()
         .name("ctx-capture".into())
         .spawn(move || {
             while let Ok(req) = context_rx.recv() {
                 if let Some(click) = capture_click_at_position(&req, &context_config) {
-                    let _ = context_event_tx.try_send(click);
+                    if let Err(err) = context_event_tx.try_send(click) {
+                        debug!(?err, "click output queue full; dropping attributed click");
+                    }
                 }
             }
         })
-        .ok();
+    {
+        error!(?err, "failed to spawn click attribution worker");
+    }
 
     // Single worker thread for clipboard capture — avoids spawning a thread per
     // Cmd+C/X and avoids blocking the event tap callback on Cmd+V.
@@ -1182,7 +1197,8 @@ extern "C" fn tap_callback(
     // Lock-free reads — no mutex contention in the input event path
     let app_name = (**state.current_app.load()).clone();
     let window_title = (**state.current_window.load()).clone();
-    let event_target_pid = event.field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID) as i32;
+    let event_target_pid =
+        i32::try_from(event.field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID)).unwrap_or(0);
 
     let is_click = matches!(
         event_type,
@@ -1216,33 +1232,15 @@ extern "C" fn tap_callback(
                 return Some(event);
             }
 
-            let btn = if event_type == cg::EventType::LEFT_MOUSE_DOWN {
-                0
-            } else {
-                1
-            };
-            let clicks = event.field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE) as u8;
-
             // kCGEventTargetUnixProcessID is the receiver of this mouse-down.
             // Never fall back to current_pid here: it is intentionally stale
             // during the click-to-focus transition described in issue #6709.
-            let Some(app_pid) = valid_event_target_pid(event_target_pid) else {
-                debug!(
-                    event_target_pid,
-                    "dropping click without a valid CGEvent target pid"
-                );
-                return Some(event);
-            };
-
-            let request = ContextCaptureRequest {
-                x: loc.x,
-                y: loc.y,
-                app_pid,
-                timestamp,
-                relative_ms: t,
-                button: btn,
-                click_count: clicks,
-                modifiers: mods.0,
+            let request = match snapshot_click_request(event_type, event, timestamp, t) {
+                Ok(request) => request,
+                Err(reason) => {
+                    debug!(?reason, "dropping invalid mouse-down snapshot");
+                    return Some(event);
+                }
             };
             if let Err(err) = state.context_tx.try_send(request) {
                 debug!(?err, "click attribution queue full; dropping click");
@@ -1952,6 +1950,10 @@ fn capture_click_at_position(
     request: &ContextCaptureRequest,
     config: &UiCaptureConfig,
 ) -> Option<UiEvent> {
+    if let Err(reason) = validate_click_request_age(request.captured_at, Instant::now()) {
+        debug!(?reason, "dropping stale click attribution request");
+        return None;
+    }
     let app_name = process_name_for_pid(request.app_pid);
     if let Err(reason) = validate_click_preflight(
         request,
@@ -2023,20 +2025,67 @@ fn capture_click_at_position(
         .then(|| build_click_element_context(&elem, request.x, request.y, config))
         .flatten();
 
-    Some(attributed_click_event(
-        request,
-        app_name,
-        window_title,
-        element,
-    ))
+    attributed_click_event(request, app_name, window_title, element)
+        .map_err(|reason| debug!(?reason, "dropping click with invalid event coordinates"))
+        .ok()
 }
 
-fn valid_event_target_pid(pid: i32) -> Option<i32> {
-    (pid > 0).then_some(pid)
+fn valid_event_target_pid(raw_pid: i64) -> Option<i32> {
+    i32::try_from(raw_pid).ok().filter(|pid| *pid > 0)
+}
+
+fn snapshot_click_request(
+    event_type: cg::EventType,
+    event: &cg::Event,
+    timestamp: chrono::DateTime<Utc>,
+    relative_ms: u64,
+) -> Result<ContextCaptureRequest, ClickDropReason> {
+    let button = match event_type {
+        cg::EventType::LEFT_MOUSE_DOWN => 0,
+        cg::EventType::RIGHT_MOUSE_DOWN => 1,
+        _ => return Err(ClickDropReason::UnsupportedEventType),
+    };
+    let app_pid = valid_event_target_pid(event.field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID))
+        .ok_or(ClickDropReason::InvalidTargetPid)?;
+    let click_count = u8::try_from(event.field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE))
+        .map_err(|_| ClickDropReason::InvalidClickCount)?;
+    let location = event.location();
+    let request = ContextCaptureRequest {
+        x: location.x,
+        y: location.y,
+        app_pid,
+        captured_at: Instant::now(),
+        timestamp,
+        relative_ms,
+        button,
+        click_count,
+        modifiers: Modifiers::from_cg_flags(event.flags().0).0,
+    };
+    click_event_coordinates(&request)?;
+    Ok(request)
 }
 
 fn click_attribution_queue_capacity(max_buffer_size: usize) -> usize {
-    max_buffer_size.max(4)
+    max_buffer_size.clamp(CLICK_ATTRIBUTION_QUEUE_MIN, CLICK_ATTRIBUTION_QUEUE_MAX)
+}
+
+fn validate_click_request_age(captured_at: Instant, now: Instant) -> Result<(), ClickDropReason> {
+    if now.saturating_duration_since(captured_at) > CLICK_ATTRIBUTION_MAX_AGE {
+        return Err(ClickDropReason::StaleRequest);
+    }
+    Ok(())
+}
+
+fn click_event_coordinates(request: &ContextCaptureRequest) -> Result<(i32, i32), ClickDropReason> {
+    if !request.x.is_finite() || !request.y.is_finite() {
+        return Err(ClickDropReason::NonFiniteCoordinates);
+    }
+    let min = i32::MIN as f64;
+    let max = i32::MAX as f64;
+    if !(min..=max).contains(&request.x) || !(min..=max).contains(&request.y) {
+        return Err(ClickDropReason::CoordinatesOutOfRange);
+    }
+    Ok((request.x as i32, request.y as i32))
 }
 
 fn validate_click_preflight(
@@ -2045,12 +2094,10 @@ fn validate_click_preflight(
     app_name: Option<&str>,
     own_pid: i32,
 ) -> Result<(), ClickDropReason> {
-    if valid_event_target_pid(request.app_pid).is_none() {
+    if valid_event_target_pid(i64::from(request.app_pid)).is_none() {
         return Err(ClickDropReason::InvalidTargetPid);
     }
-    if !request.x.is_finite() || !request.y.is_finite() {
-        return Err(ClickDropReason::NonFiniteCoordinates);
-    }
+    click_event_coordinates(request)?;
     // Skip menu bar area (top ~30 pixels) to avoid conflicts with tray icon
     // accessibility. This preserves the existing crash-avoidance boundary.
     if request.y < 30.0 {
@@ -2110,12 +2157,13 @@ fn attributed_click_event(
     app_name: String,
     window_title: String,
     element: Option<ElementContext>,
-) -> UiEvent {
+) -> Result<UiEvent, ClickDropReason> {
+    let (x, y) = click_event_coordinates(request)?;
     let mut event = UiEvent::click(
         request.timestamp,
         request.relative_ms,
-        request.x as i32,
-        request.y as i32,
+        x,
+        y,
         request.button,
         request.click_count,
         request.modifiers,
@@ -2123,7 +2171,7 @@ fn attributed_click_event(
     event.app_name = Some(app_name);
     event.window_title = Some(truncate(&window_title, 200));
     event.element = element;
-    event
+    Ok(event)
 }
 
 /// Build optional rich element context from an already validated hit-test.
@@ -3148,6 +3196,39 @@ mod tests {
         assert_eq!(valid_event_target_pid(42), Some(42));
         assert_eq!(valid_event_target_pid(0), None);
         assert_eq!(valid_event_target_pid(-1), None);
+        assert_eq!(valid_event_target_pid(i64::from(i32::MAX) + 1), None);
+    }
+
+    #[test]
+    fn click_snapshot_rejects_malformed_core_graphics_fields() {
+        let point = cg::Point::new(100.0, 100.0);
+        let mut event = cg::Event::mouse(
+            None,
+            cg::EventType::LEFT_MOUSE_DOWN,
+            point,
+            cg::MouseButton::Left,
+        )
+        .expect("create test mouse event");
+        let timestamp = Utc::now();
+
+        event.set_field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID, i64::from(i32::MAX) + 1);
+        assert!(matches!(
+            snapshot_click_request(cg::EventType::LEFT_MOUSE_DOWN, &event, timestamp, 1),
+            Err(ClickDropReason::InvalidTargetPid)
+        ));
+
+        event.set_field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID, 42);
+        event.set_field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE, 256);
+        assert!(matches!(
+            snapshot_click_request(cg::EventType::LEFT_MOUSE_DOWN, &event, timestamp, 1),
+            Err(ClickDropReason::InvalidClickCount)
+        ));
+
+        event.set_field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE, 1);
+        assert!(matches!(
+            snapshot_click_request(cg::EventType::LEFT_MOUSE_UP, &event, timestamp, 1),
+            Err(ClickDropReason::UnsupportedEventType)
+        ));
     }
 
     #[test]
@@ -3157,6 +3238,7 @@ mod tests {
             x: 321.75,
             y: 654.25,
             app_pid: 42,
+            captured_at: Instant::now(),
             timestamp,
             relative_ms: 987,
             button: 1,
@@ -3169,7 +3251,8 @@ mod tests {
             "Google Chrome".to_string(),
             "Inbox".to_string(),
             None,
-        );
+        )
+        .expect("valid coordinates");
 
         assert_eq!(event.timestamp, timestamp);
         assert_eq!(event.relative_ms, 987);

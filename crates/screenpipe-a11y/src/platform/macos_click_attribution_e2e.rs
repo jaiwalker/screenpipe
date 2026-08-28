@@ -4,14 +4,13 @@
 
 //! Live macOS regression test for click-to-focus attribution (issue #6709).
 //!
-//! This is a unit-module test only so it can drive the private production
-//! click-attribution worker directly. It launches real TextEdit and Terminal
-//! processes, keeps Terminal focused, then asks the worker to enrich a
-//! mouse-down whose immutable CGEvent target is TextEdit. The resulting event
-//! must join TextEdit's process identity to the clicked element's AXWindow.
+//! The test snapshots a real CoreGraphics mouse event through the production
+//! callback helper, then drives the production attribution worker against real
+//! AX processes while Terminal remains focused and TextEdit is targeted.
 
 use super::{
-    capture_click_at_position, ContextCaptureRequest, EventData, UiCaptureConfig, UiRecorder,
+    capture_click_at_position, snapshot_click_request, EventData, UiCaptureConfig, UiRecorder,
+    CG_EVENT_TARGET_UNIX_PROCESS_ID,
 };
 use chrono::Utc;
 use cidre::{ax, cf, cg, ns};
@@ -23,6 +22,7 @@ use std::time::{Duration, Instant};
 
 const TERMINAL_BUNDLE_ID: &str = "com.apple.Terminal";
 const TEXTEDIT_BUNDLE_ID: &str = "com.apple.TextEdit";
+static LIVE_E2E_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct RestoreFrontmostApp {
     bundle_id: Option<String>,
@@ -224,6 +224,9 @@ fn visible_point_for_pid(pid: i32, bounds: cg::Rect) -> Option<cg::Point> {
 #[test]
 #[ignore = "requires a logged-in macOS desktop with Accessibility permission"]
 fn live_ax_click_attribution_uses_event_target_process_and_window() {
+    let _serial = LIVE_E2E_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let _restore = RestoreFrontmostApp::capture();
     let config = UiCaptureConfig {
         capture_context: true,
@@ -264,16 +267,23 @@ fn live_ax_click_attribution_uses_event_target_process_and_window() {
     );
 
     let timestamp = Utc::now();
-    let request = ContextCaptureRequest {
-        x: point.x,
-        y: point.y,
-        app_pid: textedit.0,
+    let mut mouse_down = cg::Event::mouse(
+        None,
+        cg::EventType::LEFT_MOUSE_DOWN,
+        point,
+        cg::MouseButton::Left,
+    )
+    .expect("create CoreGraphics mouse-down");
+    mouse_down.set_field_i64(CG_EVENT_TARGET_UNIX_PROCESS_ID, i64::from(textedit.0));
+    mouse_down.set_field_i64(cg::EventField::MOUSE_EVENT_CLICK_STATE, 1);
+    mouse_down.set_flags(cg::EventFlags::SHIFT | cg::EventFlags::ALT);
+    let request = snapshot_click_request(
+        cg::EventType::LEFT_MOUSE_DOWN,
+        &mouse_down,
         timestamp,
-        relative_ms: 4_242,
-        button: 0,
-        click_count: 1,
-        modifiers: 5,
-    };
+        4_242,
+    )
+    .expect("snapshot production callback fields");
     let click = capture_click_at_position(&request, &config)
         .expect("production click worker should enrich the live TextEdit target");
 
@@ -296,8 +306,10 @@ fn live_ax_click_attribution_uses_event_target_process_and_window() {
             y,
             button: 0,
             click_count: 1,
-            modifiers: 5,
-        } if x == point.x as i32 && y == point.y as i32
+            modifiers,
+        } if x == point.x as i32
+            && y == point.y as i32
+            && modifiers == (super::Modifiers::SHIFT | super::Modifiers::OPT)
     ));
 
     let no_context_config = UiCaptureConfig {

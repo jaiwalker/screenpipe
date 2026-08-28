@@ -10,10 +10,12 @@
 
 use super::{
     attributed_click_event, click_attribution_queue_capacity, valid_event_target_pid,
-    validate_click_element_pid, validate_click_preflight, validate_click_window_title,
-    ClickDropReason, ContextCaptureRequest, EventData, Modifiers, UiCaptureConfig,
+    validate_click_element_pid, validate_click_preflight, validate_click_request_age,
+    validate_click_window_title, ClickDropReason, ContextCaptureRequest, EventData, Modifiers,
+    UiCaptureConfig, CLICK_ATTRIBUTION_MAX_AGE,
 };
 use chrono::Utc;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy)]
 enum ConfigFixture {
@@ -65,6 +67,7 @@ fn request(x: f64, y: f64, app_pid: i32) -> ContextCaptureRequest {
         x,
         y,
         app_pid,
+        captured_at: Instant::now(),
         timestamp: Utc::now(),
         relative_ms: 123,
         button: 0,
@@ -100,14 +103,17 @@ fn macos_click_attribution_scores_100_edge_cases() {
     let mut score = Score::default();
 
     let pid_cases = [
-        ("minimum signed PID is rejected", i32::MIN, None),
-        ("large negative PID is rejected", -100, None),
+        ("minimum raw PID is rejected", i64::MIN, None),
+        (
+            "minimum signed-32-bit PID is rejected",
+            i64::from(i32::MIN),
+            None,
+        ),
         ("minus one PID is rejected", -1, None),
         ("zero PID is rejected", 0, None),
         ("PID one is accepted", 1, Some(1)),
         ("PID two is accepted", 2, Some(2)),
         ("ordinary PID is accepted", 42, Some(42)),
-        ("three-digit PID is accepted", 999, Some(999)),
         (
             "signed-16-bit boundary PID is accepted",
             32_767,
@@ -119,11 +125,16 @@ fn macos_click_attribution_scores_100_edge_cases() {
             Some(65_535),
         ),
         (
-            "near-maximum signed PID is accepted",
-            i32::MAX - 1,
-            Some(i32::MAX - 1),
+            "maximum signed-32-bit PID is accepted",
+            i64::from(i32::MAX),
+            Some(i32::MAX),
         ),
-        ("maximum signed PID is accepted", i32::MAX, Some(i32::MAX)),
+        (
+            "signed-32-bit overflow PID is rejected",
+            i64::from(i32::MAX) + 1,
+            None,
+        ),
+        ("maximum raw PID is rejected", i64::MAX, None),
     ];
     for (name, pid, want) in pid_cases {
         let got = valid_event_target_pid(pid);
@@ -192,8 +203,8 @@ fn macos_click_attribution_scores_100_edge_cases() {
             Ok(()),
         ),
         (
-            "large finite horizontal coordinate reaches AX hit-test",
-            1_000_000.0,
+            "maximum event-coordinate horizontal value is accepted",
+            i32::MAX as f64,
             300.0,
             42,
             Some("TextEdit"),
@@ -202,14 +213,14 @@ fn macos_click_attribution_scores_100_edge_cases() {
             Ok(()),
         ),
         (
-            "large finite vertical coordinate reaches AX hit-test",
+            "finite vertical coordinate beyond event range is dropped",
             400.0,
-            1_000_000.0,
+            i32::MAX as f64 + 1.0,
             42,
             Some("TextEdit"),
             999,
             ConfigFixture::Default,
-            Ok(()),
+            Err(ClickDropReason::CoordinatesOutOfRange),
         ),
         (
             "NaN horizontal coordinate is dropped",
@@ -657,28 +668,6 @@ fn macos_click_attribution_scores_100_edge_cases() {
             "Files",
         ),
         (
-            "middle click button survives",
-            321.0,
-            654.0,
-            2,
-            1,
-            0,
-            12,
-            "Chrome",
-            "Docs",
-        ),
-        (
-            "maximum button byte survives",
-            321.0,
-            654.0,
-            u8::MAX,
-            1,
-            0,
-            13,
-            "App",
-            "Window",
-        ),
-        (
             "zero click count survives",
             321.0,
             654.0,
@@ -822,13 +811,15 @@ fn macos_click_attribution_scores_100_edge_cases() {
             x,
             y,
             app_pid: 42,
+            captured_at: Instant::now(),
             timestamp,
             relative_ms,
             button,
             click_count,
             modifiers,
         };
-        let event = attributed_click_event(&request, app_name.to_string(), title.to_string(), None);
+        let event = attributed_click_event(&request, app_name.to_string(), title.to_string(), None)
+            .expect("named event case has valid coordinates");
         let facts_match = matches!(
             event.data,
             EventData::Click {
@@ -855,13 +846,52 @@ fn macos_click_attribution_scores_100_edge_cases() {
         score.record("event-fidelity", name, passed, got);
     }
 
+    let mut raw_mouse = cidre::cg::Event::mouse(
+        None,
+        cidre::cg::EventType::LEFT_MOUSE_DOWN,
+        cidre::cg::Point::new(321.0, 654.0),
+        cidre::cg::MouseButton::Left,
+    )
+    .expect("create eval mouse event");
+    raw_mouse.set_field_i64(super::CG_EVENT_TARGET_UNIX_PROCESS_ID, 42);
+    raw_mouse.set_field_i64(cidre::cg::EventField::MOUSE_EVENT_CLICK_STATE, 1);
+    let wrong_type = super::snapshot_click_request(
+        cidre::cg::EventType::LEFT_MOUSE_UP,
+        &raw_mouse,
+        Utc::now(),
+        12,
+    );
+    score.record(
+        "event-snapshot",
+        "mouse-up cannot enter the mouse-down attribution queue",
+        matches!(wrong_type, Err(ClickDropReason::UnsupportedEventType)),
+        "unexpected snapshot result".to_string(),
+    );
+    raw_mouse.set_field_i64(cidre::cg::EventField::MOUSE_EVENT_CLICK_STATE, 256);
+    let oversized_click_count = super::snapshot_click_request(
+        cidre::cg::EventType::LEFT_MOUSE_DOWN,
+        &raw_mouse,
+        Utc::now(),
+        13,
+    );
+    score.record(
+        "event-snapshot",
+        "oversized raw click count is rejected instead of wrapping",
+        matches!(
+            oversized_click_count,
+            Err(ClickDropReason::InvalidClickCount)
+        ),
+        "unexpected snapshot result".to_string(),
+    );
+
     let exact_title = "a".repeat(200);
     let exact_event = attributed_click_event(
         &request(100.0, 100.0, 42),
         "App".to_string(),
         exact_title.clone(),
         None,
-    );
+    )
+    .expect("exact-title case has valid coordinates");
     score.record(
         "event-fidelity",
         "exactly 200-byte title is preserved",
@@ -876,7 +906,8 @@ fn macos_click_attribution_scores_100_edge_cases() {
         "App".to_string(),
         unicode_title,
         None,
-    );
+    )
+    .expect("Unicode-title case has valid coordinates");
     score.record(
         "event-fidelity",
         "long multibyte title truncates on a UTF-8 boundary",
@@ -887,14 +918,18 @@ fn macos_click_attribution_scores_100_edge_cases() {
     let queue_cases = [
         ("zero configured buffer still has safety floor", 0, 4),
         ("one configured slot still has safety floor", 1, 4),
-        ("two configured slots still have safety floor", 2, 4),
         ("three configured slots still have safety floor", 3, 4),
         ("four configured slots preserve the floor", 4, 4),
         ("five configured slots are preserved", 5, 5),
         ("small power-of-two capacity is preserved", 16, 16),
-        ("large custom capacity is preserved", 999, 999),
-        ("default production capacity is preserved", 10_000, 10_000),
-        ("maximum capacity does not overflow", usize::MAX, usize::MAX),
+        ("maximum attribution capacity is preserved", 64, 64),
+        ("capacity above attribution maximum is capped", 65, 64),
+        ("default production capacity is capped", 10_000, 64),
+        (
+            "maximum capacity cannot create an unbounded backlog",
+            usize::MAX,
+            64,
+        ),
     ];
     for (name, configured, want) in queue_cases {
         let got = click_attribution_queue_capacity(configured);
@@ -916,6 +951,7 @@ fn macos_click_attribution_scores_100_edge_cases() {
 
 #[test]
 fn macos_click_attribution_property_sweep_is_lossless_and_bounded() {
+    let mut checked = 0usize;
     let own_pid = 10_001;
     for event_target_pid in 1..=128 {
         for element_pid in 1..=128 {
@@ -926,15 +962,62 @@ fn macos_click_attribution_property_sweep_is_lossless_and_bounded() {
                 Err(ClickDropReason::MismatchedElementPid)
             };
             assert_eq!(got, want, "PID pair {event_target_pid}/{element_pid}");
+            checked += 1;
         }
     }
 
     for configured in 0..=10_000 {
         assert_eq!(
             click_attribution_queue_capacity(configured),
-            configured.max(4),
+            configured.clamp(4, 64),
             "configured queue capacity {configured}"
         );
+        checked += 1;
+    }
+
+    let now = Instant::now();
+    for (captured_at, want) in [
+        (now, Ok(())),
+        (now - CLICK_ATTRIBUTION_MAX_AGE, Ok(())),
+        (
+            now - CLICK_ATTRIBUTION_MAX_AGE - Duration::from_nanos(1),
+            Err(ClickDropReason::StaleRequest),
+        ),
+    ] {
+        assert_eq!(validate_click_request_age(captured_at, now), want);
+        checked += 1;
+    }
+
+    for (raw_pid, want) in [
+        (i64::MIN, None),
+        (-1, None),
+        (0, None),
+        (1, Some(1)),
+        (i64::from(i32::MAX), Some(i32::MAX)),
+        (i64::from(i32::MAX) + 1, None),
+        (i64::MAX, None),
+    ] {
+        assert_eq!(valid_event_target_pid(raw_pid), want, "raw PID {raw_pid}");
+        checked += 1;
+    }
+
+    for (x, y, want) in [
+        (i32::MIN as f64, 30.0, Ok(())),
+        (i32::MAX as f64, i32::MAX as f64, Ok(())),
+        (
+            i32::MIN as f64 - 1.0,
+            30.0,
+            Err(ClickDropReason::CoordinatesOutOfRange),
+        ),
+        (
+            30.0,
+            i32::MAX as f64 + 1.0,
+            Err(ClickDropReason::CoordinatesOutOfRange),
+        ),
+    ] {
+        let got = super::click_event_coordinates(&request(x, y, 42)).map(|_| ());
+        assert_eq!(got, want, "coordinate pair {x}/{y}");
+        checked += 1;
     }
 
     let timestamp = Utc::now();
@@ -945,6 +1028,7 @@ fn macos_click_attribution_property_sweep_is_lossless_and_bounded() {
                     x: -321.75,
                     y: 654.99,
                     app_pid: 42,
+                    captured_at: Instant::now(),
                     timestamp,
                     relative_ms: u64::MAX,
                     button,
@@ -956,7 +1040,8 @@ fn macos_click_attribution_property_sweep_is_lossless_and_bounded() {
                     "TextEdit".to_string(),
                     "Notes".to_string(),
                     None,
-                );
+                )
+                .expect("property event has valid coordinates");
                 assert_eq!(event.timestamp, timestamp);
                 assert_eq!(event.relative_ms, u64::MAX);
                 assert!(matches!(
@@ -971,6 +1056,7 @@ fn macos_click_attribution_property_sweep_is_lossless_and_bounded() {
                         && got_count == click_count
                         && got_modifiers == modifiers
                 ));
+                checked += 1;
             }
         }
     }
@@ -982,7 +1068,8 @@ fn macos_click_attribution_property_sweep_is_lossless_and_bounded() {
             "App".to_string(),
             title.clone(),
             None,
-        );
+        )
+        .expect("title property has valid coordinates");
         let output = event.window_title.expect("attributed title");
         assert!(output.len() <= 200, "{character_count} emoji title bytes");
         assert!(output.is_char_boundary(output.len()));
@@ -991,5 +1078,8 @@ fn macos_click_attribution_property_sweep_is_lossless_and_bounded() {
         } else {
             assert!(output.ends_with("..."));
         }
+        checked += 1;
     }
+    assert_eq!(checked, 92_192, "property case accounting drifted");
+    println!("CLICK_ATTRIBUTION_PROPERTY_CASES={checked}");
 }
