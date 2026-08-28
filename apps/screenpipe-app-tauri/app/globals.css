@@ -780,6 +780,46 @@
     }
   }
 
+  /* Pipe mark: a sharp packet steps through the bore. Phosphor only while
+     captured work is becoming memory or an agent step is executing. */
+  @keyframes sp-pipe-packet {
+    0% {
+      transform: translateX(0);
+      opacity: 0;
+    }
+    12.5% {
+      opacity: 1;
+    }
+    87.5% {
+      opacity: 1;
+    }
+    100% {
+      transform: translateX(20px);
+      opacity: 0;
+    }
+  }
+
+  .sp-pipe-packet {
+    transform-box: fill-box;
+    transform-origin: 0 0;
+    animation: sp-pipe-packet 1.2s steps(8, end) infinite;
+    fill: currentColor;
+    fill-opacity: 0.55;
+  }
+
+  .sp-pipe[data-live="true"] .sp-pipe-packet {
+    fill: hsl(var(--phosphor));
+    fill-opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sp-pipe-packet {
+      animation: none;
+      opacity: 1;
+      transform: translateX(10px);
+    }
+  }
+
 
 }
 
