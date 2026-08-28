@@ -2274,7 +2274,7 @@
       "criticality": "low",
       "confidence": "smoke",
       "ux": "command",
-      "notes": "Embedded agent browser hides safely without an attached child."
+      "notes": "Embedded agent browser hides safely without an attached child, and pop-out/pop-in round-trips the picture-in-picture probe."
     },
     {
       "spec": "permission-recovery.spec.ts",

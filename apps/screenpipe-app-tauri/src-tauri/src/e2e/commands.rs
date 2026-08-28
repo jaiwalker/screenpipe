@@ -729,6 +729,11 @@ async fn owned_browser_visible() -> bool {
 }
 
 #[command]
+async fn owned_browser_pip_active() -> bool {
+    crate::owned_browser::pip_active_for_harness().await
+}
+
+#[command]
 async fn owned_browser_detach() -> Result<(), String> {
     crate::owned_browser::detach_for_harness().await
 }
@@ -875,6 +880,7 @@ pub(super) fn plugin() -> TauriPlugin<Wry> {
             screen_recording_restart_requested,
             recording_health_return_race,
             owned_browser_visible,
+            owned_browser_pip_active,
             owned_browser_detach,
             owned_browser_tab_control,
             owned_browser_tab_snapshot,

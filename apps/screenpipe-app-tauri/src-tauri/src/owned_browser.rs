@@ -31,6 +31,7 @@
 //! through `additional_browser_args` on Windows.
 
 use crate::owned_browser_transport as transport;
+use crate::window::{finalize_webview_window, GatedWindowPlacement};
 use async_trait::async_trait;
 use screenpipe_connect::connections::browser::{EvalResult, OwnedWebviewHandle};
 use serde::Serialize;
@@ -42,7 +43,7 @@ use std::time::{Duration, Instant};
 use tauri::webview::PageLoadEvent;
 use tauri::{
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Rect, Size, Webview,
-    WebviewUrl, Window, WindowBuilder, Wry,
+    WebviewUrl, WebviewWindow, Window, WindowBuilder, Wry,
 };
 use tauri_utils::config::BackgroundThrottlingPolicy;
 use tokio::sync::{oneshot, Mutex};
@@ -53,6 +54,17 @@ const RECENT_NAVIGATION_CONTEXT_LIMIT: usize = 16;
 
 /// Embedded webview label — also used by the frontend Tauri commands.
 pub const WEBVIEW_LABEL: &str = "owned-browser";
+
+/// Floating always-on-top host for the owned-browser child while popped out.
+/// Closing this window pops the child back into the chat sidebar.
+pub const PIP_WINDOW_LABEL: &str = "owned-browser-pip";
+
+const PIP_EVENT: &str = "owned-browser:pip";
+const PIP_WIDTH: f64 = 420.0;
+const PIP_HEIGHT: f64 = 280.0;
+const PIP_MIN_WIDTH: f64 = 280.0;
+const PIP_MIN_HEIGHT: f64 = 180.0;
+const PIP_MARGIN: f64 = 24.0;
 
 /// Event the Rust handle emits when the agent navigates the browser. The
 /// frontend's `<BrowserSidebar />` listens for this so it can slide in,
@@ -296,6 +308,19 @@ struct OwnedBrowserInner {
     child_parent: Option<String>,
     pending_url: Option<url::Url>,
     visible: bool,
+    /// Child is hosted in [`PIP_WINDOW_LABEL`]. Sidebar bounds must not steal it.
+    pip_active: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OwnedBrowserPipEvent {
+    active: bool,
+}
+
+/// While picture-in-picture is up, only the pip window may move the child.
+fn sidebar_bounds_ignored_while_pip(pip_active: bool, parent: &str) -> bool {
+    pip_active && parent != PIP_WINDOW_LABEL
 }
 
 #[derive(Clone)]
@@ -443,6 +468,14 @@ impl OwnedBrowserState {
 
     async fn child_parent(&self) -> Option<String> {
         self.inner.lock().await.child_parent.clone()
+    }
+
+    async fn is_pip_active(&self) -> bool {
+        self.inner.lock().await.pip_active
+    }
+
+    async fn set_pip_active(&self, active: bool) {
+        self.inner.lock().await.pip_active = active;
     }
 
     async fn set_visible(&self, visible: bool) {
@@ -1473,6 +1506,83 @@ async fn ensure_background_child(
     Ok(child)
 }
 
+fn pip_window_position(app: &AppHandle) -> (f64, f64) {
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let logical: tauri::LogicalSize<f64> = monitor.size().to_logical(monitor.scale_factor());
+        let pos = monitor.position();
+        let scale = monitor.scale_factor();
+        let origin_x = pos.x as f64 / scale;
+        let origin_y = pos.y as f64 / scale;
+        let x = origin_x + (logical.width - PIP_WIDTH - PIP_MARGIN).max(0.0);
+        let y = origin_y + (logical.height - PIP_HEIGHT - PIP_MARGIN * 2.0).max(0.0);
+        return (x, y);
+    }
+    (80.0, 80.0)
+}
+
+async fn ensure_pip_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(PIP_WINDOW_LABEL) {
+        return Ok(window);
+    }
+    let (x, y) = pip_window_position(app);
+    let builder = WebviewWindow::builder(app, PIP_WINDOW_LABEL, WebviewUrl::App("/browser-pip".into()))
+        .title("browser")
+        .inner_size(PIP_WIDTH, PIP_HEIGHT)
+        .min_inner_size(PIP_MIN_WIDTH, PIP_MIN_HEIGHT)
+        .position(x, y)
+        .resizable(true)
+        .visible(false)
+        .focused_gated(false)
+        .always_on_top_gated(true)
+        .skip_taskbar(false);
+    #[cfg(target_os = "macos")]
+    let builder = builder.hidden_title(true);
+    let window = finalize_webview_window(
+        builder
+            .build()
+            .map_err(|e| format!("owned-browser pip window failed: {e}"))?,
+    );
+    Ok(window)
+}
+
+async fn pop_out_pip_window(app: &AppHandle) -> Result<(), String> {
+    let state = browser_state();
+    state.set_pip_active(true).await;
+    let window = ensure_pip_window(app).await?;
+    window
+        .show()
+        .map_err(|e| format!("owned-browser pip show failed: {e}"))?;
+    let _ = window.unminimize();
+    // Reparent immediately so the child is not left on a collapsed sidebar
+    // while the pip chrome hydrates and sends its first set_bounds.
+    if state.active().await.is_some() {
+        const TOOLBAR: f64 = 36.0;
+        let _ = ensure_child_bounds(
+            app,
+            PIP_WINDOW_LABEL,
+            0.0,
+            TOOLBAR,
+            PIP_WIDTH,
+            (PIP_HEIGHT - TOOLBAR).max(1.0),
+        )
+        .await;
+    }
+    let _ = app.emit(PIP_EVENT, OwnedBrowserPipEvent { active: true });
+    info!("owned-browser: popped out to picture-in-picture");
+    Ok(())
+}
+
+async fn pop_in_pip_window(app: &AppHandle) -> Result<(), String> {
+    let state = browser_state();
+    state.set_pip_active(false).await;
+    if let Some(window) = app.get_webview_window(PIP_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+    let _ = app.emit(PIP_EVENT, OwnedBrowserPipEvent { active: false });
+    info!("owned-browser: popped in from picture-in-picture");
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands — sidebar controls (frontend → child webview)
 // ---------------------------------------------------------------------------
@@ -1492,6 +1602,10 @@ pub async fn owned_browser_set_bounds(
     height: f64,
 ) -> Result<(), String> {
     let state = browser_state();
+
+    if sidebar_bounds_ignored_while_pip(state.is_pip_active().await, &parent) {
+        return Ok(());
+    }
 
     if width <= 0.0 || height <= 0.0 {
         if let Some(active) = state.active().await {
@@ -1652,6 +1766,20 @@ mod normalize_url_tests {
     fn browser_tab_lookup_only_commands_do_not_recreate_closed_tabs() {
         assert!(existing_browser_tab_state("closed-tab").unwrap().is_none());
         assert!(existing_browser_tab_state("closed-tab").unwrap().is_none());
+    }
+
+    #[test]
+    fn sidebar_cannot_steal_bounds_while_pip_is_active() {
+        assert!(super::sidebar_bounds_ignored_while_pip(
+            true,
+            "home"
+        ));
+        assert!(super::sidebar_bounds_ignored_while_pip(true, "chat"));
+        assert!(!super::sidebar_bounds_ignored_while_pip(
+            true,
+            super::PIP_WINDOW_LABEL
+        ));
+        assert!(!super::sidebar_bounds_ignored_while_pip(false, "home"));
     }
 
     #[test]
@@ -1847,16 +1975,43 @@ pub async fn owned_browser_history(
 
 /// Hide the embedded webview without destroying it. Equivalent to calling
 /// `set_bounds` with zero dimensions, but more explicit at the call site.
+/// No-op while picture-in-picture is active so switching chat sections does
+/// not take down the supervision window.
 #[specta::specta]
 #[tauri::command]
 pub async fn owned_browser_hide(app: AppHandle) -> Result<(), String> {
     let _ = app;
     let state = browser_state();
+    if state.is_pip_active().await {
+        return Ok(());
+    }
     if let Some(active) = state.active().await {
         active.hide().map_err(|e| e.to_string())?;
     }
     state.set_visible(false).await;
     Ok(())
+}
+
+/// Whether the owned browser is currently popped into the floating window.
+#[specta::specta]
+#[tauri::command]
+pub async fn owned_browser_pip_active() -> bool {
+    browser_state().is_pip_active().await
+}
+
+/// Reparent the owned-browser child into a small always-on-top window so the
+/// agent can keep working while the user looks at other apps.
+#[specta::specta]
+#[tauri::command]
+pub async fn owned_browser_pop_out(app: AppHandle) -> Result<(), String> {
+    pop_out_pip_window(&app).await
+}
+
+/// Return the owned-browser child to the chat sidebar and hide the pip window.
+#[specta::specta]
+#[tauri::command]
+pub async fn owned_browser_pop_in(app: AppHandle) -> Result<(), String> {
+    pop_in_pip_window(&app).await
 }
 
 /// Clear all browsing data for the owned-browser webview: cookies, injected
@@ -1900,6 +2055,12 @@ pub async fn owned_browser_tab_clear_browsing_data(tab_id: String) -> Result<(),
 #[cfg(feature = "e2e")]
 pub(crate) async fn visibility_for_harness() -> bool {
     browser_state().is_visible().await
+}
+
+/// Feature-gated picture-in-picture probe used by the native E2E harness.
+#[cfg(feature = "e2e")]
+pub(crate) async fn pip_active_for_harness() -> bool {
+    browser_state().is_pip_active().await
 }
 
 /// Feature-gated native snapshot for E2E. Attaching a child webview destroys
@@ -2346,6 +2507,10 @@ async fn browser_session_decision_for_url(
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    if state.is_pip_active().await {
+        let _ = pop_in_pip_window(app).await;
     }
 
     if let Some(active) = state.active().await {

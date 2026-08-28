@@ -46,6 +46,7 @@ import {
   ExternalLink,
   KeyRound,
   Loader2,
+  PictureInPicture2,
   RotateCw,
 } from "lucide-react";
 import {
@@ -78,6 +79,7 @@ import {
 } from "@/lib/owned-browser-ownership";
 
 const NAVIGATE_EVENT = "owned-browser:navigate";
+const PIP_EVENT = "owned-browser:pip";
 const SESSION_ACCESS_REQUEST_EVENT = "owned-browser:session-access-request";
 const V20_COOKIE_BLOCK_EVENT = "owned-browser:v20-cookie-blocked";
 const STATE_EVENT = "owned-browser:state";
@@ -222,6 +224,7 @@ export function BrowserSidebar({
     useState<ActiveV20CookieBlock | null>(null);
   const [extensionConnected, setExtensionConnected] = useState(false);
   const [isMac, setIsMac] = useState(false);
+  const [pipActive, setPipActive] = useState(false);
   const [requestedWidth, setRequestedWidth] = useState(DEFAULT_WIDTH);
   // `availableW` = the width of the panel's flex parent (the host marked
   // with data-browser-panel-host in standalone-chat.tsx). That's the real
@@ -236,6 +239,7 @@ export function BrowserSidebar({
   const panelRef = useRef<HTMLDivElement>(null);
   const boundsRafRef = useRef<number | null>(null);
   /** True while the cookie-consent card is up — pushBounds must not re-show the native webview. */
+  const pipActiveRef = useRef(false);
   const sessionAccessActiveRef = useRef(false);
   /** True while any Radix dialog/modal is open — pushBounds must not re-show the native webview. */
   const dialogActiveRef = useRef(false);
@@ -380,6 +384,9 @@ export function BrowserSidebar({
     // Native child webviews sit above HTML — never position/show while the
     // session-access card or any dialog/modal is visible (the native webview
     // would cover the HTML overlay otherwise).
+    if (pipActiveRef.current) {
+      return;
+    }
     if (sessionAccessActiveRef.current || dialogActiveRef.current) {
       await hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
       return;
@@ -596,7 +603,7 @@ export function BrowserSidebar({
         setCurrentTitle(null);
         setAddressDraft(url);
         setLoading(true);
-        if (reveal) {
+        if (reveal && !pipActiveRef.current) {
           setVisible(true);
           setCollapsed(false);
           onSelectFilePreviewPath?.(null);
@@ -864,6 +871,35 @@ export function BrowserSidebar({
       setLoading(payload.loading);
     }
   });
+
+  useTauriEvent<{ active?: boolean }>(PIP_EVENT, (e) => {
+    const active = e.payload?.active === true;
+    pipActiveRef.current = active;
+    setPipActive(active);
+    if (active) {
+      setCollapsed(true);
+      setLoading(false);
+      onSetPanelOpen?.(false);
+      persistState({ collapsed: true });
+    } else {
+      setCollapsed(false);
+      if (currentUrl) setVisible(true);
+      onSetPanelOpen?.(true);
+      persistState({ collapsed: false });
+      schedulePushBounds();
+    }
+  });
+
+  useEffect(() => {
+    void commands
+      .ownedBrowserPipActive()
+      .then((active) => {
+        if (!active) return;
+        pipActiveRef.current = true;
+        setPipActive(true);
+      })
+      .catch(() => {});
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Per-conversation restore
@@ -1242,7 +1278,9 @@ export function BrowserSidebar({
     setLoading(false);
     onSetPanelOpen?.(false);
     persistState({ collapsed: true });
-    hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
+    if (!pipActiveRef.current) {
+      hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
+    }
   }, [hideNativeBrowserTab, onSetPanelOpen, persistState]);
 
   const expand = useCallback(() => {
@@ -1668,6 +1706,33 @@ export function BrowserSidebar({
                     className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
                   >
                     <RotateCw className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (pipActive) {
+                        void commands.ownedBrowserPopIn().catch((e) => {
+                          console.error("owned-browser pop in failed", e);
+                        });
+                      } else {
+                        void commands.ownedBrowserPopOut().catch((e) => {
+                          console.error("owned-browser pop out failed", e);
+                        });
+                      }
+                    }}
+                    title={
+                      pipActive
+                        ? "Return browser to chat"
+                        : "Pop browser into a floating window"
+                    }
+                    aria-label={
+                      pipActive
+                        ? "Return browser to chat"
+                        : "Pop browser into a floating window"
+                    }
+                    data-testid="owned-browser-pip-toggle"
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  >
+                    <PictureInPicture2 className="h-3.5 w-3.5" />
                   </button>
                   {loading && (
                     <div

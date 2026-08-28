@@ -93,6 +93,8 @@ export default function RootLayout({
   const isOverlay =
     pathname === "/shortcut-reminder" || pathname === "/notification-inbox";
   const isTimelineOverlay = pathname === "/overlay";
+  const isOwnedBrowserPip = pathname === "/browser-pip";
+  const hideAppChrome = isOverlay || isOwnedBrowserPip;
   // Transparent-body windows: floating search bar + the overlay inbox card.
   const isSearch = pathname === "/search" || pathname === "/notification-inbox";
   const usesTransparentWindowBackground =
@@ -312,22 +314,22 @@ export default function RootLayout({
           {/* DeeplinkHandler is mounted in Providers (outside the entitlement
               gate) so the screenpipe:// login callback is always caught, even
               while the "sign in required" screen is showing. */}
-          {!isOverlay && <ShortcutTracker />}
-          {!isOverlay && <PipeInstallDialog />}
-          {!isOverlay && <BrowserPairingDialog />}
+          {!hideAppChrome && <ShortcutTracker />}
+          {!hideAppChrome && <PipeInstallDialog />}
+          {!hideAppChrome && <BrowserPairingDialog />}
           <WebviewGestureControls />
           <CloseTabOrWindowShortcut />
           <Suspense fallback={null}>
             <RecentChatSwitcherMount />
           </Suspense>
           {/* TODO: vault lock UI disabled — CLI-only for now */}
-          {/* {!isOverlay && <VaultLockDialog />} */}
+          {/* {!hideAppChrome && <VaultLockDialog />} */}
           {children}
-          {!isOverlay && <Toaster />}
-          {!isOverlay && <AdvisoryOverlay />}
-          {!isOverlay && <PipeAdvisoryWatcher />}
-          {!isOverlay && <FeedbackDialog />}
-          {!isOverlay && <AnnouncementHost />}
+          {!hideAppChrome && <Toaster />}
+          {!hideAppChrome && <AdvisoryOverlay />}
+          {!hideAppChrome && <PipeAdvisoryWatcher />}
+          {!hideAppChrome && <FeedbackDialog />}
+          {!hideAppChrome && <AnnouncementHost />}
         </Providers>
       </body>
     </html>

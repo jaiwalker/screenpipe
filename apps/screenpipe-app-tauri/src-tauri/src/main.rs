@@ -979,6 +979,14 @@ async fn main() {
                 });
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
+                if window.label() == crate::owned_browser::PIP_WINDOW_LABEL {
+                    api.prevent_close();
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = crate::owned_browser::owned_browser_pop_in(app).await;
+                    });
+                    return;
+                }
                 // Onboarding is disposable. Let Tauri destroy its webview so
                 // page effects (notably the live-feed search poller) are torn
                 // down as soon as the user closes the window. Other app
@@ -2692,7 +2700,14 @@ mod window_close_policy_tests {
 
     #[test]
     fn persistent_windows_keep_their_existing_close_behavior() {
-        for label in ["home", "main", "main-window", "search", "chat"] {
+        for label in [
+            "home",
+            "main",
+            "main-window",
+            "search",
+            "chat",
+            "owned-browser-pip",
+        ] {
             assert!(should_prevent_window_close(label), "label: {label}");
         }
     }

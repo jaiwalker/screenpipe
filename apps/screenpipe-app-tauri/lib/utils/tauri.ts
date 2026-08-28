@@ -1399,6 +1399,8 @@ async ownedBrowserClearBrowsingData() : Promise<Result<null, string>> {
 /**
  * Hide the embedded webview without destroying it. Equivalent to calling
  * `set_bounds` with zero dimensions, but more explicit at the call site.
+ * No-op while picture-in-picture is active so switching chat sections does
+ * not take down the supervision window.
  */
 async ownedBrowserHide() : Promise<Result<null, string>> {
     try {
@@ -1432,6 +1434,35 @@ async ownedBrowserHistory(tabId: string | null, direction: string) : Promise<Res
 async ownedBrowserNavigate(url: string, owner: string | null, reveal: boolean | null) : Promise<Result<null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("owned_browser_navigate", { url, owner, reveal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Whether the owned browser is currently popped into the floating window.
+ */
+async ownedBrowserPipActive() : Promise<boolean> {
+    return await TAURI_INVOKE("owned_browser_pip_active");
+},
+/**
+ * Return the owned-browser child to the chat sidebar and hide the pip window.
+ */
+async ownedBrowserPopIn() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("owned_browser_pop_in") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Reparent the owned-browser child into a small always-on-top window so the
+ * agent can keep working while the user looks at other apps.
+ */
+async ownedBrowserPopOut() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("owned_browser_pop_out") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1890,7 +1921,9 @@ async piStop(sessionId: string | null) : Promise<Result<PiInfo, string>> {
  * Chat panels call this when they give up foreground ownership. Keeping every
  * completed ACP conversation resident leaves a full Bun/Node/agent process
  * tree behind for each chat. The busy check and removal happen under the pool
- * lock, so a prompt cannot race between the check and teardown.
+ * lock, so a prompt cannot race between the check and teardown. Sessions that
+ * are still initializing are kept until they report ready; if the panel
+ * already released them, a deferred reap runs after the first prompt can land.
  */
 async piStopIfIdle(sessionId: string | null) : Promise<Result<PiInfo, string>> {
     try {
@@ -3346,8 +3379,9 @@ acpCompatible: boolean }
 export type PiImageContent = { type: string; mimeType: string; data: string }
 export type PiInfo = { running: boolean;
 /**
- * True while this session has a prompt, queued follow-up, or pending RPC
- * response. Destructive settings use it to avoid clearing live context.
+ * True while this session is still initializing, or has a prompt, queued
+ * follow-up, or pending RPC response. Destructive settings use it to
+ * avoid clearing live context.
  */
 busy: boolean; projectDir: string | null; pid: number | null; sessionId: string | null;
 /**

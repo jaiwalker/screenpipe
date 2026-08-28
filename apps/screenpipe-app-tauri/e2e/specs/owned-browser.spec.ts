@@ -26,7 +26,7 @@
  */
 
 import { openHomeWindow, waitForAppReady } from "../helpers/test-utils.js";
-import { invoke } from "../helpers/tauri.js";
+import { invoke, invokeOrThrow } from "../helpers/tauri.js";
 
 const canAttachOwnedBrowserWithoutLosingWebDriver = process.platform !== "linux";
 const canRoundTripMalformedOwnedBrowserUrl = false;
@@ -41,6 +41,7 @@ describe("Owned browser", function () {
   });
 
   afterEach(async () => {
+    await invoke("owned_browser_pop_in");
     await invoke("owned_browser_hide");
     await openHomeWindow();
   });
@@ -67,5 +68,23 @@ describe("Owned browser", function () {
     const res = await invoke("owned_browser_hide");
     expect(res.ok).toBe(true);
     expect(res.error).toBeUndefined();
+  });
+
+  it("owned_browser_pop_out then pop_in round-trips pip state", async () => {
+    expect(
+      await invokeOrThrow<boolean>("plugin:e2e|owned_browser_pip_active"),
+    ).toBe(false);
+
+    const out = await invoke("owned_browser_pop_out");
+    expect(out.ok).toBe(true);
+    expect(
+      await invokeOrThrow<boolean>("plugin:e2e|owned_browser_pip_active"),
+    ).toBe(true);
+
+    const inn = await invoke("owned_browser_pop_in");
+    expect(inn.ok).toBe(true);
+    expect(
+      await invokeOrThrow<boolean>("plugin:e2e|owned_browser_pip_active"),
+    ).toBe(false);
   });
 });
