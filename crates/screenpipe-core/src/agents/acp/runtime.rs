@@ -1266,6 +1266,14 @@ impl ParentOutput {
         }
     }
 
+    #[cfg(test)]
+    fn snapshot(&self) -> Vec<Value> {
+        match self {
+            Self::Buffer(events) => events.lock().unwrap().clone(),
+            Self::Stdout(_) => Vec::new(),
+        }
+    }
+
     fn send(&self, value: Value) {
         match self {
             Self::Stdout(stdout) => {
@@ -5182,6 +5190,8 @@ pub(super) async fn run_from_env_with_observer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::v1::{AgentCapabilities, ContentChunk, SessionUpdate};
+    use agent_client_protocol::Channel;
     #[test]
     fn terminal_auth_meta_drives_a_cli_login() {
         // A standard advertised method (not the Terminal variant) that carries
@@ -6287,6 +6297,139 @@ mod tests {
             &observed_error.replace("[canceled]", "[cancelled]"),
             completed,
         ));
+    }
+
+    async fn protocol_events_after_late_http2_cancel(assistant_text: &str) -> Vec<Value> {
+        let (client_transport, agent_transport) = Channel::duplex();
+        let assistant_text = assistant_text.to_owned();
+        let agent = Agent
+            .builder()
+            .name("late-cancel-test-agent")
+            .on_receive_request(
+                async move |initialize: InitializeRequest, responder, _connection| {
+                    responder.respond(
+                        InitializeResponse::new(initialize.protocol_version)
+                            .agent_capabilities(AgentCapabilities::new()),
+                    )
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |_request: NewSessionRequest, responder, _connection| {
+                    responder.respond(NewSessionResponse::new("provider-session"))
+                },
+                agent_client_protocol::on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |_request: PromptRequest, responder, connection| {
+                    connection.send_notification(SessionNotification::new(
+                        "provider-session",
+                        SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                            TextContent::new(assistant_text.clone()),
+                        ))),
+                    ))?;
+                    responder.respond_with_error(
+                        Error::internal_error().data(
+                            "RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)",
+                        ),
+                    )
+                },
+                agent_client_protocol::on_receive_request!(),
+            );
+        let agent_task = tokio::spawn(async move { agent.connect_to(agent_transport).await });
+
+        let output = ParentOutput::buffer();
+        let state = Arc::new(test_state(&output));
+        let (command_tx, command_rx) = mpsc::unbounded_channel();
+        command_tx
+            .send(json!({
+                "type": "prompt",
+                "id": "prompt-1",
+                "message": "fix it",
+            }))
+            .unwrap();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mut config = runtime_config("test-agent");
+        config.project_dir = temp_dir.path().to_owned();
+        let close_commands_after_response = async {
+            loop {
+                if output
+                    .snapshot()
+                    .iter()
+                    .any(|event| event["type"] == "response" && event["id"] == "prompt-1")
+                {
+                    drop(command_tx);
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        };
+        let protocol = async {
+            let (result, ()) = tokio::join!(
+                run_protocol(client_transport, config, state, command_rx),
+                close_commands_after_response,
+            );
+            result
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(2), protocol)
+            .await
+            .expect("protocol should terminate")
+            .expect("prompt failure should not stop the ACP runtime");
+        agent_task.abort();
+        assert!(agent_task
+            .await
+            .expect_err("mock agent should stay available until disconnected")
+            .is_cancelled());
+
+        output.drain()
+    }
+
+    #[tokio::test]
+    async fn protocol_keeps_verified_result_when_prompt_ends_with_late_http2_cancel() {
+        let completed = concat!(
+            "Draft PR is up.\n\n",
+            "::screenpipe-result{kind=\"link\" state=\"created\" ",
+            "title=\"Fix\" url=\"https://github.com/screenpipe/screenpipe/pull/1\"}",
+        );
+        let events = protocol_events_after_late_http2_cancel(completed).await;
+
+        let agent_end = events_of_type(&events, "agent_end");
+        assert_eq!(agent_end.len(), 1);
+        assert_eq!(agent_end[0]["messages"][0]["stopReason"], json!("end_turn"));
+        assert!(agent_end[0]["messages"][0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Draft PR is up."));
+
+        let prompt_response = events
+            .iter()
+            .find(|event| event["type"] == "response" && event["id"] == "prompt-1")
+            .expect("prompt response");
+        assert_eq!(prompt_response["success"], json!(true));
+        assert!(events_of_type(&events, "message_update")
+            .iter()
+            .all(|event| event["assistantMessageEvent"]["type"] != "error"));
+    }
+
+    #[tokio::test]
+    async fn protocol_keeps_late_http2_cancel_as_error_without_verified_result() {
+        let events = protocol_events_after_late_http2_cancel(
+            "I started the fix, but the connection closed before I finished.",
+        )
+        .await;
+
+        let agent_end = events_of_type(&events, "agent_end");
+        assert_eq!(agent_end.len(), 1);
+        assert_eq!(agent_end[0]["messages"][0]["stopReason"], json!("error"));
+        let prompt_response = events
+            .iter()
+            .find(|event| event["type"] == "response" && event["id"] == "prompt-1")
+            .expect("prompt response");
+        assert_eq!(prompt_response["success"], json!(false));
+        assert!(events_of_type(&events, "message_update")
+            .iter()
+            .any(|event| event["assistantMessageEvent"]["type"] == "error"));
     }
 
     #[test]
