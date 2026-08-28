@@ -2627,6 +2627,37 @@ fn parent_response(output: &ParentOutput, command: &str, id: &str, error: Option
     }));
 }
 
+/// Some ACP providers finish streaming a verified result, then close the
+/// underlying HTTP/2 request with `CANCEL` instead of returning clean trailers.
+/// Retrying an already-completed agent turn can duplicate durable side effects,
+/// while surfacing the late transport error overwrites the useful final answer.
+///
+/// Screenpipe's result directive is emitted only after the agent verifies a
+/// durable outcome. Accept that exact terminal boundary; partial text, pending
+/// results, and every other provider error keep their normal failure behavior.
+fn completed_result_survives_retriable_http2_cancel(error: &str, assistant_text: &str) -> bool {
+    let normalized_error = error.to_ascii_lowercase();
+    let is_retriable_cancel = normalized_error.contains("retriableerror")
+        && (normalized_error.contains("[canceled]") || normalized_error.contains("[cancelled]"))
+        && normalized_error.contains("http/2 stream closed")
+        && normalized_error.contains("cancel (0x8)");
+    if !is_retriable_cancel {
+        return false;
+    }
+
+    let Some(last_line) = assistant_text
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return false;
+    };
+    last_line.starts_with("::screenpipe-result{")
+        && last_line.ends_with('}')
+        && !last_line.contains("state=\"pending\"")
+}
+
 fn command_error(output: &ParentOutput, message: &str) {
     output.send(json!({
         "type": "message_update",
@@ -4771,10 +4802,20 @@ async fn run_protocol(
                         // desktop doesn't render an "LLM error" bubble or trigger an
                         // auth-invalidation restart (which would close the card).
                         let is_auth_error = !cancel_requested && matches!(&result, Err(e) if auth_error(e));
+                        let recovered_completed_result = !cancel_requested
+                            && matches!(&result, Err(error) if state
+                                .turn
+                                .lock()
+                                .ok()
+                                .is_some_and(|turn| completed_result_survives_retriable_http2_cancel(
+                                    &error.to_string(),
+                                    &turn.assistant_text,
+                                )));
                         let effective_reason = match &result {
                             Ok(reason) => serde_json::to_value(reason).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "end_turn".into()),
                             Err(_) if cancel_requested => "cancelled".into(),
                             Err(_) if is_auth_error => "cancelled".into(),
+                            Err(_) if recovered_completed_result => "end_turn".into(),
                             Err(_) => "error".into(),
                         };
                         state.close_turn_ex(&effective_reason, is_auth_error);
@@ -4788,6 +4829,13 @@ async fn run_protocol(
                         match result {
                             Ok(_) => parent_response(&state.output, &command_type, &command_id, None),
                             Err(_) if cancel_requested => parent_response(&state.output, &command_type, &command_id, None),
+                            Err(_) if recovered_completed_result => {
+                                eprintln!(
+                                    "[acp:{}] recovered a verified result after a retriable HTTP/2 cancellation",
+                                    config.agent_id
+                                );
+                                parent_response(&state.output, &command_type, &command_id, None);
+                            }
                             Err(ref error) if auth_error(error) => {
                                 // authenticate() drives the card + login and only
                                 // returns Err when the user cancels, which is not
@@ -6219,6 +6267,58 @@ mod tests {
             json!("{\"entries\":[]}")
         );
         assert_eq!(agent_end[0]["messages"][0]["stopReason"], json!("end_turn"));
+    }
+
+    #[test]
+    fn verified_result_survives_late_retriable_http2_cancel() {
+        let observed_error =
+            "RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)";
+        let completed = concat!(
+            "Draft PR is up.\n\n",
+            "::screenpipe-result{kind=\"link\" state=\"created\" ",
+            "title=\"Fix\" url=\"https://github.com/screenpipe/screenpipe/pull/1\"}\n",
+        );
+
+        assert!(completed_result_survives_retriable_http2_cancel(
+            observed_error,
+            completed,
+        ));
+        assert!(completed_result_survives_retriable_http2_cancel(
+            &observed_error.replace("[canceled]", "[cancelled]"),
+            completed,
+        ));
+    }
+
+    #[test]
+    fn incomplete_or_unrelated_failures_remain_errors() {
+        let observed_error =
+            "RetriableError: [canceled] http/2 stream closed with error code CANCEL (0x8)";
+        let pending = concat!(
+            "Still working.\n",
+            "::screenpipe-result{kind=\"link\" state=\"pending\" ",
+            "title=\"Fix\" url=\"https://github.com/screenpipe/screenpipe/pull/1\"}",
+        );
+        let partial = concat!(
+            "Draft PR is up.\n",
+            "::screenpipe-result{kind=\"link\" state=\"created\" title=\"Fix\"",
+        );
+
+        assert!(!completed_result_survives_retriable_http2_cancel(
+            observed_error,
+            "I started the fix but did not finish it.",
+        ));
+        assert!(!completed_result_survives_retriable_http2_cancel(
+            observed_error,
+            pending,
+        ));
+        assert!(!completed_result_survives_retriable_http2_cancel(
+            observed_error,
+            partial,
+        ));
+        assert!(!completed_result_survives_retriable_http2_cancel(
+            "provider rejected the request",
+            "Done.\n::screenpipe-result{kind=\"link\" state=\"created\" title=\"Fix\"}",
+        ));
     }
 
     #[test]
