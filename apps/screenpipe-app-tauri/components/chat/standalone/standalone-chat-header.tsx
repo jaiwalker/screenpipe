@@ -97,7 +97,7 @@ export function StandaloneChatHeader({
       data-testid="chat-header"
       data-chat-title={visibleTitle || ""}
       className={cn(
-        "relative flex items-center gap-3 border-b border-border/50 bg-background px-4 py-3.5",
+        "relative flex items-center gap-2 border-b border-border/50 bg-background px-4 py-3.5",
         !className && "cursor-grab active:cursor-grabbing",
         useCompactHeaderPadding && "py-0.5",
         sidebarCollapsed && conversationId && messages.length > 0 && "!pl-[58px]",
@@ -140,7 +140,7 @@ export function StandaloneChatHeader({
       {tabStrip ? (
         <div
           data-testid="chat-header-tab-spacer"
-          className="min-h-px min-w-2 flex-1"
+          className="min-h-px min-w-2 min-w-0 flex-1"
         />
       ) : (
         <ChatTitleMenu
@@ -151,7 +151,7 @@ export function StandaloneChatHeader({
           archiveConversation={archiveConversation}
         />
       )}
-      {!tabStrip ? <div className="flex-1" /> : null}
+      {!tabStrip ? <div className="min-w-0 flex-1" /> : null}
       {!hideInlineHistory && (
         <>
           <Button
