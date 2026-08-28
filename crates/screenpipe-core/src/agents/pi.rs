@@ -4093,10 +4093,10 @@ mod tests {
         let cli_skill = include_str!("../../assets/skills/screenpipe-cli/SKILL.md");
 
         for skill in [api_skill, cli_skill] {
-            assert!(skill.contains("Never open, copy, or mutate the live `db.sqlite`"));
+            assert!(skill.contains("Never access live `db.sqlite`"));
             assert!(!skill.contains("sqlite3 \"file:"));
         }
-        assert!(api_skill.contains("MCP `query_recordings` tool"));
+        assert!(api_skill.contains("MCP `query_recordings`"));
         assert!(cli_skill.contains("SQL analysis through Screenpipe"));
     }
 

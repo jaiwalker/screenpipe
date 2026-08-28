@@ -17,7 +17,7 @@ cd "$(mktemp -d)" && ${SCREENPIPE_CLI:-bun x screenpipe@latest} <command>
 
 Works on macOS, Linux, and Windows: the CLI always runs under bash, and `mktemp` is present on all three (on Windows via the bundled git-portable `usr/bin`).
 
-Use `status`, `search`, and state-changing commands as the canonical terminal surface. For high-frequency read loops and SQL-shaped analysis, use the owner-managed local REST API or MCP tools (see the `screenpipe-api` skill). Never replace those surfaces with an external SQLite client against the live recording database.
+Use `status`, `search`, and state-changing commands as the terminal surface. For repeated or SQL reads, use MCP or the local API (see `screenpipe-api`). Never use an external SQLite client on the live database.
 
 > **Sandboxed shells:** some agents (e.g. Codex) block all shell network access, so `bun x` cannot fetch the package and CLI calls to `localhost:3030` fail instantly. If that happens, use the screenpipe MCP tools instead of the CLI.
 
@@ -85,7 +85,7 @@ cd "$(mktemp -d)" && ${SCREENPIPE_CLI:-bun x screenpipe@latest} diagnose --dry-r
 
 ## Query local history
 
-`search` is Screenpipe's supported CLI surface and does not require the daemon. Prefer JSON Lines for agent workflows; do not replace it with a direct database command:
+`search` is Screenpipe's supported daemon-free fallback. Prefer JSON Lines; never replace it with a direct database command:
 
 ```bash
 cd "$(mktemp -d)" && ${SCREENPIPE_CLI:-bun x screenpipe@latest} search --start "30m ago" --json
@@ -107,7 +107,7 @@ curl -sS -X POST "${SCREENPIPE_LOCAL_API_URL:-http://localhost:3030}/raw_sql" \
   -d '{"query":"SELECT COUNT(*) AS frame_count FROM frames LIMIT 1"}'
 ```
 
-Never open, copy, or mutate the live `db.sqlite`, `db.sqlite-wal`, or `db.sqlite-shm` files. If MCP, the API, and supported CLI commands are unavailable, report that boundary instead of using an external SQLite client. Database checking or recovery is allowed only through Screenpipe's dedicated commands with the recorder stopped.
+Never access live `db.sqlite`, `db.sqlite-wal`, or `db.sqlite-shm` directly. If MCP, API, and CLI are unavailable, report it. Run database checks or recovery only through Screenpipe with the recorder stopped.
 
 ## Shell
 
