@@ -185,10 +185,18 @@ describe("BrowserSidebar session access", () => {
         navigationId: "nav-2",
         owner: "chat-1",
       });
+      emit("owned-browser:state", {
+        tabId: "browser",
+        url: "https://www.reddit.com/",
+        loading: false,
+        navigationId: "nav-2",
+        owner: "chat-1",
+      });
     });
 
     expect(screen.getByText("Use your browser login?")).toBeInTheDocument();
     expect(screen.getByText("reddit.com")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
   });
 
   it("does not reload restored pages when UI callback identities change", async () => {
