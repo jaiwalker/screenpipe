@@ -9,11 +9,9 @@ import { ChevronDown, Pencil, Pin, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { isInjectedTitle, isInjectedTitleSourcePrompt } from "@/lib/chat-utils";
-import { isPlaceholderConversationTitle } from "@/lib/chat/message-rendering";
+import { resolveVisibleChatTitle } from "@/lib/chat/conversation-title";
 import type { Message } from "@/lib/chat/types";
 import { useChatStore } from "@/lib/stores/chat-store";
-import { deriveFallbackConversationTitle } from "@/lib/utils/chat-title";
 
 interface ChatTitleMenuProps {
   conversationId: string | null;
@@ -54,20 +52,11 @@ export function ChatTitleMenu({
     conversationId ? s.sessions[conversationId] : undefined
   );
   const isPinned = session?.pinned ?? false;
-  const firstUserMsg = messages.find(
-    (m) => m.role === "user" && !isInjectedTitleSourcePrompt(m.content)
-  );
-  const derivedTitle = firstUserMsg
-    ? deriveFallbackConversationTitle(firstUserMsg)
-    : undefined;
-  const hasMessages = messages.length > 0;
-  const title =
-    streamingTitle ||
-    (storeTitle &&
-      !isPlaceholderConversationTitle(storeTitle) &&
-      !isInjectedTitle(storeTitle)
-        ? storeTitle
-        : derivedTitle || (hasMessages ? "untitled" : ""));
+  const title = resolveVisibleChatTitle({
+    storeTitle,
+    streamingTitle,
+    messages,
+  });
 
   // No conversation id OR no real content → don't render. The "+ New"
   // button on the right is enough; no point showing actions for a
