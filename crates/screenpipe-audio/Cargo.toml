@@ -46,7 +46,7 @@ vad-rs = { git = "https://github.com/screenpipe/vad-rs-1.git", rev = "260252c122
 anyhow = { workspace = true }
 hf-hub = { workspace = true }
 # https://github.com/pdeljanov/Symphonia/tree/master?tab=readme-ov-file#optimizations
-symphonia = { version = "0.5.4", features = ["aac", "isomp4", "opt-simd"] }
+symphonia = { version = "0.6.1", features = ["aac", "isomp4", "opt-simd"] }
 rubato = "0.15.0"
 whisper-rs = { git = "https://github.com/screenpipe/whisper-rs.git", rev = "97e4070", features = ["tracing_backend"] }
 
