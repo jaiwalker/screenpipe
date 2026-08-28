@@ -663,6 +663,9 @@ export function BrowserSidebar({
       navigationId: payload.navigationId!,
       owner: payload.owner ?? null,
     };
+    // Block any already-scheduled bounds push before React commits the card;
+    // otherwise the native child can briefly repaint above the HTML prompt.
+    sessionAccessActiveRef.current = true;
     setSessionAccessRequest(request);
     setSessionAccessAnswer(null);
     setV20CookieBlock(null);
@@ -675,7 +678,21 @@ export function BrowserSidebar({
     setCurrentOwner(request.owner);
     setCurrentNavigationId(request.navigationId);
     setCurrentTitle(null);
-    setLoading(true);
+    // Rust has paused before native navigation while it waits for this
+    // decision. Keep both loading indicators still until WebKit emits a real
+    // page-load event after the answer; an indeterminate animation here looks
+    // like the page is repeatedly reloading.
+    setLoading(false);
+    const activeTabId = activeBrowserTabIdRef.current;
+    if (activeTabId) {
+      updateBrowserTab(activeTabId, {
+        url: request.url,
+        owner: request.owner,
+        navigationId: request.navigationId,
+        title: null,
+        loading: false,
+      });
+    }
     persistState({ url: request.url, collapsed: false });
     hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
   });
@@ -702,6 +719,7 @@ export function BrowserSidebar({
       navigationId: payload.navigationId!,
       owner: payload.owner ?? null,
     };
+    sessionAccessActiveRef.current = true;
     setSessionAccessRequest(null);
     setSessionAccessAnswer(null);
     setV20CookieBlock(block);
@@ -715,6 +733,16 @@ export function BrowserSidebar({
     setCurrentNavigationId(block.navigationId);
     setCurrentTitle(null);
     setLoading(false);
+    const activeTabId = activeBrowserTabIdRef.current;
+    if (activeTabId) {
+      updateBrowserTab(activeTabId, {
+        url: block.url,
+        owner: block.owner,
+        navigationId: block.navigationId,
+        title: null,
+        loading: false,
+      });
+    }
     persistState({ url: block.url, collapsed: false });
     hideNativeBrowserTab(activeBrowserTabIdRef.current).catch(() => {});
   });
@@ -1680,7 +1708,7 @@ export function BrowserSidebar({
                       <p className="text-xs leading-5 text-muted-foreground">
                         {sessionAccessRequest.alreadyGranted
                           ? "Screenpipe is about to copy browser session cookies. macOS may ask for browser Safe Storage access next."
-                          : "ScreenPipe can use your browser sessions so the agent opens sites already signed in. This applies to all sites. It does not read saved passwords."}
+                          : "Screenpipe can use your browser sessions so the agent opens sites already signed in. This applies to all sites. It does not read saved passwords."}
                       </p>
                       {isMac && !sessionAccessRequest.alreadyGranted && (
                         <p className="mt-2 text-xs leading-5 text-muted-foreground">

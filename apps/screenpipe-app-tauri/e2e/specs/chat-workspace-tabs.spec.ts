@@ -279,12 +279,18 @@ describe("Chat workspace tabs and split", function () {
         toolbarHeight: toolbar?.getBoundingClientRect().height ?? 0,
         tabStripHeight: tabStrip?.getBoundingClientRect().height ?? 0,
         address: address?.value ?? "",
+        pageLoading: Boolean(toolbar?.querySelector('[role="progressbar"]')),
+        tabLoading: Boolean(
+          tabStrip?.querySelector('[aria-label$=" loading"]'),
+        ),
       };
     });
     expect(browserChrome).toEqual({
       toolbarHeight: 36,
       tabStripHeight: 36,
       address: "https://www.reddit.com/",
+      pageLoading: false,
+      tabLoading: false,
     });
     await saveScreenshot("owned-browser-session-prompt-visible");
 

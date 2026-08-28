@@ -95,7 +95,19 @@ vi.mock("@/components/file-preview-sidebar", () => ({
 
 vi.mock("@/components/right-panel-tab-strip", () => ({
   BROWSER_RIGHT_PANEL_TAB_ID: "browser",
-  RightPanelTabStrip: () => null,
+  RightPanelTabStrip: ({
+    tabs,
+  }: {
+    tabs: Array<{ id: string; loading?: boolean }>;
+  }) => (
+    <div>
+      {tabs.map((tab) => (
+        <span key={tab.id} data-testid={`tab-loading-${tab.id}`}>
+          {String(Boolean(tab.loading))}
+        </span>
+      ))}
+    </div>
+  ),
   rightPanelFileTabId: (path: string) => `file:${path}`,
   rightPanelFileTabLabel: (path: string) => path,
 }));
@@ -185,18 +197,43 @@ describe("BrowserSidebar session access", () => {
         navigationId: "nav-2",
         owner: "chat-1",
       });
-      emit("owned-browser:state", {
-        tabId: "browser",
-        url: "https://www.reddit.com/",
-        loading: false,
-        navigationId: "nav-2",
-        owner: "chat-1",
-      });
     });
 
     expect(screen.getByText("Use your browser login?")).toBeInTheDocument();
     expect(screen.getByText("reddit.com")).toBeInTheDocument();
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-loading-browser")).toHaveTextContent(
+      "false",
+    );
+  });
+
+  it("pauses loading indicators while protected-cookie help is visible", () => {
+    render(<BrowserSidebar conversationId="chat-1" />);
+
+    act(() => {
+      emit("owned-browser:navigate", {
+        url: "https://www.reddit.com/",
+        owner: "chat-1",
+        navigationId: "nav-v20",
+        reveal: true,
+      });
+      emit("owned-browser:v20-cookie-blocked", {
+        url: "https://www.reddit.com/",
+        host: "reddit.com",
+        rows: 4,
+        v20Count: 4,
+        sources: ["Chrome"],
+        reason: "v20",
+        navigationId: "nav-v20",
+        owner: "chat-1",
+      });
+    });
+
+    expect(screen.getByText("Browser login is protected")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.getByTestId("tab-loading-browser")).toHaveTextContent(
+      "false",
+    );
   });
 
   it("does not reload restored pages when UI callback identities change", async () => {
