@@ -726,6 +726,22 @@ struct ContextCaptureRequest {
     modifiers: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickDropReason {
+    InvalidTargetPid,
+    NonFiniteCoordinates,
+    MenuBar,
+    OwnProcess,
+    MissingAppName,
+    FilteredApp,
+    MissingElementPid,
+    MismatchedElementPid,
+    OwnElement,
+    MissingWindowTitle,
+    FilteredTarget,
+    PrivateWindow,
+}
+
 /// Clipboard capture request — processed by a dedicated worker thread.
 struct ClipboardRequest {
     operation: char,
@@ -941,7 +957,8 @@ fn run_event_tap(
     // A single worker owns click attribution and optional element context. The
     // queue uses the recorder's event-buffer bound because every mouse-down now
     // passes through it; requests are small immutable CGEvent snapshots.
-    let (context_tx, context_rx) = bounded::<ContextCaptureRequest>(config.max_buffer_size.max(4));
+    let (context_tx, context_rx) =
+        bounded::<ContextCaptureRequest>(click_attribution_queue_capacity(config.max_buffer_size));
     let context_config = config.clone();
     let context_event_tx = tx.clone();
     thread::Builder::new()
@@ -1935,23 +1952,17 @@ fn capture_click_at_position(
     request: &ContextCaptureRequest,
     config: &UiCaptureConfig,
 ) -> Option<UiEvent> {
-    let app_name = process_name_for_pid(request.app_pid)?;
-    // Preserve the existing privacy boundary: a fully excluded target app is
-    // never AX-inspected. Scoped/window filters necessarily run after AXWindow
-    // resolution below.
-    if !config.should_capture_app(&app_name) {
+    let app_name = process_name_for_pid(request.app_pid);
+    if let Err(reason) = validate_click_preflight(
+        request,
+        config,
+        app_name.as_deref(),
+        std::process::id() as i32,
+    ) {
+        debug!(?reason, "dropping click during attribution preflight");
         return None;
     }
-
-    // Skip menu bar area (top ~30 pixels) to avoid conflicts with tray icon accessibility
-    // This prevents crashes when clicking tray icons while accessibility capture is active
-    if request.y < 30.0 {
-        return None;
-    }
-
-    if is_own_process(request.app_pid) {
-        return None;
-    }
+    let app_name = app_name?;
 
     // Serialize accessibility queries to prevent concurrent calls that corrupt
     // AppKit's internal accessibility caches. This runs on the click worker,
@@ -1967,11 +1978,15 @@ fn capture_click_at_position(
     // Cross-check the hit-test against the immutable CGEvent receiver. A focus
     // transition can change the system-wide AX answer after mouse-down; mixing
     // those two processes would recreate the attribution bug in a new form.
-    let element_pid = elem.pid().ok()?;
-    if element_pid != request.app_pid || is_own_process(element_pid) {
+    let element_pid = elem.pid().ok();
+    if let Err(reason) =
+        validate_click_element_pid(request.app_pid, element_pid, std::process::id() as i32)
+    {
         debug!(
             event_target_pid = request.app_pid,
-            element_pid, "dropping click whose AX hit-test disagrees with CGEvent target"
+            ?element_pid,
+            ?reason,
+            "dropping click whose AX hit-test disagrees with CGEvent target"
         );
         return None;
     }
@@ -1987,20 +2002,21 @@ fn capture_click_at_position(
     // can still describe the previously focused app at mouse-down time.
     let window = elem.window().ok()?;
     let _ = window.set_messaging_timeout_secs(0.1);
-    let window_title = get_string_attr(&window, ax::attr::title())
-        .or_else(|| get_string_attr(&window, ax::attr::desc()))
-        .map(|title| title.trim().to_string())
-        .filter(|title| !title.is_empty())?;
+    let raw_window_title = get_string_attr(&window, ax::attr::title())
+        .or_else(|| get_string_attr(&window, ax::attr::desc()));
 
     // Attribution is resolved before any persistence or enrichment. This makes
     // exclusions and private-window detection apply to the clicked surface,
     // and intentionally drops unattributable clicks instead of labeling them
     // with a different app/window from the focus cache.
-    if !config.should_capture_target(&app_name, Some(&window_title))
-        || crate::incognito::is_title_private(&window_title)
-    {
-        return None;
-    }
+    let window_title =
+        match validate_click_window_title(config, &app_name, raw_window_title.as_deref()) {
+            Ok(title) => title,
+            Err(reason) => {
+                debug!(?reason, "dropping click without a capturable AXWindow");
+                return None;
+            }
+        };
 
     let element = config
         .capture_context
@@ -2017,6 +2033,76 @@ fn capture_click_at_position(
 
 fn valid_event_target_pid(pid: i32) -> Option<i32> {
     (pid > 0).then_some(pid)
+}
+
+fn click_attribution_queue_capacity(max_buffer_size: usize) -> usize {
+    max_buffer_size.max(4)
+}
+
+fn validate_click_preflight(
+    request: &ContextCaptureRequest,
+    config: &UiCaptureConfig,
+    app_name: Option<&str>,
+    own_pid: i32,
+) -> Result<(), ClickDropReason> {
+    if valid_event_target_pid(request.app_pid).is_none() {
+        return Err(ClickDropReason::InvalidTargetPid);
+    }
+    if !request.x.is_finite() || !request.y.is_finite() {
+        return Err(ClickDropReason::NonFiniteCoordinates);
+    }
+    // Skip menu bar area (top ~30 pixels) to avoid conflicts with tray icon
+    // accessibility. This preserves the existing crash-avoidance boundary.
+    if request.y < 30.0 {
+        return Err(ClickDropReason::MenuBar);
+    }
+    if request.app_pid == own_pid {
+        return Err(ClickDropReason::OwnProcess);
+    }
+    let app_name = app_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or(ClickDropReason::MissingAppName)?;
+    // Preserve the existing privacy boundary: a fully excluded target app is
+    // never AX-inspected. Scoped/window filters necessarily run after AXWindow
+    // resolution below.
+    if !config.should_capture_app(app_name) {
+        return Err(ClickDropReason::FilteredApp);
+    }
+    Ok(())
+}
+
+fn validate_click_element_pid(
+    event_target_pid: i32,
+    element_pid: Option<i32>,
+    own_pid: i32,
+) -> Result<(), ClickDropReason> {
+    let element_pid = element_pid.ok_or(ClickDropReason::MissingElementPid)?;
+    if element_pid != event_target_pid {
+        return Err(ClickDropReason::MismatchedElementPid);
+    }
+    if element_pid == own_pid {
+        return Err(ClickDropReason::OwnElement);
+    }
+    Ok(())
+}
+
+fn validate_click_window_title(
+    config: &UiCaptureConfig,
+    app_name: &str,
+    window_title: Option<&str>,
+) -> Result<String, ClickDropReason> {
+    let window_title = window_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .ok_or(ClickDropReason::MissingWindowTitle)?;
+    if !config.should_capture_target(app_name, Some(window_title)) {
+        return Err(ClickDropReason::FilteredTarget);
+    }
+    if crate::incognito::is_title_private(window_title) {
+        return Err(ClickDropReason::PrivateWindow);
+    }
+    Ok(window_title.to_string())
 }
 
 fn attributed_click_event(
@@ -2204,10 +2290,6 @@ fn collect_ancestor_chain(
             .filter(|p| p.get_type_id() == ax::UiElement::type_id());
     }
     chain
-}
-
-fn is_own_process(pid: i32) -> bool {
-    pid > 0 && pid == std::process::id() as i32
 }
 
 fn get_element_bounds(elem: &ax::UiElement) -> Option<ElementBounds> {
@@ -2968,6 +3050,10 @@ extern "C" fn activity_only_callback(
 mod macos_click_attribution_e2e;
 
 #[cfg(test)]
+#[path = "macos_click_attribution_eval.rs"]
+mod macos_click_attribution_eval;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3055,14 +3141,6 @@ mod tests {
     fn test_truncate() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello world", 8), "hello...");
-    }
-
-    #[test]
-    fn test_own_process_detection() {
-        assert!(is_own_process(std::process::id() as i32));
-        assert!(!is_own_process(0));
-        assert!(!is_own_process(-1));
-        assert!(!is_own_process((std::process::id() as i32) + 1));
     }
 
     #[test]
