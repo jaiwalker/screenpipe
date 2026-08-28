@@ -63,6 +63,7 @@ export function resolveVisibleChatTitle({
           content: pendingTitleSource,
         } as Message)
       : undefined;
+  const hasRealUserContent = Boolean(firstUserMsg || pendingTitleSource);
 
   const storeTitleIsReal =
     Boolean(storeTitle) &&
@@ -70,9 +71,10 @@ export function resolveVisibleChatTitle({
     !isInjectedTitle(storeTitle as string);
   if (storeTitleIsReal) return storeTitle as string;
 
-  if (derivedTitle) return derivedTitle;
+  if (derivedTitle && hasRealUserContent) return derivedTitle;
 
-  // Empty chats are intentionally unlabeled. "New chat" is supplied by the
-  // creation affordance, not persisted as a conversation title.
+  // Empty chats and prompt-only plumbing are intentionally unlabeled.
+  // "New chat" is supplied by the creation affordance, not persisted as a
+  // conversation title.
   return "";
 }
