@@ -9,10 +9,10 @@ confidence, and criticality.
 - Tracked crates: screenpipe-engine, screenpipe-db, screenpipe-sqlite-coordinator, screenpipe-audio, screenpipe-screen, screenpipe-a11y
 - Mapped suites: 32
 - Mapped Rust files: 338
-- Active test blocks: 3314
+- Active test blocks: 3312
 - Ignored/manual test blocks: 139
-- Declared test blocks: 3453
-- Weighted coverage points: 2714.0
+- Declared test blocks: 3451
+- Weighted coverage points: 2713.1
 
 Confidence weights: strong=1.0, partial=0.7, conditional=0.4, smoke=0.3.
 Criticality weights: high=1.0, medium=0.7, low=0.4.
@@ -23,9 +23,9 @@ are explicitly enabled in a runtime lane.
 
 | Platform | Suites | Active tests | Ignored tests | Weighted points | Layers | Flows | Critical score |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| windows | 29 | 3171 | 133 | 2649.0 | 21 | 11 | 100% |
-| macos | 29 | 3233 | 114 | 2663.0 | 22 | 11 | 100% |
-| linux | 25 | 2833 | 106 | 2340.3 | 20 | 11 | 100% |
+| windows | 29 | 3169 | 133 | 2648.0 | 21 | 11 | 100% |
+| macos | 29 | 3231 | 114 | 2662.0 | 22 | 11 | 100% |
+| linux | 25 | 2831 | 106 | 2339.3 | 20 | 11 | 100% |
 
 ## Crate Summary
 
@@ -35,7 +35,7 @@ are explicitly enabled in a runtime lane.
 | screenpipe-db | 5 | 52 | 15 | 455 | 16 | 432.2 | 9 |
 | screenpipe-sqlite-coordinator | 1 | 0 | 2 | 17 | 0 | 17.0 | 2 |
 | screenpipe-audio | 6 | 25 | 51 | 598 | 44 | 524.4 | 5 |
-| screenpipe-screen | 6 | 9 | 18 | 259 | 9 | 233.1 | 4 |
+| screenpipe-screen | 6 | 9 | 18 | 257 | 9 | 232.1 | 4 |
 | screenpipe-a11y | 4 | 2 | 30 | 354 | 28 | 261.3 | 3 |
 
 ## Line Coverage
@@ -82,7 +82,7 @@ bun run coverage:core -- --llvm-cov-summary ../../docs/coverage/core-llvm-cov-su
 | timeline | 4 suites / 1079 active / 33 ignored / 867.2 pts | 4 suites / 1079 active / 33 ignored / 867.2 pts | 4 suites / 1079 active / 33 ignored / 867.2 pts |
 | transcription | 5 suites / 791 active / 41 ignored / 618.4 pts | 5 suites / 791 active / 41 ignored / 618.4 pts | 5 suites / 791 active / 41 ignored / 618.4 pts |
 | ui-events | 4 suites / 742 active / 28 ignored / 565.0 pts | 3 suites / 693 active / 5 ignored / 530.7 pts | 3 suites / 693 active / 5 ignored / 530.7 pts |
-| vision-capture | 5 suites / 551 active / 32 ignored / 434.8 pts | 5 suites / 555 active / 32 ignored / 440.3 pts | 4 suites / 546 active / 31 ignored / 431.3 pts |
+| vision-capture | 5 suites / 549 active / 32 ignored / 433.8 pts | 5 suites / 553 active / 32 ignored / 439.3 pts | 4 suites / 544 active / 31 ignored / 430.3 pts |
 
 ## Critical Flow Matrix
 
@@ -147,7 +147,7 @@ bun run coverage:core -- --llvm-cov-summary ../../docs/coverage/core-llvm-cov-su
 | screen-capture-windowing | screenpipe-screen | windows, macos, linux | vision-capture, timeline, performance, privacy | capture-ocr-pipeline, timeline-streaming, privacy-and-redaction, performance-liveness | high | strong | mixed | 14 | 191 | 0 | Window filtering, empty-window regressions, retry policy, URL timing, monitor cache, OCR cache, snapshots, and image comparison. |
 | screen-custom-ocr | screenpipe-screen | windows, macos, linux | ocr | capture-ocr-pipeline | medium | conditional | manual | 1 | 0 | 2 | Custom OCR tests are ignored by default and only contribute when explicitly run. |
 | screen-macos-ocr | screenpipe-screen | macos | ocr, vision-capture | capture-ocr-pipeline | high | strong | mixed | 2 | 9 | 1 | Apple Vision OCR source/unit coverage and fixture OCR assertions. |
-| screen-monitor-platform | screenpipe-screen | windows, macos, linux | vision-capture | capture-ocr-pipeline | medium | partial | unit | 5 | 39 | 5 | Per-OS monitor enumeration (Windows, macOS, Wayland/portal on Linux) and the persistent Windows.Graphics.Capture session. Each file is cfg-gated and only executes on its target OS. |
+| screen-monitor-platform | screenpipe-screen | windows, macos, linux | vision-capture | capture-ocr-pipeline | medium | partial | unit | 5 | 37 | 5 | Per-OS monitor enumeration (Windows, macOS, Wayland/portal on Linux) and the persistent Windows.Graphics.Capture session. Each file is cfg-gated and only executes on its target OS. |
 | screen-windows-ocr | screenpipe-screen | windows | ocr, vision-capture | capture-ocr-pipeline | high | partial | integration | 2 | 5 | 1 | Windows OCR fixture coverage plus an ignored continuous-capture probe that requires a live desktop. |
 | sqlite-coordinator-durable-quarantine | screenpipe-sqlite-coordinator | windows, macos, linux | database, engine-lifecycle | engine-health-lifecycle, performance-liveness | high | strong | unit | 2 | 17 | 0 | Process-wide single-writer gates, SQLite runtime pinning, atomic hard-fault markers, OS file identity, fail-closed malformed metadata, fresh-identity resolution, and a real cross-process restart test. |
 
@@ -474,7 +474,7 @@ bun run coverage:core -- --llvm-cov-summary ../../docs/coverage/core-llvm-cov-su
 | screen-capture-windowing | screenpipe-screen | src/monitor.rs | source | 5 | 0 | 5 |
 | screen-monitor-platform | screenpipe-screen | src/monitor/linux_portal.rs | source | 5 | 0 | 5 |
 | screen-monitor-platform | screenpipe-screen | src/monitor/linux_wayland.rs | source | 5 | 0 | 5 |
-| screen-monitor-platform | screenpipe-screen | src/monitor/macos.rs | source | 19 | 2 | 21 |
+| screen-monitor-platform | screenpipe-screen | src/monitor/macos.rs | source | 17 | 2 | 19 |
 | screen-monitor-platform | screenpipe-screen | src/monitor/windows.rs | source | 2 | 1 | 3 |
 | screen-capture-windowing | screenpipe-screen | src/ocr_cache.rs | source | 15 | 0 | 15 |
 | screen-capture-windowing | screenpipe-screen | src/snapshot_writer.rs | source | 4 | 0 | 4 |
