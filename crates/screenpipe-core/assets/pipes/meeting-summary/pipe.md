@@ -37,7 +37,7 @@ these are the exact response shapes. do not probe for them:
 
 - `GET /meetings/<id>` → a bare object: `{"id", "title", "note", "meeting_start", "meeting_end", "meeting_app", "attendees"}`
 - `GET /search?...` → `{"data": [{"type": "Audio"|"UI"|"Parsed"|"OCR", "content": {…}}], "pagination": {…}}`
-  - audio `content`: `transcription`, `speaker`, `timestamp` (`text` duplicates `transcription`)
+  - audio `content`: `chunk_id`, `transcription`, `device_type` (`Input` or `Output`), `speaker`, `speaker_label`, `speaker_provisional`, `timestamp` (`text` duplicates `transcription`)
   - accessibility queries return `type: "UI"` with `text`, `app_name`, `window_name`, and `timestamp`
   - parsed `content`: corrected `text`, typed `items`, separate `actors`, `frame_id`, and `timestamp`
   - ocr has `text`, `frame_id`, `app_name`, `window_name`, and `timestamp`; it is fallback-only when both accessibility and parsed data have no useful rows
@@ -78,7 +78,7 @@ those `limit` values are already right-sized for a meeting. do not fetch unbound
 
 step 2 — render the transcript and screen text compactly in ONE more command, then summarize from that output. deduplicate as you print (a single pass, not one pass per attempt):
 
-  jq -r '.data[]?.content | select((.transcription // "") != "") | "\(.speaker // "?"): \(.transcription)"' /tmp/audio.json | awk '!seen[$0]++'
+  jq -r '.data[]?.content | select((.transcription // "") != "") | "[\(.device_type // "?") | id=\(.speaker.id // "?") | label=\(.speaker_label // .speaker.name // "unknown") | provisional=\(.speaker_provisional) | chunk=\(.chunk_id // "?")] \(.transcription)"' /tmp/audio.json | awk '!seen[$0]++'
   jq -r '.data[]?.content | select((.text // "") != "") | "\(.timestamp // "") [\(.app_name // "") — \(.window_name // "")] \(.text)"' /tmp/a11.json | tr -s "[:space:]" " " | awk '!seen[$0]++' | head -60
   jq -c '.data[]?.content | select((((.text // "") | length) > 0) or (((.items // []) | length) > 0) or (((.actors // []) | length) > 0)) | {timestamp, app_name, window_name, text, actors, items}' /tmp/parsed.json | awk '!seen[$0]++' | head -60
   jq -r '.data[]?.content | select((.text // "") != "") | "\(.timestamp // "") [OCR fallback] \(.text)"' /tmp/ocr.json | tr -s "[:space:]" " " | awk '!seen[$0]++' | head -60
@@ -87,13 +87,16 @@ summarize what happened: key topics, decisions, action items. use accessibility 
 
 step 2c — skip this step by default; it costs several round trips. only when the transcript and preferred screen data leave a *specific* visual question unanswered, use the cloud media (video/audio) model for that question — diagrams, charts, whiteboards, slide figures, UI demos, or screen-shared video. choose up to 4 representative `frame_id` values already returned by parsed data, or by the OCR fallback when both preferred sources were unavailable, fetch those still images with `GET /frames/<frame_id>`, and send them as `image_url[]` to `POST /v1/chat/completions` with `"model": "gemma4-e4b"`. NEVER call `POST /export` or run ffmpeg for a routine meeting summary; a full media export requires an explicit user request. if there is no returned `frame_id`, or the cloud-media block is absent or returns `503 cloud_token_missing`, skip visual analysis and summarize from the transcript plus the screen data already fetched.
 
-step 2d — name the speakers from the screen (do this every run, don't ask first). for every speaker still unnamed or generic ("speaker 1", "unknown", "") in the transcript, line up when they were talking with screen evidence at that moment. use this order:
+step 2d — give every distinct speaker a useful label (do this every run, don't ask first). build one meeting-local speaker map from `speaker.id`, `speaker_label`, `device_type`, and `chunk_id`, and apply it consistently to transcript excerpts and the summary. current-run evidence outranks any older `memory.md` lesson that says to leave a two-person call unnamed. use this order:
 
 1. accessibility: an active-speaker tile, a single visible speaker tile, or a subtitle label with a name;
 2. parsed data: a current-frame actor or item that identifies the same active speaker;
-3. OCR fallback: a matching on-screen name tag, but only when both accessibility and parsed data were unavailable or empty and `/tmp/ocr.json` therefore contains fallback rows.
+3. deterministic call topology: when preferred screen evidence repeatedly shows exactly two participants — the local user and one remote participant — label `device_type=Input` rows as the local participant and `device_type=Output` rows as the sole remote participant. this is an unambiguous mapping even without an active-speaker highlight. for a one-person call, label input rows as the sole local participant. use the meeting title or attendee field only to corroborate names already visible on screen, never by itself;
+4. OCR fallback: a matching on-screen name tag, but only when both accessibility and parsed data were unavailable or empty and `/tmp/ocr.json` therefore contains fallback rows.
 
-an attendee list, calendar entry, gallery tile, or someone else saying a name does not prove who spoke. if the matching evidence is not clear, leave the speaker unnamed.
+a participant roster or gallery establishes call topology only when it stays consistent across the meeting. it does not identify speakers in a multi-party call by itself. treat provisional labels and persisted names that conflict with deterministic device direction as unreliable for this meeting.
+
+every speaker used in the summary must have either an evidence-backed participant name or a stable meeting-local label (`Speaker 1`, `Speaker 2`, …). never emit an unnamed, blank, `unknown`, or generic live label in the finished summary. when a real name cannot be established in a multi-party call, use the stable label and state that identity remains unresolved instead of inventing a name.
 
   # speakers with no name yet — already fetched to /tmp/spk.json in step 1, reuse it
   #   (if you must re-fetch: offset is required, omitting it returns 400)
@@ -104,7 +107,7 @@ an attendee list, calendar entry, gallery tile, or someone else saying a name do
     -H "Content-Type: application/json" \
     -d '{"id": <SPEAKER_ID>, "name": "<NAME_FROM_SCREEN>"}'
 
-only rename when the time-aligned screen evidence is unambiguous — never guess from voice alone. note which speakers you renamed (and which you left as-is) in your final message.
+persist a real name only when the meeting-local mapping resolves a specific nonzero speaker id. never rename speaker id `0`, and never overwrite one persistent id that appears on conflicting input/output sides; keep those corrections meeting-local in the summary. note which persistent speakers you renamed and which names are meeting-local only in your final message.
 
 step 3 — write the summary out as your own message, before you save it. this message must contain no tool call; end the turn after it. start a line with exactly `## Summary` and put the finished summary markdown after that heading. the meeting UI streams this section live while you write it — it is the only way the user sees anything before the run ends — and it is the same markdown you pass as `<YOUR_SUMMARY>` in step 3b.
 
