@@ -51,12 +51,25 @@ fn section_between(text: &'static str, start: &str, end: &str) -> Option<&'stati
     Some(text[from..to].trim_end())
 }
 
+/// Return one complete line from the shipped prompt. This keeps one-line
+/// command migrations tied to the asset without duplicating their Bun source
+/// in Rust.
+fn line_starting_with(text: &'static str, start: &str) -> Option<&'static str> {
+    text.lines().find(|line| line.starts_with(start))
+}
+
 /// Anchors around the latency preamble (budget + verified response shapes) in
 /// the shipped `meeting-summary` prompt.
 const FAST_PATH_START: &str = "the user is staring at a spinner";
 const FAST_PATH_END: &str = "step 1 — pull everything";
 const MEETING_MEMORY_START: &str = "## 🧠 Continuous improvement (memory)";
 const MEETING_MEMORY_END: &str = "a meeting just ended.";
+const MEETING_RUNTIME_PREAMBLE_START: &str = "the user is staring at a spinner";
+const MEETING_FETCH_PREAMBLE_START: &str =
+    "  A=\"Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY\"";
+const MEETING_FETCH_PREAMBLE_END: &str = "  # screen evidence priority:";
+const MEETING_ROW_COUNTS_START: &str = "  A11_ROWS=$(bun -e";
+const MEETING_ROW_COUNTS_END: &str = "  if [ \"$A11_ROWS\"";
 
 /// The one line older installs still have where the fast path belongs.
 const FAST_PATH_ANCHOR: &str =
@@ -74,10 +87,14 @@ const MEETING_SCREEN_FETCH_START: &str = "  # screen evidence priority:";
 const MEETING_SCREEN_FETCH_END: &str = "  tail -40 ./memory.md";
 const MEETING_RENDER_START: &str = "step 2 — render the transcript";
 const MEETING_RENDER_END: &str = "step 2c — skip this step";
-const MEETING_AUDIO_RENDER_START: &str =
-    "  jq -r '.data[]?.content | select((.transcription // \"\") != \"\")";
-const MEETING_AUDIO_RENDER_END: &str =
-    "  jq -r '.data[]?.content | select((.text // \"\") != \"\")";
+const MEETING_AUDIO_RENDER_START: &str = "  bun -e 'const d=await Bun.file(\"/tmp/audio.json\")";
+const MEETING_A11_RENDER_START: &str = "  bun -e 'const d=await Bun.file(\"/tmp/a11.json\")";
+const MEETING_PARSED_RENDER_START: &str = "  bun -e 'const d=await Bun.file(\"/tmp/parsed.json\")";
+const MEETING_OCR_RENDER_START: &str = "  bun -e 'const d=await Bun.file(\"/tmp/ocr.json\")";
+const MEETING_PAYLOAD_BUILDER_START: &str = "  cat > /tmp/title.txt";
+const MEETING_PAYLOAD_BUILDER_END: &str = "  curl -sf -X POST";
+const MEETING_CONNECTION_RENDER_START: &str =
+    "  bun -e 'const d=await Bun.file(\"/tmp/conn.json\")";
 const MEETING_MEDIA_START: &str = "step 2c — skip this step";
 const MEETING_MEDIA_END: &str = "step 2d — give every distinct speaker";
 const MEETING_NAMING_START: &str = "step 2d — give every distinct speaker";
@@ -106,6 +123,30 @@ pub(super) const LEGACY_DEVICELESS_MEETING_AUDIO_SHAPE: &str =
     "  - audio `content`: `transcription`, `speaker`, `timestamp` (`text` duplicates `transcription`)";
 
 pub(super) const LEGACY_DEVICELESS_MEETING_AUDIO_RENDER: &str = r#"  jq -r '.data[]?.content | select((.transcription // "") != "") | "\(.speaker // "?"): \(.transcription)"' /tmp/audio.json | awk '!seen[$0]++'"#;
+
+const LEGACY_JQ_RUNTIME_PREAMBLE: &str = "the user is staring at a spinner until you print step 3, so latency is part of the job. every tool call is a round trip: batch them, and never spend a turn discovering something this prompt already tells you. do not read any skill file — the endpoints and response shapes below are complete and verified. budget: reach step 3 in **6 tool calls or fewer** on a normal meeting.";
+
+const LEGACY_JQ_MEETING_FETCH_PREAMBLE: &str = r#"  A="Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY"
+  ID=$(jq -r '.key // empty' ./.trigger-context.json 2>/dev/null)
+  [ -z "$ID" ] && ID=$(curl -s -H "$A" "http://localhost:3030/meetings?limit=1" | jq -r '.data[0].id')
+  curl -s -H "$A" "http://localhost:3030/meetings/$ID" -o /tmp/m.json
+  S=$(jq -r .meeting_start /tmp/m.json); E=$(jq -r .meeting_end /tmp/m.json)"#;
+
+const LEGACY_JQ_MEETING_ROW_COUNTS: &str = r#"  A11_ROWS=$(jq '[.data[]?.content | select(((.text // "") | length) > 0)] | length' /tmp/a11.json 2>/dev/null || printf '0')
+  PARSED_ROWS=$(jq '[.data[]?.content | select((((.text // "") | length) > 0) or (((.items // []) | length) > 0) or (((.actors // []) | length) > 0))] | length' /tmp/parsed.json 2>/dev/null || printf '0')"#;
+
+const LEGACY_JQ_SPEAKER_AWARE_AUDIO_RENDER: &str = r#"  jq -r '.data[]?.content | select((.transcription // "") != "") | "[\(.device_type // "?") | id=\(.speaker.id // "?") | label=\(.speaker_label // .speaker.name // "unknown") | provisional=\(.speaker_provisional) | chunk=\(.chunk_id // "?")] \(.transcription)"' /tmp/audio.json | awk '!seen[$0]++'"#;
+
+const LEGACY_JQ_A11_RENDER: &str = r#"  jq -r '.data[]?.content | select((.text // "") != "") | "\(.timestamp // "") [\(.app_name // "") — \(.window_name // "")] \(.text)"' /tmp/a11.json | tr -s "[:space:]" " " | awk '!seen[$0]++' | head -60"#;
+
+const LEGACY_JQ_PARSED_RENDER: &str = r#"  jq -c '.data[]?.content | select((((.text // "") | length) > 0) or (((.items // []) | length) > 0) or (((.actors // []) | length) > 0)) | {timestamp, app_name, window_name, text, actors, items}' /tmp/parsed.json | awk '!seen[$0]++' | head -60"#;
+
+const LEGACY_JQ_OCR_RENDER: &str = r#"  jq -r '.data[]?.content | select((.text // "") != "") | "\(.timestamp // "") [OCR fallback] \(.text)"' /tmp/ocr.json | tr -s "[:space:]" " " | awk '!seen[$0]++' | head -60"#;
+
+const LEGACY_JQ_PAYLOAD_BUILDER: &str = r#"  jq -n --rawfile s /tmp/summary.md --arg t "<NEW_TITLE_OR_EMPTY>" \
+    '{summary: $s} + (if $t == "" then {} else {title: $t} end)' > /tmp/summary.json"#;
+
+const LEGACY_JQ_CONNECTION_RENDER: &str = r#"  jq -r '.data[] | select(.connected == true) | "\(.id)\t\(.name)"' /tmp/conn.json   # already fetched in step 1"#;
 
 const LEGACY_MEETING_SCREEN_FETCH: &str = r#"  # the four fetches below are independent — run them in parallel, not one per turn
   curl -s -G -H "$A" --data-urlencode "start_time=$S" --data-urlencode "end_time=$E" \
@@ -299,6 +340,57 @@ fn meeting_summary_swaps() -> Vec<FragmentSwap> {
             new: memory_preamble,
         });
     }
+    for (why, old, replacement) in [
+        (
+            "portability: document the bundled Bun JSON runtime instead of relying on jq",
+            LEGACY_JQ_RUNTIME_PREAMBLE,
+            meeting_summary_runtime_preamble(),
+        ),
+        (
+            "portability: read the trigger and meeting window with bundled Bun because jq is absent on stock installs",
+            LEGACY_JQ_MEETING_FETCH_PREAMBLE,
+            meeting_summary_fetch_preamble(),
+        ),
+        (
+            "portability: count preferred screen rows with bundled Bun instead of jq",
+            LEGACY_JQ_MEETING_ROW_COUNTS,
+            meeting_summary_row_counts(),
+        ),
+        (
+            "portability: preserve speaker metadata with bundled Bun instead of jq",
+            LEGACY_JQ_SPEAKER_AWARE_AUDIO_RENDER,
+            meeting_summary_audio_render(),
+        ),
+        (
+            "portability: render accessibility rows with bundled Bun instead of jq",
+            LEGACY_JQ_A11_RENDER,
+            meeting_summary_a11_render(),
+        ),
+        (
+            "portability: render parsed rows with bundled Bun instead of jq",
+            LEGACY_JQ_PARSED_RENDER,
+            meeting_summary_parsed_render(),
+        ),
+        (
+            "portability: render fallback OCR rows with bundled Bun instead of jq",
+            LEGACY_JQ_OCR_RENDER,
+            meeting_summary_ocr_render(),
+        ),
+        (
+            "portability: build the summary payload with bundled Bun instead of jq",
+            LEGACY_JQ_PAYLOAD_BUILDER,
+            meeting_summary_payload_builder(),
+        ),
+        (
+            "portability: list connected apps with bundled Bun instead of jq",
+            LEGACY_JQ_CONNECTION_RENDER,
+            meeting_summary_connection_render(),
+        ),
+    ] {
+        if let Some(new) = replacement {
+            swaps.push(FragmentSwap { why, old, new });
+        }
+    }
     if let Some(audio_shape) = meeting_summary_audio_shape() {
         swaps.push(FragmentSwap {
             why: "speaker naming: expose device direction, provisional labels, \
@@ -436,6 +528,29 @@ fn meeting_summary_memory_preamble() -> Option<&'static str> {
     )
 }
 
+fn meeting_summary_runtime_preamble() -> Option<&'static str> {
+    line_starting_with(
+        bundled_prompt("meeting-summary")?,
+        MEETING_RUNTIME_PREAMBLE_START,
+    )
+}
+
+fn meeting_summary_fetch_preamble() -> Option<&'static str> {
+    section_between(
+        bundled_prompt("meeting-summary")?,
+        MEETING_FETCH_PREAMBLE_START,
+        MEETING_FETCH_PREAMBLE_END,
+    )
+}
+
+fn meeting_summary_row_counts() -> Option<&'static str> {
+    section_between(
+        bundled_prompt("meeting-summary")?,
+        MEETING_ROW_COUNTS_START,
+        MEETING_ROW_COUNTS_END,
+    )
+}
+
 /// The preset chain as shipped in meeting-summary frontmatter. It stops before
 /// `trigger`, preserving any installed trigger customization outside the span.
 fn meeting_summary_preset_chain() -> Option<&'static str> {
@@ -475,10 +590,39 @@ fn meeting_summary_render_step() -> Option<&'static str> {
 }
 
 fn meeting_summary_audio_render() -> Option<&'static str> {
-    section_between(
+    line_starting_with(
         bundled_prompt("meeting-summary")?,
         MEETING_AUDIO_RENDER_START,
-        MEETING_AUDIO_RENDER_END,
+    )
+}
+
+fn meeting_summary_a11_render() -> Option<&'static str> {
+    line_starting_with(bundled_prompt("meeting-summary")?, MEETING_A11_RENDER_START)
+}
+
+fn meeting_summary_parsed_render() -> Option<&'static str> {
+    line_starting_with(
+        bundled_prompt("meeting-summary")?,
+        MEETING_PARSED_RENDER_START,
+    )
+}
+
+fn meeting_summary_ocr_render() -> Option<&'static str> {
+    line_starting_with(bundled_prompt("meeting-summary")?, MEETING_OCR_RENDER_START)
+}
+
+fn meeting_summary_payload_builder() -> Option<&'static str> {
+    section_between(
+        bundled_prompt("meeting-summary")?,
+        MEETING_PAYLOAD_BUILDER_START,
+        MEETING_PAYLOAD_BUILDER_END,
+    )
+}
+
+fn meeting_summary_connection_render() -> Option<&'static str> {
+    line_starting_with(
+        bundled_prompt("meeting-summary")?,
+        MEETING_CONNECTION_RENDER_START,
     )
 }
 
@@ -838,7 +982,7 @@ mod tests {
             let fixed = migrate_builtin_pipe_text("meeting-summary", &stale)
                 .expect("two-person speaker refusal should migrate");
             assert!(fixed.contains("`device_type` (`Input` or `Output`)"));
-            assert!(fixed.contains(r#"id=\(.speaker.id // "?")"#));
+            assert!(fixed.contains(r#"id=${c.speaker?.id??"?"}"#));
             assert!(fixed.contains("deterministic call topology"));
             assert!(fixed.contains("`device_type=Input` rows as the local participant"));
             assert!(fixed.contains("`device_type=Output` rows as the sole remote participant"));
@@ -863,6 +1007,61 @@ mod tests {
         assert!(!fixed.contains("Before you do anything else this run"));
         assert!(fixed.contains("Step 1 already reads it as part of the one batched command"));
         assert!(fixed.contains("Write it at the very end"));
+        assert!(migrate_builtin_pipe_text("meeting-summary", &fixed).is_none());
+    }
+
+    /// The desktop bundles Bun but neither stock macOS nor the bundled Windows
+    /// bash guarantees jq. Upgrade every jq command from the last shipped
+    /// prompt, not only the transcript renderer touched by speaker naming.
+    #[test]
+    fn migrate_builtin_pipe_removes_unbundled_jq_dependency() {
+        let stale = bundled("meeting-summary")
+            .replace(
+                meeting_summary_runtime_preamble().expect("runtime preamble"),
+                LEGACY_JQ_RUNTIME_PREAMBLE,
+            )
+            .replace(
+                meeting_summary_fetch_preamble().expect("fetch preamble"),
+                LEGACY_JQ_MEETING_FETCH_PREAMBLE,
+            )
+            .replace(
+                meeting_summary_row_counts().expect("row counts"),
+                LEGACY_JQ_MEETING_ROW_COUNTS,
+            )
+            .replace(
+                meeting_summary_audio_render().expect("audio renderer"),
+                LEGACY_JQ_SPEAKER_AWARE_AUDIO_RENDER,
+            )
+            .replace(
+                meeting_summary_a11_render().expect("accessibility renderer"),
+                LEGACY_JQ_A11_RENDER,
+            )
+            .replace(
+                meeting_summary_parsed_render().expect("parsed renderer"),
+                LEGACY_JQ_PARSED_RENDER,
+            )
+            .replace(
+                meeting_summary_ocr_render().expect("OCR renderer"),
+                LEGACY_JQ_OCR_RENDER,
+            )
+            .replace(
+                meeting_summary_payload_builder().expect("payload builder"),
+                LEGACY_JQ_PAYLOAD_BUILDER,
+            )
+            .replace(
+                meeting_summary_connection_render().expect("connection renderer"),
+                LEGACY_JQ_CONNECTION_RENDER,
+            );
+        assert!(stale.contains("$(jq"));
+        assert!(stale.contains("\n  jq "));
+
+        let fixed = migrate_builtin_pipe_text("meeting-summary", &stale)
+            .expect("jq-dependent meeting summary should migrate");
+        assert!(!fixed.contains("$(jq"));
+        assert!(!fixed.contains("\n  jq "));
+        assert!(fixed.contains("never require `jq`"));
+        assert!(fixed.contains("Bun.file(\"/tmp/audio.json\")"));
+        assert!(fixed.contains("Bun.write(\"/tmp/summary.json\""));
         assert!(migrate_builtin_pipe_text("meeting-summary", &fixed).is_none());
     }
 
@@ -912,6 +1111,10 @@ mod tests {
         assert!(!body.contains("buildMeetingSummarizeInstructions"));
         assert!(body.contains("screenpipe API search is required"));
         assert!(body.contains("never run recursive `find` or `grep`"));
+        assert!(body.contains("screenpipe bundles `bun`"));
+        assert!(body.contains("never require `jq`"));
+        assert!(!body.contains("$(jq"));
+        assert!(!body.contains("\n  jq "));
     }
 
     /// The shipped prompt must fetch in parallel rather than one endpoint per
@@ -965,8 +1168,8 @@ mod tests {
         ] {
             assert!(body.contains(field), "audio contract omitted {field}");
         }
-        assert!(body.contains(r#"id=\(.speaker.id // "?")"#));
-        assert!(body.contains(r#"label=\(.speaker_label // .speaker.name // "unknown")"#));
+        assert!(body.contains(r#"id=${c.speaker?.id??"?"}"#));
+        assert!(body.contains(r#"label=${c.speaker_label??c.speaker?.name??"unknown"}"#));
         assert!(body.contains("deterministic call topology"));
         assert!(body.contains("exactly two participants"));
         assert!(body.contains("`device_type=Input` rows as the local participant"));

@@ -31,7 +31,7 @@ a meeting just ended. find it, summarize it, and save the summary back onto its 
 
 the instructions below are complete. screenpipe API search is required: use the meeting id and exact meeting time window with the named local HTTP endpoints below. do not inspect app source or recursively search the filesystem; never run recursive `find` or `grep` over the user's home or `~/.screenpipe`.
 
-the user is staring at a spinner until you print step 3, so latency is part of the job. every tool call is a round trip: batch them, and never spend a turn discovering something this prompt already tells you. do not read any skill file — the endpoints and response shapes below are complete and verified. budget: reach step 3 in **6 tool calls or fewer** on a normal meeting.
+the user is staring at a spinner until you print step 3, so latency is part of the job. every tool call is a round trip: batch them, and never spend a turn discovering something this prompt already tells you. do not read any skill file — the endpoints and response shapes below are complete and verified. screenpipe bundles `bun`; use it for JSON and never require `jq`, which is absent on stock macOS and the bundled Windows bash. budget: reach step 3 in **6 tool calls or fewer** on a normal meeting.
 
 these are the exact response shapes. do not probe for them:
 
@@ -47,10 +47,14 @@ these are the exact response shapes. do not probe for them:
 step 1 — pull everything the summary needs in ONE command. the scheduler names the meeting in `./.trigger-context.json`; prefer that id, because "most recent" picks the wrong meeting when two end close together:
 
   A="Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY"
-  ID=$(jq -r '.key // empty' ./.trigger-context.json 2>/dev/null)
-  [ -z "$ID" ] && ID=$(curl -s -H "$A" "http://localhost:3030/meetings?limit=1" | jq -r '.data[0].id')
+  ID=$(bun -e 'try{const d=await Bun.file("./.trigger-context.json").json();process.stdout.write(String(d.key??""))}catch{}')
+  if [ -z "$ID" ]; then
+    curl -s -H "$A" "http://localhost:3030/meetings?limit=1" -o /tmp/meetings.json
+    ID=$(bun -e 'const d=await Bun.file("/tmp/meetings.json").json();process.stdout.write(String(d.data?.[0]?.id??""))')
+  fi
   curl -s -H "$A" "http://localhost:3030/meetings/$ID" -o /tmp/m.json
-  S=$(jq -r .meeting_start /tmp/m.json); E=$(jq -r .meeting_end /tmp/m.json)
+  S=$(bun -e 'const d=await Bun.file("/tmp/m.json").json();process.stdout.write(String(d.meeting_start??""))')
+  E=$(bun -e 'const d=await Bun.file("/tmp/m.json").json();process.stdout.write(String(d.meeting_end??""))')
   # screen evidence priority: accessibility and parsed first; OCR only if neither has useful rows
   curl -s -G -H "$A" --data-urlencode "start_time=$S" --data-urlencode "end_time=$E" \
     -d content_type=audio -d limit=500 "http://localhost:3030/search" -o /tmp/audio.json &
@@ -63,8 +67,8 @@ step 1 — pull everything the summary needs in ONE command. the scheduler names
   curl -s -H "$A" "http://localhost:3030/speakers/unnamed?limit=20&offset=0" -o /tmp/spk.json &
   curl -s -H "$A" "http://localhost:3030/connections" -o /tmp/conn.json &
   wait
-  A11_ROWS=$(jq '[.data[]?.content | select(((.text // "") | length) > 0)] | length' /tmp/a11.json 2>/dev/null || printf '0')
-  PARSED_ROWS=$(jq '[.data[]?.content | select((((.text // "") | length) > 0) or (((.items // []) | length) > 0) or (((.actors // []) | length) > 0))] | length' /tmp/parsed.json 2>/dev/null || printf '0')
+  A11_ROWS=$(bun -e 'try{const d=await Bun.file("/tmp/a11.json").json();console.log((d.data??[]).filter(r=>String(r?.content?.text??"").length>0).length)}catch{console.log(0)}')
+  PARSED_ROWS=$(bun -e 'try{const d=await Bun.file("/tmp/parsed.json").json();console.log((d.data??[]).filter(r=>String(r?.content?.text??"").length>0||(r?.content?.items?.length??0)>0||(r?.content?.actors?.length??0)>0).length)}catch{console.log(0)}')
   if [ "$A11_ROWS" -eq 0 ] && [ "$PARSED_ROWS" -eq 0 ]; then
     curl -sf -G -H "$A" --data-urlencode "start_time=$S" --data-urlencode "end_time=$E" \
       -d content_type=ocr -d limit=150 -d offset=0 \
@@ -78,10 +82,10 @@ those `limit` values are already right-sized for a meeting. do not fetch unbound
 
 step 2 — render the transcript and screen text compactly in ONE more command, then summarize from that output. deduplicate as you print (a single pass, not one pass per attempt):
 
-  jq -r '.data[]?.content | select((.transcription // "") != "") | "[\(.device_type // "?") | id=\(.speaker.id // "?") | label=\(.speaker_label // .speaker.name // "unknown") | provisional=\(.speaker_provisional) | chunk=\(.chunk_id // "?")] \(.transcription)"' /tmp/audio.json | awk '!seen[$0]++'
-  jq -r '.data[]?.content | select((.text // "") != "") | "\(.timestamp // "") [\(.app_name // "") — \(.window_name // "")] \(.text)"' /tmp/a11.json | tr -s "[:space:]" " " | awk '!seen[$0]++' | head -60
-  jq -c '.data[]?.content | select((((.text // "") | length) > 0) or (((.items // []) | length) > 0) or (((.actors // []) | length) > 0)) | {timestamp, app_name, window_name, text, actors, items}' /tmp/parsed.json | awk '!seen[$0]++' | head -60
-  jq -r '.data[]?.content | select((.text // "") != "") | "\(.timestamp // "") [OCR fallback] \(.text)"' /tmp/ocr.json | tr -s "[:space:]" " " | awk '!seen[$0]++' | head -60
+  bun -e 'const d=await Bun.file("/tmp/audio.json").json(),seen=new Set;for(const r of d.data??[]){const c=r?.content??{},text=String(c.transcription??"");if(!text)continue;const line=`[${c.device_type??"?"} | id=${c.speaker?.id??"?"} | label=${c.speaker_label??c.speaker?.name??"unknown"} | provisional=${c.speaker_provisional??"?"} | chunk=${c.chunk_id??"?"}] ${text}`;if(!seen.has(line)){seen.add(line);console.log(line)}}'
+  bun -e 'const d=await Bun.file("/tmp/a11.json").json(),seen=new Set;let n=0;for(const r of d.data??[]){const c=r?.content??{},text=String(c.text??"");if(!text)continue;const line=`${c.timestamp??""} [${c.app_name??""} — ${c.window_name??""}] ${text}`.replace(/\s+/g," ").trim();if(!seen.has(line)){seen.add(line);console.log(line);if(++n===60)break}}'
+  bun -e 'const d=await Bun.file("/tmp/parsed.json").json(),seen=new Set;let n=0;for(const r of d.data??[]){const c=r?.content??{};if(!String(c.text??"").length&&!(c.items?.length??0)&&!(c.actors?.length??0))continue;const line=JSON.stringify({timestamp:c.timestamp,app_name:c.app_name,window_name:c.window_name,text:c.text,actors:c.actors,items:c.items});if(!seen.has(line)){seen.add(line);console.log(line);if(++n===60)break}}'
+  bun -e 'const d=await Bun.file("/tmp/ocr.json").json(),seen=new Set;let n=0;for(const r of d.data??[]){const c=r?.content??{},text=String(c.text??"");if(!text)continue;const line=`${c.timestamp??""} [OCR fallback] ${text}`.replace(/\s+/g," ").trim();if(!seen.has(line)){seen.add(line);console.log(line);if(++n===60)break}}'
 
 summarize what happened: key topics, decisions, action items. use accessibility and parsed data first for anything the transcript misses — shared slides, docs, code, demos, and participant labels. `/tmp/ocr.json` contains rows only when both preferred sources were unavailable or empty; use those rows as the fallback, never as an extra source when accessibility or parsed data worked.
 
@@ -118,8 +122,10 @@ step 3b — now save it through the dedicated summary endpoint. the server merge
   cat > /tmp/summary.md <<'SUMMARY_EOF'
   <YOUR_SUMMARY>
   SUMMARY_EOF
-  jq -n --rawfile s /tmp/summary.md --arg t "<NEW_TITLE_OR_EMPTY>" \
-    '{summary: $s} + (if $t == "" then {} else {title: $t} end)' > /tmp/summary.json
+  cat > /tmp/title.txt <<'TITLE_EOF'
+  <NEW_TITLE_OR_EMPTY>
+  TITLE_EOF
+  bun -e 'const summary=await Bun.file("/tmp/summary.md").text(),title=(await Bun.file("/tmp/title.txt").text()).trim(),body=title?{summary,title}:{summary};await Bun.write("/tmp/summary.json",JSON.stringify(body))'
   curl -sf -X POST "http://localhost:3030/meetings/<MEETING_ID>/summary" \
     -H "Authorization: Bearer $SCREENPIPE_LOCAL_API_KEY" \
     -H "Content-Type: application/json" \
@@ -129,7 +135,7 @@ step 3b — now save it through the dedicated summary endpoint. the server merge
 
 step 4 — offer to push the summary into one of the user's connected apps (ask, never push on your own). list what's actually connected, then let them pick with one click:
 
-  jq -r '.data[] | select(.connected == true) | "\(.id)\t\(.name)"' /tmp/conn.json   # already fetched in step 1
+  bun -e 'const d=await Bun.file("/tmp/conn.json").json();for(const c of d.data??[])if(c.connected===true)console.log(`${c.id}\t${c.name}`)'   # already fetched in step 1
 
 rank the connected targets by relevance — an app used during the meeting first (Notion, Slack, Linear, …). then post a desktop notification whose action buttons are those targets, so the ask renders as buttons in the UI:
 

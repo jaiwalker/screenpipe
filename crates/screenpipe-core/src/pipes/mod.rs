@@ -9316,7 +9316,7 @@ mod tests {
             .expect("bundled audio shape should exist");
         let audio_render = bundled
             .lines()
-            .find(|line| line.starts_with("  jq -r '.data[]?.content | select((.transcription"))
+            .find(|line| line.starts_with("  bun -e 'const d=await Bun.file(\"/tmp/audio.json\")"))
             .expect("bundled audio renderer should exist");
         let stale = format!(
             "{}{}{}",
@@ -9343,11 +9343,12 @@ mod tests {
 
         let installed = std::fs::read_to_string(pipe_dir.join("pipe.md")).unwrap();
         assert!(installed.contains("`device_type` (`Input` or `Output`)"));
-        assert!(installed.contains(r#"id=\(.speaker.id // "?")"#));
+        assert!(installed.contains(r#"id=${c.speaker?.id??"?"}"#));
         assert!(installed.contains("deterministic call topology"));
         assert!(installed.contains("`device_type=Input` rows as the local participant"));
         assert!(installed.contains("never emit an unnamed, blank, `unknown`"));
         assert!(!installed.contains("leave the speaker unnamed"));
+        assert!(!installed.contains("\n  jq "));
         assert_eq!(
             std::fs::read_to_string(pipe_dir.join("memory.md")).unwrap(),
             "# memory\n\n## Lessons\n- user note\n"
