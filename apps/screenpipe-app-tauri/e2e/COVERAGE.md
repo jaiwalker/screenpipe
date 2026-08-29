@@ -10,9 +10,9 @@ and layer declared in the manifest, weighted by confidence and criticality.
 
 - Manifest: `e2e/coverage-map.json`
 - Specs directory: `e2e/specs`
-- Mapped specs: 135
-- Declared test blocks: 389
-- Weighted coverage points: 310.1
+- Mapped specs: 136
+- Declared test blocks: 390
+- Weighted coverage points: 311.1
 
 Confidence weights: strong=1.0, partial=0.7, conditional=0.4, smoke=0.3.
 Criticality weights: high=1.0, medium=0.7, low=0.4.
@@ -23,9 +23,9 @@ can execute more runtime cases than this number shows.
 
 | Platform | Specs | Declared tests | Weighted points | Layers | Features | Critical score |
 | --- | --- | --- | --- | --- | --- | --- |
-| windows | 104 | 332 | 275.1 | 15 | 118 | 88% |
-| macos | 131 | 351 | 279.9 | 17 | 126 | 87% |
-| linux | 92 | 290 | 244.5 | 14 | 115 | 84% |
+| windows | 105 | 333 | 276.1 | 15 | 118 | 88% |
+| macos | 132 | 352 | 280.9 | 17 | 126 | 87% |
+| linux | 93 | 291 | 245.5 | 14 | 115 | 84% |
 
 ## Runtime Results
 
@@ -41,7 +41,7 @@ pass/fail/skip counts.
 | auth | - | 1 specs / 1 tests / 1.0 pts | - |
 | billing | 4 specs / 6 tests / 5.7 pts | 4 specs / 6 tests / 5.7 pts | 4 specs / 6 tests / 5.7 pts |
 | capture-ocr | 2 specs / 16 tests / 6.4 pts | 8 specs / 12 tests / 4.8 pts | 1 specs / 3 tests / 1.2 pts |
-| chat-ai | 35 specs / 82 tests / 66.3 pts | 49 specs / 111 tests / 85.8 pts | 33 specs / 81 tests / 65.8 pts |
+| chat-ai | 36 specs / 83 tests / 67.3 pts | 50 specs / 112 tests / 86.8 pts | 34 specs / 82 tests / 66.8 pts |
 | entitlement | - | 1 specs / 1 tests / 1.0 pts | - |
 | local-api | 28 specs / 117 tests / 98.0 pts | 37 specs / 110 tests / 93.5 pts | 23 specs / 85 tests / 76.2 pts |
 | notifications | 4 specs / 26 tests / 17.3 pts | 3 specs / 5 tests / 3.4 pts | 2 specs / 4 tests / 3.1 pts |
@@ -49,11 +49,11 @@ pass/fail/skip counts.
 | os-integration | 7 specs / 32 tests / 26.9 pts | 14 specs / 29 tests / 17.4 pts | 2 specs / 15 tests / 10.8 pts |
 | performance | 3 specs / 45 tests / 45.0 pts | 5 specs / 36 tests / 31.8 pts | 2 specs / 30 tests / 30.0 pts |
 | pipes | 6 specs / 20 tests / 20.0 pts | 8 specs / 26 tests / 26.0 pts | 6 specs / 20 tests / 20.0 pts |
-| real-ui-e2e | 77 specs / 230 tests / 193.9 pts | 93 specs / 244 tests / 204.9 pts | 71 specs / 206 tests / 179.9 pts |
+| real-ui-e2e | 78 specs / 231 tests / 194.9 pts | 94 specs / 245 tests / 205.9 pts | 72 specs / 207 tests / 180.9 pts |
 | settings | 15 specs / 42 tests / 39.0 pts | 17 specs / 36 tests / 31.7 pts | 14 specs / 33 tests / 30.0 pts |
 | storage-privacy | 10 specs / 44 tests / 35.3 pts | 10 specs / 29 tests / 28.1 pts | 7 specs / 22 tests / 21.1 pts |
 | tauri-command | 22 specs / 60 tests / 46.9 pts | 32 specs / 78 tests / 60.3 pts | 21 specs / 61 tests / 47.8 pts |
-| window-lifecycle | 20 specs / 68 tests / 56.5 pts | 20 specs / 48 tests / 33.9 pts | 14 specs / 41 tests / 31.4 pts |
+| window-lifecycle | 21 specs / 69 tests / 57.5 pts | 21 specs / 49 tests / 34.9 pts | 15 specs / 42 tests / 32.4 pts |
 
 ## Critical Feature Matrix
 
@@ -142,6 +142,7 @@ pass/fail/skip counts.
 | chat-prefill-context-leak.spec.ts | windows, macos, linux | chat-ai | chat, chat-prefill | medium | partial | synthetic | 1 | Pending auto-send prefill must render only the clean prompt, not the internal model context, as the user message. |
 | chat-prefill-duplicate.spec.ts | macos | chat-ai | chat, chat-prefill | medium | partial | synthetic | 1 | QUARANTINED (#4610): cross-window prefill duplicate regression. The autoSend persist precondition is racy in CI — times out with 0 conversations (not the duplicate=2 it guards) ~100% Linux + ~33% macOS. Re-enable once it seeds the persisted conversation deterministically. |
 | chat-queue-burst-pending.spec.ts | macos | chat-ai | chat | high | conditional | synthetic | 1 | Several messages queued during an active turn must all become pending cards immediately; regression for the conversation-lease hold that serialized enqueues one per turn. |
+| chat-renderer-reload-hydration.spec.ts | windows, macos, linux | chat-ai, window-lifecycle, real-ui-e2e | chat, window-lifecycle | high | strong | mixed | 1 | A real Tauri WebView loads two saved transcripts, survives a full renderer reload, switches between them repeatedly without refetching connections, then repeats the same-id route and proves both message rows remain rendered. |
 | chat-rich-result-cards.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e, tauri-command | chat, chat-results, pipes, artifacts, live-views | high | strong | real-user-flow | 4 | Seeds durable scheduled-task, artifact, chat, Live View, and link results; proves directives stay hidden, all proposed/pending/success/paused/recovery states render truthfully, non-actionable states disable Open, light/dark review screenshots remain usable, and a created-chat card switches through the real Tauri conversation handoff. |
 | chat-right-panel-tabs.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e | chat, right-panel-tabs, file-preview | medium | strong | real-user-flow | 1 | Multiple file previews stay open in the chat right panel, preserve selection across hide and show, and close with predictable focus fallback. |
 | chat-selected-text-side-chat.spec.ts | windows, macos, linux | chat-ai, real-ui-e2e | chat, selected-text-actions, side-chat | high | strong | real-user-flow | 7 | Selecting rendered assistant text exposes the current-chat and temporary side-chat actions. Add to chat keeps the active conversation; ask in side chat creates an editable unsent composer on the right while its source remains visible on the left. Sent side-chat content stays absent from Recents and disk, nested side chats are unavailable, replacement removes the old temporary session, and close restores the source without an orphan pane. |
