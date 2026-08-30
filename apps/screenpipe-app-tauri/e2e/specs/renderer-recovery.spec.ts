@@ -308,18 +308,26 @@ describeMacOS("macOS renderer-stall recovery", function () {
           ),
         ),
       );
-      const matchingSample = samples.find(
-        (sample) =>
+      const matchingSample = samples.find((sample) => {
+        const synchronousGpuBlock =
           sample.includes(
             "RemoteGraphicsContextGLProxy::waitUntilInitialized",
           ) &&
           sample.includes("IPC::Connection::waitForMessage") &&
+          sample.includes("WTF::Condition::waitUntilUnchecked");
+        const remotePaintBlock =
           sample.includes("RemoteLayerTreeDrawingArea::updateRendering") &&
-          sample.includes(
+          (sample.includes(
             "RemoteImageBufferSetProxyFlusher::flushAndCollectHandles",
-          ) &&
-          sample.includes("WTF::Condition::waitUntilUnchecked"),
-      );
+          ) ||
+            sample.includes(
+              "RemoteRenderingBackendProxy::endPreparingImageBufferSetsForDisplay",
+            )) &&
+          (sample.includes("WTF::Condition::waitUntilUnchecked") ||
+            sample.includes("IPC::StreamClientConnectionBuffer::tryAcquire"));
+
+        return synchronousGpuBlock || remotePaintBlock;
+      });
       if (!matchingSample) {
         const relevantFrames = samples
           .map((sample, index) => {

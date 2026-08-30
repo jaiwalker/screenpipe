@@ -87,6 +87,13 @@ impl WatchdogState {
         }
     }
 
+    fn begin_focus_probe_if_idle(&mut self, label: &str) -> Option<ProbeTicket> {
+        if self.pending_probes.contains_key(label) {
+            return None;
+        }
+        Some(self.begin_probe(label))
+    }
+
     fn finish_probe(&mut self, ticket: &ProbeTicket) -> ProbeOutcome {
         if self.pending_probes.get(&ticket.label) != Some(&ticket.id) {
             return ProbeOutcome::Superseded;
@@ -186,30 +193,87 @@ fn watch(window: &WebviewWindow, target: ShowRewindWindow, requires_focus: bool)
         return;
     }
 
-    let ticket = lock_state().begin_probe(&label);
+    let ticket = {
+        let mut state = lock_state();
+        if requires_focus {
+            let Some(ticket) = state.begin_focus_probe_if_idle(&label) else {
+                // A focus event commonly arrives just after show(). The
+                // focus-only probe must not supersede that stronger visible
+                // probe and later cancel it merely because focus moved again.
+                return;
+            };
+            ticket
+        } else {
+            state.begin_probe(&label)
+        }
+    };
     let timeout = if ticket.force_stall {
         FORCED_PROBE_TIMEOUT
     } else {
         PROBE_TIMEOUT
     };
+    #[cfg(feature = "e2e")]
+    info!(
+        target: "screenpipe::renderer_watchdog",
+        label = %ticket.label,
+        probe_id = ticket.id,
+        requires_focus,
+        heartbeat_at_start = ticket.heartbeat_at_start,
+        force_stall = ticket.force_stall,
+        "renderer probe started"
+    );
     let app = window.app_handle().clone();
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(timeout).await;
         let Some(current_window) = app.get_webview_window(&ticket.label) else {
+            #[cfg(feature = "e2e")]
+            info!(
+                target: "screenpipe::renderer_watchdog",
+                label = %ticket.label,
+                probe_id = ticket.id,
+                "renderer probe cancelled because its window disappeared"
+            );
             lock_state().cancel_probe(&ticket);
             return;
         };
-        if !current_window.is_visible().unwrap_or(false) {
+        let visibility = current_window.is_visible();
+        if !matches!(visibility, Ok(true)) {
+            #[cfg(feature = "e2e")]
+            info!(
+                target: "screenpipe::renderer_watchdog",
+                label = %ticket.label,
+                probe_id = ticket.id,
+                ?visibility,
+                "renderer probe cancelled because its window is not visible"
+            );
             lock_state().cancel_probe(&ticket);
             return;
         }
-        let keep_monitoring = current_window.is_focused().unwrap_or(false);
+        let focus = current_window.is_focused();
+        let keep_monitoring = focus.as_ref().copied().unwrap_or(false);
         if requires_focus && !keep_monitoring {
+            #[cfg(feature = "e2e")]
+            info!(
+                target: "screenpipe::renderer_watchdog",
+                label = %ticket.label,
+                probe_id = ticket.id,
+                ?focus,
+                "renderer focus probe cancelled after focus moved"
+            );
             lock_state().cancel_probe(&ticket);
             return;
         }
-        match lock_state().finish_probe(&ticket) {
+        let outcome = lock_state().finish_probe(&ticket);
+        #[cfg(feature = "e2e")]
+        info!(
+            target: "screenpipe::renderer_watchdog",
+            label = %ticket.label,
+            probe_id = ticket.id,
+            ?outcome,
+            "renderer probe finished"
+        );
+        match outcome {
             ProbeOutcome::Healthy => {
                 // A focused renderer stays under observation after the first
                 // successful show probe, so a stall that begins while the
@@ -447,6 +511,15 @@ mod tests {
 
         assert_eq!(state.finish_probe(&stale), ProbeOutcome::Superseded);
         assert_eq!(state.finish_probe(&current), ProbeOutcome::Recover);
+    }
+
+    #[test]
+    fn focus_event_cannot_supersede_visible_show_probe() {
+        let mut state = WatchdogState::default();
+        let visible = state.begin_probe("home");
+
+        assert!(state.begin_focus_probe_if_idle("home").is_none());
+        assert_eq!(state.finish_probe(&visible), ProbeOutcome::Recover);
     }
 
     #[test]
