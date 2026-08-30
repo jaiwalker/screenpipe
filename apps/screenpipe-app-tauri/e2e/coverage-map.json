@@ -2596,7 +2596,8 @@
       "criticality": "high",
       "confidence": "strong",
       "ux": "mixed",
-      "notes": "Forces the production missed-heartbeat recovery three times, proves Home repaints, checks the app PID is unchanged, continuously probes the local API, and reopens discarded Search and Chat webviews."
+      "tests": 3,
+      "notes": "Suspends the isolated app's real com.apple.WebKit.GPU process, verifies WebContent's main thread and render queue are blocked in remote WebKit GPU IPC, holds the fault until the production watchdog destroys stale Home, then proves a new page generation repaints in the same app PID with uninterrupted local API health. Also forces three consecutive missed-heartbeat recoveries and reopens discarded Search and Chat webviews."
     },
     {
       "spec": "recording-health-focus-cold.spec.ts",
