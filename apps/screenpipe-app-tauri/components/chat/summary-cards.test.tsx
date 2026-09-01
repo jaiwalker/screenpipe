@@ -89,11 +89,18 @@ describe("SummaryCards", () => {
     expect(screen.queryByTestId("summary-cards-more")).not.toBeInTheDocument();
   });
 
-  it("progressively reveals external-agent actions on the two prominent cards", () => {
+  it("progressively reveals external-agent actions on every runnable card", () => {
     render(
       <SummaryCards
         onSendMessage={vi.fn()}
-        customTemplates={[]}
+        customTemplates={[
+          {
+            id: "tpl-1",
+            title: "Client recap",
+            prompt: "recap my client work",
+            timeRange: "today",
+          } as never,
+        ]}
         onSaveCustomTemplate={vi.fn()}
         onUpdateCustomTemplate={vi.fn()}
         onDeleteCustomTemplate={vi.fn()}
@@ -115,16 +122,33 @@ describe("SummaryCards", () => {
       "group-focus-within/home-card:opacity-100",
     );
     expect(missedTodoActions).toBeInTheDocument();
+
+    for (const slug of [
+      "time-breakdown",
+      "automate-my-work",
+      "meeting-prep",
+      "blockers",
+      "custom-tpl-1",
+    ]) {
+      expect(
+        screen.getByTestId(`home-card-agent-actions-${slug}`),
+      ).toHaveAttribute("data-placement", "chip");
+    }
     expect(
-      screen.queryByTestId("home-card-agent-actions-time-breakdown"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("home-card-agent-actions-automate-my-work"),
-    ).not.toBeInTheDocument();
+      screen.getAllByRole("button", { name: "Run in Claude" }),
+    ).toHaveLength(7);
 
     const card = screen.getByTestId("summary-card-day-recap");
     const claude = screen.getAllByRole("button", { name: "Run in Claude" })[0];
     expect(card.contains(claude)).toBe(false);
+    const timeBreakdown = screen.getByTestId("summary-card-time-breakdown");
+    const timeBreakdownClaude = screen
+      .getByTestId("home-card-agent-actions-time-breakdown")
+      .querySelector('[aria-label="Run in Claude"]');
+    expect(timeBreakdown.contains(timeBreakdownClaude)).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "+ custom" }),
+    ).toBeInTheDocument();
   });
 
   it("makes available home actions visibly interactive and keyboard focusable", () => {

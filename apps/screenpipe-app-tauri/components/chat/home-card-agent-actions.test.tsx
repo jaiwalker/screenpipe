@@ -72,6 +72,16 @@ describe("HomeCardAgentActions", () => {
     );
   });
 
+  it("centers the action cluster over compact chips", () => {
+    render(<HomeCardAgentActions pipe={DAY_RECAP} placement="chip" />);
+
+    const actions = screen.getByRole("group", {
+      name: "Run Day Recap in another agent",
+    });
+    expect(actions).toHaveAttribute("data-placement", "chip");
+    expect(actions).toHaveClass("left-1/2", "-translate-x-1/2");
+  });
+
   it("tracks each agent action once when it is hovered or keyboard-focused", () => {
     render(<HomeCardAgentActions pipe={DAY_RECAP} />);
     const claude = screen.getByRole("button", { name: "Run in Claude" });
@@ -144,6 +154,36 @@ describe("HomeCardAgentActions", () => {
     );
     expect(JSON.stringify(mocks.capture.mock.calls)).not.toContain(
       "Summarize what I worked on today",
+    );
+  });
+
+  it("uses the supplied normalized card for quick and custom actions", async () => {
+    render(
+      <HomeCardAgentActions
+        pipe={{
+          name: "custom-tpl-1",
+          title: "Client recap",
+          previewPrompt: "Summarize my client work",
+        }}
+        entryCard="custom"
+        placement="chip"
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Run in Codex" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("opened"),
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "home_card_agent_handoff_clicked",
+      { agent: "codex", card: "custom" },
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "home_card_agent_handoff_completed",
+      expect.objectContaining({ agent: "codex", card: "custom" }),
     );
   });
 

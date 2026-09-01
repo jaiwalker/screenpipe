@@ -34,7 +34,10 @@ import {
   type UserGoalCategory,
 } from "@/lib/live-views/onboarding-activation";
 import { CustomSummaryBuilder } from "./custom-summary-builder";
-import { HomeCardAgentActions } from "./home-card-agent-actions";
+import {
+  HomeCardAgentActions,
+  type HomeCardAgentTask,
+} from "./home-card-agent-actions";
 
 interface SummaryCardsProps {
   onSendMessage: (
@@ -86,6 +89,31 @@ const HOME_CARD_SLUGS_BY_GOAL: Record<UserGoalCategory, string[]> = {
 
 export function homeCardSlugsForGoal(category: UserGoalCategory): string[] {
   return HOME_CARD_SLUGS_BY_GOAL[category];
+}
+
+const QUICK_SUMMARY_TASKS = [
+  {
+    name: "meeting-prep",
+    title: "Meeting Prep",
+    previewPrompt: "Summarize context I'll need for upcoming meetings",
+  },
+  {
+    name: "blockers",
+    title: "Blockers",
+    previewPrompt: "What problems, errors, or blockers did I encounter?",
+  },
+] satisfies HomeCardAgentTask[];
+
+function customTemplateAgentTask(template: CustomTemplate): HomeCardAgentTask {
+  const instructions =
+    template.instructions ??
+    parseTemplateInstructions(template.prompt) ??
+    template.prompt;
+  return {
+    name: `custom-${template.id}`,
+    title: template.title,
+    previewPrompt: `Run my saved ${template.title} summary for ${template.timeRange}. ${instructions}`,
+  };
 }
 
 function HomeCardIcon({ slug, className }: { slug: string; className: string }) {
@@ -295,67 +323,90 @@ export function SummaryCards({
       <div className="w-full max-w-lg mb-4 flex flex-wrap items-center gap-1">
         {/* Template-backed chips (Time Breakdown, Missed To-Dos) */}
         {featured.slice(2).map((pipe) => (
-          <button
-            type="button"
-            key={pipe.name}
-            data-testid={`summary-card-${pipe.name}`}
-            onClick={() => handleCardClick(pipe)}
-            {...promptPreviewHandlers(
-              previewPromptForPipe(pipe),
-              onPreviewPrompt,
-            )}
-            className="grow cursor-pointer rounded-md border border-foreground/20 bg-card px-2 py-0.5 text-[11px] text-foreground/75 transition-colors duration-150 hover:border-foreground hover:bg-foreground hover:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-1 focus-visible:ring-offset-background motion-reduce:transition-none"
-          >
-            {pipe.title}
-          </button>
+          <div key={pipe.name} className="group/home-card relative grow">
+            <button
+              type="button"
+              data-testid={`summary-card-${pipe.name}`}
+              onClick={() => handleCardClick(pipe)}
+              {...promptPreviewHandlers(
+                previewPromptForPipe(pipe),
+                onPreviewPrompt,
+              )}
+              className="w-full cursor-pointer rounded-md border border-foreground/20 bg-card px-2 py-0.5 text-[11px] text-foreground/75 transition-colors duration-150 group-hover/home-card:border-foreground group-hover/home-card:bg-foreground group-hover/home-card:text-background group-focus-within/home-card:border-foreground group-focus-within/home-card:bg-foreground group-focus-within/home-card:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-1 focus-visible:ring-offset-background motion-reduce:transition-none"
+            >
+              <span className="transition-opacity duration-150 group-hover/home-card:opacity-0 group-focus-within/home-card:opacity-0 motion-reduce:transition-none">
+                {pipe.title}
+              </span>
+            </button>
+            <HomeCardAgentActions pipe={pipe} placement="chip" />
+          </div>
         ))}
         {/* Quick summary chips */}
-        {[
-          { label: "Meeting Prep", prompt: "Summarize context I'll need for upcoming meetings" },
-          { label: "Blockers", prompt: "What problems, errors, or blockers did I encounter?" },
-        ].map((qt) => (
-          <button
-            type="button"
-            key={qt.label}
-            {...promptPreviewHandlers(qt.prompt, onPreviewPrompt)}
-            onClick={() => {
-              onPreviewPrompt?.(null);
-              posthog.capture("home_card_clicked", {
-                kind: "quick_summary_chip",
-              });
-              const prompt = `Analyze my screen and audio recordings from today.\n\nUser instructions: ${qt.prompt}\n\nOnly report activities you can verify from the recordings. If uncertain, say so. Format with clear headings and bullet points.`;
-              onSendMessage(
-                prompt,
-                `\u2728 ${qt.label} \u2014 Today`,
-                "home_card",
-                "other_builtin",
-              );
-            }}
-            className="grow cursor-pointer rounded-md border border-foreground/20 bg-card px-2 py-0.5 text-[11px] text-foreground/75 transition-colors duration-150 hover:border-foreground hover:bg-foreground hover:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-1 focus-visible:ring-offset-background motion-reduce:transition-none"
-          >
-            {qt.label}
-          </button>
+        {QUICK_SUMMARY_TASKS.map((task) => (
+          <div key={task.name} className="group/home-card relative grow">
+            <button
+              type="button"
+              {...promptPreviewHandlers(
+                task.previewPrompt ?? task.title,
+                onPreviewPrompt,
+              )}
+              onClick={() => {
+                onPreviewPrompt?.(null);
+                posthog.capture("home_card_clicked", {
+                  kind: "quick_summary_chip",
+                });
+                const prompt = `Analyze my screen and audio recordings from today.\n\nUser instructions: ${task.previewPrompt}\n\nOnly report activities you can verify from the recordings. If uncertain, say so. Format with clear headings and bullet points.`;
+                onSendMessage(
+                  prompt,
+                  `\u2728 ${task.title} \u2014 Today`,
+                  "home_card",
+                  "other_builtin",
+                );
+              }}
+              className="w-full cursor-pointer rounded-md border border-foreground/20 bg-card px-2 py-0.5 text-[11px] text-foreground/75 transition-colors duration-150 group-hover/home-card:border-foreground group-hover/home-card:bg-foreground group-hover/home-card:text-background group-focus-within/home-card:border-foreground group-focus-within/home-card:bg-foreground group-focus-within/home-card:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-1 focus-visible:ring-offset-background motion-reduce:transition-none"
+            >
+              <span className="transition-opacity duration-150 group-hover/home-card:opacity-0 group-focus-within/home-card:opacity-0 motion-reduce:transition-none">
+                {task.title}
+              </span>
+            </button>
+            <HomeCardAgentActions
+              pipe={task}
+              entryCard="other_builtin"
+              placement="chip"
+            />
+          </div>
         ))}
         {/* User's saved templates — chips slightly fainter than built-ins with
             a pin glyph marking them as user-owned. Full text and management
             (edit/delete) live in the edit dialog. */}
         {customTemplates.map((ct) => (
-          <button
-            type="button"
+          <div
             key={ct.id}
-            {...promptPreviewHandlers(
-              ct.instructions ??
-                parseTemplateInstructions(ct.prompt) ??
-                ct.prompt,
-              onPreviewPrompt,
-            )}
-            onClick={() => handleCustomTemplateClick(ct)}
-            title={ct.description || ct.timeRange}
-            className="inline-flex max-w-[140px] grow cursor-pointer items-center justify-center gap-1 rounded-md border border-foreground/20 bg-card px-2 py-0.5 text-[11px] text-foreground/70 transition-colors duration-150 hover:border-foreground hover:bg-foreground hover:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-1 focus-visible:ring-offset-background motion-reduce:transition-none"
+            className="group/home-card relative inline-flex max-w-[140px] grow"
           >
-            <Pin className="w-3 h-3 shrink-0" strokeWidth={1.5} />
-            <span className="truncate">{ct.title}</span>
-          </button>
+            <button
+              type="button"
+              {...promptPreviewHandlers(
+                ct.instructions ??
+                  parseTemplateInstructions(ct.prompt) ??
+                  ct.prompt,
+                onPreviewPrompt,
+              )}
+              onClick={() => handleCustomTemplateClick(ct)}
+              title={ct.description || ct.timeRange}
+              className="inline-flex w-full cursor-pointer items-center justify-center gap-1 rounded-md border border-foreground/20 bg-card px-2 py-0.5 text-[11px] text-foreground/70 transition-colors duration-150 group-hover/home-card:border-foreground group-hover/home-card:bg-foreground group-hover/home-card:text-background group-focus-within/home-card:border-foreground group-focus-within/home-card:bg-foreground group-focus-within/home-card:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-1 focus-visible:ring-offset-background motion-reduce:transition-none"
+            >
+              <span className="inline-flex min-w-0 items-center gap-1 transition-opacity duration-150 group-hover/home-card:opacity-0 group-focus-within/home-card:opacity-0 motion-reduce:transition-none">
+                <Pin className="h-3 w-3 shrink-0" strokeWidth={1.5} />
+                <span className="truncate">{ct.title}</span>
+              </span>
+            </button>
+            <HomeCardAgentActions
+              pipe={customTemplateAgentTask(ct)}
+              entryCard="custom"
+              placement="chip"
+            />
+          </div>
         ))}
         <button
           type="button"

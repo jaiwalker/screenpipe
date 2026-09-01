@@ -22,7 +22,7 @@ import {
   type AgentHandoffTarget,
 } from "@/lib/first-run/agent-handoff";
 import { entryCardForHomeTemplate } from "@/lib/chat/response-feedback";
-import { type TemplatePipe } from "@/lib/hooks/use-pipes";
+import { type ChatEntryCard } from "@/lib/chat/types";
 import { commands } from "@/lib/utils/tauri";
 
 type HomeCardAgentId = "claude" | "cursor" | "codex";
@@ -49,7 +49,14 @@ const HOME_CARD_AGENT_TARGETS = handoffTargets().filter(
     target.id === "claude" || target.id === "cursor" || target.id === "codex",
 );
 
-function taskForPipe(pipe: TemplatePipe): string {
+export interface HomeCardAgentTask {
+  name: string;
+  title: string;
+  description?: string;
+  previewPrompt?: string;
+}
+
+function taskForPipe(pipe: HomeCardAgentTask): string {
   const task = (pipe.previewPrompt || pipe.description || pipe.title).trim();
   return /[.!?]$/.test(task) ? task : `${task}.`;
 }
@@ -60,7 +67,7 @@ function taskForPipe(pipe: TemplatePipe): string {
  * carries the card's intent and a concrete recovery path when setup is absent.
  */
 export function buildHomeCardAgentPrompt(
-  pipe: TemplatePipe,
+  pipe: HomeCardAgentTask,
   agentId: HomeCardAgentId,
 ): string {
   return `If Screenpipe is not already available in this agent, install its skills and MCP from ${SCREENPIPE_GITHUB_URL} by running:
@@ -102,12 +109,20 @@ function resultDescription(state: LaunchState, label: string): string {
   return `Opening ${label}.`;
 }
 
-export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
+export function HomeCardAgentActions({
+  pipe,
+  entryCard,
+  placement = "card",
+}: {
+  pipe: HomeCardAgentTask;
+  entryCard?: ChatEntryCard;
+  placement?: "card" | "chip";
+}) {
   const [state, setState] = useState<LaunchState | null>(null);
   const [activeAgent, setActiveAgent] = useState<HomeCardAgentId | null>(null);
   const viewedAgents = useRef(new Set<HomeCardAgentId>());
   const pending = state === "opening";
-  const card = entryCardForHomeTemplate(pipe.name);
+  const card = entryCard ?? entryCardForHomeTemplate(pipe.name);
 
   const trackAgentViewed = (
     agent: HomeCardAgentId,
@@ -183,9 +198,12 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
       data-testid={`home-card-agent-actions-${pipe.name}`}
       data-state={state ?? "idle"}
       data-agent={activeAgent ?? undefined}
+      data-placement={placement}
       role="group"
       aria-label={`Run ${pipe.title} in another agent`}
-      className={`absolute right-3 top-1/2 z-20 flex -translate-y-1/2 items-center gap-0.5 text-foreground transition-opacity duration-150 motion-reduce:transition-none ${
+      className={`absolute top-1/2 z-20 flex -translate-y-1/2 items-center gap-0.5 text-foreground transition-opacity duration-150 motion-reduce:transition-none ${
+        placement === "chip" ? "left-1/2 -translate-x-1/2" : "right-3"
+      } ${
         state
           ? "pointer-events-auto opacity-100"
           : "pointer-events-none opacity-0 group-hover/home-card:pointer-events-auto group-hover/home-card:opacity-100 group-focus-within/home-card:pointer-events-auto group-focus-within/home-card:opacity-100"
@@ -232,7 +250,7 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
                 </button>
               </TooltipTrigger>
               <TooltipContent
-                side="right"
+                side={placement === "chip" ? "bottom" : "right"}
                 sideOffset={6}
                 className="rounded-md px-2.5 py-1.5 text-[11px] font-normal"
               >
