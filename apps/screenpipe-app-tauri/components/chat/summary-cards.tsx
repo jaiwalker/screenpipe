@@ -34,6 +34,7 @@ import {
   type UserGoalCategory,
 } from "@/lib/live-views/onboarding-activation";
 import { CustomSummaryBuilder } from "./custom-summary-builder";
+import { HomeCardAgentActions } from "./home-card-agent-actions";
 
 interface SummaryCardsProps {
   onSendMessage: (
@@ -99,7 +100,7 @@ function HomeCardArrow({ slug }: { slug: string }) {
   return (
     <ArrowRight
       data-testid={`home-card-arrow-${slug}`}
-      className="h-4 w-4 shrink-0 text-foreground/55 transition-transform duration-150 group-hover:translate-x-0.5 group-hover:text-background motion-reduce:transition-none"
+      className="h-4 w-4 shrink-0 text-foreground/55 transition-all duration-150 group-hover/home-card:translate-x-0.5 group-hover/home-card:opacity-0 group-hover/home-card:text-background group-focus-within/home-card:opacity-0 motion-reduce:transition-none"
       strokeWidth={1.5}
       aria-hidden
     />
@@ -220,61 +221,67 @@ export function SummaryCards({
 
       {/* The onboarding goal or General Settings choice determines priority. */}
       {featured[0] && (
-        <button
-          type="button"
-          data-testid={`summary-card-${featured[0].name}`}
-          onClick={() => handleCardClick(featured[0])}
-          {...promptPreviewHandlers(
-            previewPromptForPipe(featured[0]),
-            onPreviewPrompt,
-          )}
-          className="group relative mb-1.5 w-full max-w-lg cursor-pointer rounded-lg border border-foreground/25 border-l-2 border-l-signal bg-card px-4 py-3.5 text-left text-foreground transition-colors duration-150 hover:border-foreground hover:bg-foreground hover:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
-        >
-          <div className="flex items-center gap-3">
-            <HomeCardIcon
-              slug={featured[0].name}
-              className="h-5 w-5 shrink-0 text-foreground/70 group-hover:text-background"
-            />
-            <div className="flex-1">
-              <div className="text-sm font-semibold group-hover:text-background leading-tight">
-                {featured[0].title}
+        <div className="group/home-card relative mb-1.5 w-full max-w-lg">
+          <button
+            type="button"
+            data-testid={`summary-card-${featured[0].name}`}
+            onClick={() => handleCardClick(featured[0])}
+            {...promptPreviewHandlers(
+              previewPromptForPipe(featured[0]),
+              onPreviewPrompt,
+            )}
+            className="w-full cursor-pointer rounded-lg border border-foreground/25 border-l-2 border-l-signal bg-card px-4 py-3.5 text-left text-foreground transition-colors duration-150 group-hover/home-card:border-foreground group-hover/home-card:bg-foreground group-hover/home-card:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
+          >
+            <div className="flex items-center gap-3">
+              <HomeCardIcon
+                slug={featured[0].name}
+                className="h-5 w-5 shrink-0 text-foreground/70 group-hover/home-card:text-background"
+              />
+              <div className="flex-1 pr-8">
+                <div className="text-sm font-semibold group-hover/home-card:text-background leading-tight">
+                  {featured[0].title}
+                </div>
+                <div className="text-xs text-muted-foreground group-hover/home-card:text-background/60 leading-tight mt-0.5">
+                  {featured[0].description}
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground group-hover:text-background/60 leading-tight mt-0.5">
-                {featured[0].description}
-              </div>
+              <HomeCardArrow slug={featured[0].name} />
             </div>
-            <HomeCardArrow slug={featured[0].name} />
-          </div>
-        </button>
+          </button>
+          <HomeCardAgentActions pipe={featured[0]} />
+        </div>
       )}
 
       {featured[1] && (
-        <button
-          type="button"
-          data-testid={`summary-card-${featured[1].name}`}
-          onClick={() => handleCardClick(featured[1])}
-          {...promptPreviewHandlers(
-            previewPromptForPipe(featured[1]),
-            onPreviewPrompt,
-          )}
-          className="group mb-1.5 w-full max-w-lg cursor-pointer rounded-lg border border-foreground/20 bg-card px-4 py-3 text-left text-foreground transition-colors duration-150 hover:border-foreground hover:bg-foreground hover:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
-        >
-          <div className="flex items-center gap-3">
-            <HomeCardIcon
-              slug={featured[1].name}
-              className="h-4 w-4 shrink-0 text-foreground/65 group-hover:text-background"
-            />
-            <div className="flex-1">
-              <div className="text-xs font-semibold text-foreground/85 group-hover:text-background leading-tight">
-                {featured[1].title}
+        <div className="group/home-card relative mb-1.5 w-full max-w-lg">
+          <button
+            type="button"
+            data-testid={`summary-card-${featured[1].name}`}
+            onClick={() => handleCardClick(featured[1])}
+            {...promptPreviewHandlers(
+              previewPromptForPipe(featured[1]),
+              onPreviewPrompt,
+            )}
+            className="w-full cursor-pointer rounded-lg border border-foreground/20 bg-card px-4 py-3 text-left text-foreground transition-colors duration-150 group-hover/home-card:border-foreground group-hover/home-card:bg-foreground group-hover/home-card:text-background focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
+          >
+            <div className="flex items-center gap-3">
+              <HomeCardIcon
+                slug={featured[1].name}
+                className="h-4 w-4 shrink-0 text-foreground/65 group-hover/home-card:text-background"
+              />
+              <div className="flex-1 pr-8">
+                <div className="text-xs font-semibold text-foreground/85 group-hover/home-card:text-background leading-tight">
+                  {featured[1].title}
+                </div>
+                <div className="text-xs text-muted-foreground group-hover/home-card:text-background/70 leading-tight mt-0.5">
+                  {featured[1].description}
+                </div>
               </div>
-              <div className="text-xs text-muted-foreground group-hover:text-background/70 leading-tight mt-0.5">
-                {featured[1].description}
-              </div>
+              <HomeCardArrow slug={featured[1].name} />
             </div>
-            <HomeCardArrow slug={featured[1].name} />
-          </div>
-        </button>
+          </button>
+          <HomeCardAgentActions pipe={featured[1]} />
+        </div>
       )}
 
       {/* ─── Quick action chips ───────────────────────────────────────────── */}

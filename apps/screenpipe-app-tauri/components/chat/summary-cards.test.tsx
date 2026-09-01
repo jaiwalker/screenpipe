@@ -89,6 +89,44 @@ describe("SummaryCards", () => {
     expect(screen.queryByTestId("summary-cards-more")).not.toBeInTheDocument();
   });
 
+  it("progressively reveals external-agent actions on the two prominent cards", () => {
+    render(
+      <SummaryCards
+        onSendMessage={vi.fn()}
+        customTemplates={[]}
+        onSaveCustomTemplate={vi.fn()}
+        onUpdateCustomTemplate={vi.fn()}
+        onDeleteCustomTemplate={vi.fn()}
+        userGoalCategory="work_memory"
+      />,
+    );
+
+    const dayRecapActions = screen.getByTestId(
+      "home-card-agent-actions-day-recap",
+    );
+    const missedTodoActions = screen.getByTestId(
+      "home-card-agent-actions-missed-todos",
+    );
+    expect(dayRecapActions).toHaveClass("opacity-0", "pointer-events-none");
+    expect(dayRecapActions.className).toContain(
+      "group-hover/home-card:opacity-100",
+    );
+    expect(dayRecapActions.className).toContain(
+      "group-focus-within/home-card:opacity-100",
+    );
+    expect(missedTodoActions).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("home-card-agent-actions-time-breakdown"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("home-card-agent-actions-automate-my-work"),
+    ).not.toBeInTheDocument();
+
+    const card = screen.getByTestId("summary-card-day-recap");
+    const claude = screen.getAllByRole("button", { name: "Run in Claude" })[0];
+    expect(card.contains(claude)).toBe(false);
+  });
+
   it("makes available home actions visibly interactive and keyboard focusable", () => {
     render(
       <SummaryCards
