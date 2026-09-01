@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   buildHomeCardAgentPrompt,
+  HOME_CARD_AGENT_TOOLTIP,
   HomeCardAgentActions,
 } from "./home-card-agent-actions";
 
@@ -61,6 +62,14 @@ describe("HomeCardAgentActions", () => {
     expect(
       screen.getByRole("button", { name: "Run in Codex" }),
     ).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("button", { name: "Run in Codex" })
+        .querySelector("img"),
+    ).toHaveAttribute("src", "/images/openai.svg");
+    expect(HOME_CARD_AGENT_TOOLTIP).toBe(
+      "run this in your favorite agent",
+    );
   });
 
   it("tracks each agent action once when it is hovered or keyboard-focused", () => {

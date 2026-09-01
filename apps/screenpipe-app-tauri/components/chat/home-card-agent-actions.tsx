@@ -30,6 +30,8 @@ type LaunchState = "opening" | "opened" | "copied" | "unavailable";
 
 const SCREENPIPE_GITHUB_URL = "https://github.com/screenpipe/screenpipe";
 
+export const HOME_CARD_AGENT_TOOLTIP = "run this in your favorite agent";
+
 const SETUP_TARGETS: Record<HomeCardAgentId, string> = {
   claude: "claude-desktop",
   cursor: "cursor",
@@ -81,11 +83,7 @@ function AgentLogo({ id }: { id: HomeCardAgentId }) {
   if (id === "cursor") return <CursorLogo className={className} />;
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src="/images/codex.svg"
-      alt=""
-      className={`${className} dark:invert`}
-    />
+    <img src="/images/openai.svg" alt="" className={className} />
   );
 }
 
@@ -187,7 +185,7 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
       data-agent={activeAgent ?? undefined}
       role="group"
       aria-label={`Run ${pipe.title} in another agent`}
-      className={`absolute right-3 top-1/2 z-20 flex -translate-y-1/2 items-center text-foreground transition-opacity duration-150 motion-reduce:transition-none ${
+      className={`absolute right-3 top-1/2 z-20 flex -translate-y-1/2 items-center gap-0.5 text-foreground transition-opacity duration-150 motion-reduce:transition-none ${
         state
           ? "pointer-events-auto opacity-100"
           : "pointer-events-none opacity-0 group-hover/home-card:pointer-events-auto group-hover/home-card:opacity-100 group-focus-within/home-card:pointer-events-auto group-focus-within/home-card:opacity-100"
@@ -201,7 +199,7 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
         {statusLabel(state)}
       </span>
       <TooltipProvider delayDuration={120}>
-        {HOME_CARD_AGENT_TARGETS.map((target, index) => {
+        {HOME_CARD_AGENT_TARGETS.map((target) => {
           const label = AGENT_LABELS[target.id];
           const isOpening = pending && activeAgent === target.id;
           const isResult = !pending && state && activeAgent === target.id;
@@ -216,9 +214,9 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
                   onPointerEnter={() => trackAgentViewed(target.id, "hover")}
                   onFocus={() => trackAgentViewed(target.id, "keyboard")}
                   onClick={() => void launch(target)}
-                  className={`flex h-6 w-6 items-center justify-center border border-border bg-background transition-[color,background-color,border-color,transform] duration-150 hover:z-10 hover:-translate-y-0.5 hover:border-foreground hover:bg-foreground hover:text-background focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground disabled:cursor-wait disabled:opacity-60 motion-reduce:transform-none motion-reduce:transition-none ${
-                    index > 0 ? "-ml-1.5" : ""
-                  } ${isResult ? "z-10 border-signal" : ""}`}
+                  className={`flex h-5 w-5 items-center justify-center rounded-full opacity-75 transition-[color,background-color,opacity,transform] duration-150 hover:z-10 hover:scale-110 hover:bg-background/10 hover:opacity-100 focus-visible:z-10 focus-visible:bg-background/10 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-background disabled:cursor-wait disabled:opacity-50 motion-reduce:transform-none motion-reduce:transition-none ${
+                    isResult ? "z-10 text-signal opacity-100" : ""
+                  }`}
                 >
                   {isOpening ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
@@ -235,12 +233,10 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
               </TooltipTrigger>
               <TooltipContent
                 side="right"
-                sideOffset={8}
-                className="rounded-none px-2 py-1 font-mono text-[10px]"
+                sideOffset={6}
+                className="rounded-md px-2.5 py-1.5 text-[11px] font-normal"
               >
-                {isResult
-                  ? resultDescription(state, label)
-                  : `Run this in ${label}. The prompt is copied first as a fallback.`}
+                {HOME_CARD_AGENT_TOOLTIP}
               </TooltipContent>
             </Tooltip>
           );
