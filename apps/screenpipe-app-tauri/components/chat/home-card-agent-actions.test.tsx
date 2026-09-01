@@ -63,6 +63,32 @@ describe("HomeCardAgentActions", () => {
     ).toBeInTheDocument();
   });
 
+  it("tracks each agent action once when it is hovered or keyboard-focused", () => {
+    render(<HomeCardAgentActions pipe={DAY_RECAP} />);
+    const claude = screen.getByRole("button", { name: "Run in Claude" });
+    const codex = screen.getByRole("button", { name: "Run in Codex" });
+
+    fireEvent.pointerEnter(claude);
+    fireEvent.focus(claude);
+    fireEvent.focus(codex);
+
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "home_card_agent_action_viewed",
+      { agent: "claude", card: "day_recap", trigger: "hover" },
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "home_card_agent_action_viewed",
+      { agent: "codex", card: "day_recap", trigger: "keyboard" },
+    );
+    expect(
+      mocks.capture.mock.calls.filter(
+        ([event, properties]) =>
+          event === "home_card_agent_action_viewed" &&
+          properties.agent === "claude",
+      ),
+    ).toHaveLength(1);
+  });
+
   it("builds a short, target-specific setup and task prompt", () => {
     const prompt = buildHomeCardAgentPrompt(DAY_RECAP, "codex");
 
@@ -93,9 +119,14 @@ describe("HomeCardAgentActions", () => {
     );
     expect(mocks.capture).toHaveBeenCalledWith(
       "home_card_agent_handoff_clicked",
+      { agent: "claude", card: "day_recap" },
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "home_card_agent_handoff_completed",
       expect.objectContaining({
         agent: "claude",
         card: "day_recap",
+        outcome: "opened",
         opened: true,
         prefilled: true,
         copy_only: false,
@@ -119,9 +150,10 @@ describe("HomeCardAgentActions", () => {
       expect(screen.getByRole("status")).toHaveTextContent("copied"),
     );
     expect(mocks.capture).toHaveBeenCalledWith(
-      "home_card_agent_handoff_clicked",
+      "home_card_agent_handoff_completed",
       expect.objectContaining({
         agent: "codex",
+        outcome: "copied",
         opened: false,
         prefilled: false,
         copy_only: true,
@@ -144,6 +176,15 @@ describe("HomeCardAgentActions", () => {
 
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveTextContent("unavailable"),
+    );
+    expect(mocks.capture).toHaveBeenCalledWith(
+      "home_card_agent_handoff_completed",
+      expect.objectContaining({
+        agent: "cursor",
+        outcome: "unavailable",
+        opened: false,
+        clipboard_copied: false,
+      }),
     );
   });
 });

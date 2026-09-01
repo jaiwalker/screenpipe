@@ -4,7 +4,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Check, Clipboard, Loader2, X } from "lucide-react";
 import posthog from "posthog-js";
 
@@ -107,7 +107,22 @@ function resultDescription(state: LaunchState, label: string): string {
 export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
   const [state, setState] = useState<LaunchState | null>(null);
   const [activeAgent, setActiveAgent] = useState<HomeCardAgentId | null>(null);
+  const viewedAgents = useRef(new Set<HomeCardAgentId>());
   const pending = state === "opening";
+  const card = entryCardForHomeTemplate(pipe.name);
+
+  const trackAgentViewed = (
+    agent: HomeCardAgentId,
+    trigger: "hover" | "keyboard",
+  ) => {
+    if (viewedAgents.current.has(agent)) return;
+    viewedAgents.current.add(agent);
+    posthog.capture("home_card_agent_action_viewed", {
+      agent,
+      card,
+      trigger,
+    });
+  };
 
   const launch = async (
     target: AgentHandoffTarget & { id: HomeCardAgentId },
@@ -115,6 +130,10 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
     const prompt = buildHomeCardAgentPrompt(pipe, target.id);
     setActiveAgent(target.id);
     setState("opening");
+    posthog.capture("home_card_agent_handoff_clicked", {
+      agent: target.id,
+      card,
+    });
 
     const result = await performAgentHandoff(
       target,
@@ -149,9 +168,10 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
       ...(nextState === "unavailable" ? { variant: "destructive" as const } : {}),
     });
 
-    posthog.capture("home_card_agent_handoff_clicked", {
+    posthog.capture("home_card_agent_handoff_completed", {
       agent: target.id,
-      card: entryCardForHomeTemplate(pipe.name),
+      card,
+      outcome: nextState,
       opened: result.launched,
       prefilled: result.prefilled,
       replayed: result.replayed,
@@ -193,6 +213,8 @@ export function HomeCardAgentActions({ pipe }: { pipe: TemplatePipe }) {
                   data-testid={`home-card-agent-${pipe.name}-${target.id}`}
                   aria-label={`Run in ${label}`}
                   disabled={pending}
+                  onPointerEnter={() => trackAgentViewed(target.id, "hover")}
+                  onFocus={() => trackAgentViewed(target.id, "keyboard")}
                   onClick={() => void launch(target)}
                   className={`flex h-6 w-6 items-center justify-center border border-border bg-background transition-[color,background-color,border-color,transform] duration-150 hover:z-10 hover:-translate-y-0.5 hover:border-foreground hover:bg-foreground hover:text-background focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground disabled:cursor-wait disabled:opacity-60 motion-reduce:transform-none motion-reduce:transition-none ${
                     index > 0 ? "-ml-1.5" : ""
