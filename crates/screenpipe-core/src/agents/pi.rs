@@ -3743,6 +3743,25 @@ fn download_portable_git() -> std::result::Result<String, String> {
 }
 
 #[cfg(windows)]
+fn rename_directory_with_retry(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match std::fs::rename(source, destination) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    && std::time::Instant::now() < deadline =>
+            {
+                // Git Bash under Windows-on-ARM emulation and endpoint security
+                // may briefly retain image handles after the startup probe exits.
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(windows)]
 fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<String, String> {
     let git_dir = screenpipe_dir.join("git-portable");
     let bash_path = git_dir.join("bin").join("bash.exe");
@@ -3907,7 +3926,7 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
 
     // Atomic rename: move extracted dir to final location
     let _ = std::fs::remove_dir_all(&git_dir);
-    std::fs::rename(&extract_temp, &git_dir).map_err(|e| {
+    rename_directory_with_retry(&extract_temp, &git_dir).map_err(|e| {
         let _ = std::fs::remove_dir_all(&extract_temp);
         format!(
             "Failed to move extracted PortableGit to final location: {}",
