@@ -21,11 +21,9 @@
 //!    re-acquire): the browser's conference URL now resolves to a different
 //!    room on the same platform. Immediate.
 //! 2. **Room identity changed while active**: a resolved browser candidate
-//!    shows a different room for a sustained window with no sighting of the
-//!    current room. A matching next calendar event confirms quickly. Without
-//!    calendar evidence, ask after ten seconds and keep the longer automatic
-//!    fallback so glancing at the next meeting's link cannot silently split
-//!    the call.
+//!    shows a different room, so the old meeting ends and the new one starts.
+//!    An ended old tab may remain visible; its old identity does not veto the
+//!    newly observed room.
 //! 3. **Calendar boundary on native re-acquire**: a native app (no URL) drops
 //!    the mic and re-takes it after the bound calendar event ended and the
 //!    calendar now selects a different event compatible with that platform.
@@ -238,12 +236,9 @@ pub(crate) fn detect_room_change(
             tracker.clear();
             return None;
         };
-        if current_room_seen {
-            // Both rooms visible in the evidence window: the user may be
-            // peeking at the next link. Not a boundary yet.
-            tracker.clear();
-            return None;
-        }
+        // The old room can remain visible after the user leaves it (for
+        // example, an ended Google Meet tab left open). Do not let that stale
+        // identity veto the newly observed room.
 
         // The mic was released (Ending) or the meeting's own session is no
         // longer among the candidates: the old call is over and the browser
@@ -251,7 +246,7 @@ pub(crate) fn detect_room_change(
         let old_session_live = session_candidates
             .iter()
             .any(|candidate| candidate_session_key(candidate) == Some(session_key));
-        if let Some(since) = ending_since {
+        if let Some(since) = ending_since.filter(|_| !current_room_seen) {
             tracker.clear();
             return Some(room_changed(
                 meeting_id,
@@ -263,7 +258,7 @@ pub(crate) fn detect_room_change(
                 next,
             ));
         }
-        if !old_session_live {
+        if !old_session_live && !current_room_seen {
             tracker.clear();
             return Some(room_changed(
                 meeting_id,

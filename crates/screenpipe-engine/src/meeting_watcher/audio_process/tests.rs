@@ -3348,7 +3348,7 @@ fn mic_reacquired_in_a_different_room_rolls_the_meeting_over_immediately() {
 }
 
 #[test]
-fn new_room_while_active_needs_sustained_evidence_and_resets_when_old_room_reappears() {
+fn new_room_while_active_needs_sustained_evidence_when_configured() {
     let process = arc_process();
     let t0 = Instant::now();
     let active = active_meet(7, &process, ROOM_A, t0 - Duration::from_secs(600));
@@ -3377,9 +3377,8 @@ fn new_room_while_active_needs_sustained_evidence_and_resets_when_old_room_reapp
     )
     .is_none());
 
-    // The current room shows up again (user peeked at the next link and came
-    // back): ambiguous, so the pending change is dropped.
-    let both = vec![room_a.clone(), room_b.clone()];
+    // Seeing both rooms does not let the old room hide the new identity.
+    let both = vec![room_a, room_b.clone()];
     assert!(detect_room_change(
         &active,
         &both,
@@ -3388,23 +3387,13 @@ fn new_room_while_active_needs_sustained_evidence_and_resets_when_old_room_reapp
         &policy
     )
     .is_none());
-    assert!(tracker.pending_identity().is_none());
+    assert_eq!(tracker.pending_identity(), Some(ROOM_B_IDENTITY));
 
-    // B alone again: the clock restarts and only a full window fires.
-    let t1 = t0 + Duration::from_secs(30);
     assert!(detect_room_change(
         &active,
         std::slice::from_ref(&room_b),
         &mut tracker,
-        t1,
-        &policy
-    )
-    .is_none());
-    assert!(detect_room_change(
-        &active,
-        std::slice::from_ref(&room_b),
-        &mut tracker,
-        t1 + Duration::from_secs(44),
+        t0 + Duration::from_secs(44),
         &policy
     )
     .is_none());
@@ -3412,7 +3401,7 @@ fn new_room_while_active_needs_sustained_evidence_and_resets_when_old_room_reapp
         &active,
         std::slice::from_ref(&room_b),
         &mut tracker,
-        t1 + Duration::from_secs(45),
+        t0 + Duration::from_secs(45),
         &policy,
     ) {
         Some(AudioProcessStateAction::RoomChanged {
@@ -3423,13 +3412,45 @@ fn new_room_while_active_needs_sustained_evidence_and_resets_when_old_room_reapp
         }) => {
             assert_eq!(ended_meeting_id, 7);
             assert_eq!(
-                changed_at, t1,
+                changed_at, t0,
                 "the boundary is the first uninterrupted sighting"
             );
             assert_eq!(meeting_url.as_deref(), Some(ROOM_B));
         }
         other => panic!("expected RoomChanged, got {other:?}"),
     }
+}
+
+#[test]
+fn ended_old_tab_left_open_does_not_hide_the_new_room() {
+    let process = arc_process();
+    let t0 = Instant::now();
+    let active = active_meet(7, &process, ROOM_A, t0 - Duration::from_secs(600));
+    let room_a = meet_candidate(&process, ROOM_A, t0);
+    let room_b = meet_candidate(&process, ROOM_B, t0);
+    let both = vec![room_a, room_b];
+    let rooms = HashSet::new();
+    let policy = RoomChangePolicy {
+        confirm_window: ROOM_CHANGE_CONFIRM_WINDOW,
+        prompt_window: ROOM_CHANGE_PROMPT_WINDOW,
+        calendar_confirm_window: ROOM_CHANGE_CALENDAR_CONFIRM_WINDOW,
+        calendar_room_identities: &rooms,
+        calendar_boundary_crossed: false,
+    };
+    let mut tracker = RoomChangeTracker::default();
+
+    match detect_room_change(&active, &both, &mut tracker, t0, &policy) {
+        Some(AudioProcessStateAction::RoomChanged {
+            ended_meeting_id,
+            meeting_url,
+            ..
+        }) => {
+            assert_eq!(ended_meeting_id, 7);
+            assert_eq!(meeting_url.as_deref(), Some(ROOM_B));
+        }
+        other => panic!("expected RoomChanged, got {other:?}"),
+    }
+    assert!(tracker.take_offer().is_none());
 }
 
 #[test]

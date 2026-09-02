@@ -59,22 +59,15 @@ const STICKY_PROCESS_WINDOW: Duration = Duration::from_secs(4);
 /// constant.
 const CANDIDATE_CONFIRM_WINDOW: Duration = Duration::from_secs(1);
 const ENDING_GRACE: Duration = Duration::from_secs(20);
-/// Ask for confirmation after a different room has remained the only visible
-/// room for ten seconds while the same browser audio session stays active.
-/// This gives users without a calendar a fast path without turning a preview
-/// of the next meeting link into an automatic split.
+/// Fallback prompt threshold retained for explicitly delayed policies. The
+/// production policy below confirms a different room immediately, so this is
+/// not reached in the normal detector loop.
 const ROOM_CHANGE_PROMPT_WINDOW: Duration = Duration::from_secs(10);
-/// How long a browser must show a DIFFERENT conference room — with the current
-/// room never seen — while the meeting is still `Active` on the same audio
-/// session before the detector treats it as the next call. Long on purpose:
-/// opening the next meeting's link mid-call to check it must not split the
-/// call. (Mic release + re-acquire in a new room needs no wait at all; see
-/// `room_change`.)
-const ROOM_CHANGE_CONFIRM_WINDOW: Duration = Duration::from_secs(45);
-/// The shorter window used when the new room is the conference URL of a
-/// different scheduled calendar event that is in progress or about to start —
-/// two independent signals agree, so only a single stale frame is guarded.
-const ROOM_CHANGE_CALENDAR_CONFIRM_WINDOW: Duration = Duration::from_secs(5);
+/// A different conference-room identity is an immediate boundary: end the old
+/// meeting and start the new one, even when an ended old tab remains visible.
+const ROOM_CHANGE_CONFIRM_WINDOW: Duration = Duration::ZERO;
+/// Calendar-confirmed room changes follow the same immediate rule.
+const ROOM_CHANGE_CALENDAR_CONFIRM_WINDOW: Duration = Duration::ZERO;
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const UNKNOWN_BROWSER_PLATFORM: &str = "Unknown";
