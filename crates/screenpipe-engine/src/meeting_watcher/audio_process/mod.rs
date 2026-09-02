@@ -8,6 +8,9 @@
 //! bundle/app metadata; browser/helper processes must resolve to a concrete
 //! meeting platform URL/profile before this watcher starts or resumes a meeting.
 
+use crate::meeting_watcher::shared::calendar::{
+    calendar_boundary_crossed, calendar_room_identities_now,
+};
 use crate::meeting_watcher::shared::ignore::{
     browser_window_matches_meeting, contains_normalized_term, is_browser_app,
     meeting_app_is_ignored_with_terms, normalize_ignored_meeting_apps,
@@ -56,6 +59,17 @@ const STICKY_PROCESS_WINDOW: Duration = Duration::from_secs(4);
 /// constant.
 const CANDIDATE_CONFIRM_WINDOW: Duration = Duration::from_secs(1);
 const ENDING_GRACE: Duration = Duration::from_secs(20);
+/// How long a browser must show a DIFFERENT conference room — with the current
+/// room never seen — while the meeting is still `Active` on the same audio
+/// session before the detector treats it as the next call. Long on purpose:
+/// opening the next meeting's link mid-call to check it must not split the
+/// call. (Mic release + re-acquire in a new room needs no wait at all; see
+/// `room_change`.)
+const ROOM_CHANGE_CONFIRM_WINDOW: Duration = Duration::from_secs(45);
+/// The shorter window used when the new room is the conference URL of a
+/// different scheduled calendar event that is in progress or about to start —
+/// two independent signals agree, so only a single stale frame is guarded.
+const ROOM_CHANGE_CALENDAR_CONFIRM_WINDOW: Duration = Duration::from_secs(5);
 const ACTIVE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const UNKNOWN_BROWSER_PLATFORM: &str = "Unknown";
@@ -81,6 +95,12 @@ pub(crate) use lifecycle::*;
 mod resolve;
 pub(crate) use resolve::*;
 
+mod room_change;
+pub(crate) use room_change::*;
+
+#[cfg(feature = "e2e")]
+pub mod e2e;
+
 mod state;
 pub(crate) use state::*;
 
@@ -104,6 +124,11 @@ pub async fn run_audio_process_meeting_detection_loop(
     let mut suppressed_sessions: Vec<SuppressedSession> = Vec::new();
     let mut flap_count = 0u32;
     let mut last_unresolved_browser_log: Option<Instant> = None;
+    let mut room_tracker = RoomChangeTracker::default();
+    let mut last_ended_room: Option<EndedRoom> = None;
+    // `(meeting_id, bound calendar event key)` for the live meeting, so the
+    // per-tick boundary check reads the DB once per meeting, not once per poll.
+    let mut bound_calendar_cache: Option<(i64, Option<String>)> = None;
 
     if close_orphaned_meetings_on_start {
         match db.close_orphaned_meetings().await {
@@ -270,14 +295,68 @@ pub async fn run_audio_process_meeting_detection_loop(
 
         let was_active = matches!(state, AudioProcessMeetingState::Active { .. });
         let was_ending = matches!(state, AudioProcessMeetingState::Ending { .. });
-        let (new_state, action) = advance_audio_process_state(
-            state,
-            &live_candidates,
-            &candidates,
-            now,
-            CANDIDATE_CONFIRM_WINDOW,
-            ENDING_GRACE,
-        );
+
+        // Back-to-back boundary check. Runs BEFORE the ordinary transition
+        // because that transition keeps a browser meeting alive on its audio
+        // session alone and revives an `Ending` one on the same key — both of
+        // which glue two consecutive calls in the same browser into one row.
+        let room_change = {
+            let live_meeting_id = active_or_ending_meeting_id(&state);
+            let bound_key = match live_meeting_id {
+                Some(id) => {
+                    if bound_calendar_cache.as_ref().map(|(cached, _)| *cached) != Some(id) {
+                        let key = match db.meeting_calendar_event_id(id).await {
+                            Ok(key) => key,
+                            Err(e) => {
+                                debug!(
+                                    "audio-process meeting detector: failed to read calendar binding of meeting {}: {}",
+                                    id, e
+                                );
+                                None
+                            }
+                        };
+                        bound_calendar_cache = Some((id, key));
+                    }
+                    bound_calendar_cache
+                        .as_ref()
+                        .and_then(|(_, key)| key.clone())
+                }
+                None => {
+                    bound_calendar_cache = None;
+                    None
+                }
+            };
+            let live_platform = match &state {
+                AudioProcessMeetingState::Active { platform, .. }
+                | AudioProcessMeetingState::Ending { platform, .. } => Some(platform.as_str()),
+                _ => None,
+            };
+            let calendar_rooms =
+                calendar_room_identities_now(&calendar_events, now_utc, bound_key.as_deref());
+            let boundary_crossed = live_platform.is_some_and(|platform| {
+                calendar_boundary_crossed(&calendar_events, now_utc, bound_key.as_deref(), platform)
+            });
+            let policy = RoomChangePolicy {
+                confirm_window: ROOM_CHANGE_CONFIRM_WINDOW,
+                calendar_confirm_window: ROOM_CHANGE_CALENDAR_CONFIRM_WINDOW,
+                calendar_room_identities: &calendar_rooms,
+                calendar_boundary_crossed: boundary_crossed,
+            };
+            detect_room_change(&state, &candidates, &mut room_tracker, now, &policy)
+        };
+        let (new_state, action) = match room_change {
+            // `apply_state_action` installs the new `Active` state once the
+            // old row is closed and the new one inserted.
+            Some(action) => (AudioProcessMeetingState::Idle, Some(action)),
+            None => advance_audio_process_state(
+                state,
+                &live_candidates,
+                &candidates,
+                now,
+                CANDIDATE_CONFIRM_WINDOW,
+                ENDING_GRACE,
+            ),
+        };
         if is_active_ending_flap(was_active, was_ending, &new_state) {
             flap_count = flap_count.saturating_add(1);
         }
@@ -334,6 +413,28 @@ pub async fn run_audio_process_meeting_detection_loop(
         }
 
         if let Some(action) = action {
+            // Remember which room the row that is about to close was in, so
+            // the 120s merge window can refuse to reopen it for a session that
+            // is visibly a different call.
+            match &action {
+                AudioProcessStateAction::EndMeeting {
+                    meeting_id,
+                    suppressed_session,
+                } => {
+                    last_ended_room = Some(EndedRoom {
+                        meeting_id: *meeting_id,
+                        identity: suppressed_session
+                            .as_ref()
+                            .and_then(|session| room_identity(session.meeting_url.as_deref())),
+                    });
+                }
+                // A successful room change is durably excluded from reopen by
+                // `end_reason = room_changed`, and its immediate start carries
+                // its own local guard. Do not publish it here before the DB end
+                // succeeds: a failed close must remain retryable.
+                AudioProcessStateAction::RoomChanged { .. }
+                | AudioProcessStateAction::StartMeeting { .. } => {}
+            }
             apply_state_action(
                 action,
                 &db,
@@ -344,6 +445,7 @@ pub async fn run_audio_process_meeting_detection_loop(
                 &in_meeting_flag,
                 &detector,
                 last_explicit_stop_id,
+                last_ended_room.as_ref(),
                 &calendar_events,
                 now,
                 now_utc,
