@@ -3426,7 +3426,7 @@ fn build_async_command(path: &str) -> tokio::process::Command {
                 let mut new_path = format!("{};{}", bun_dir.display(), current_path);
 
                 // On Windows, ensure bash is available for Pi's bash tool.
-                // ensure_bash_available: fast file-existence check first, then
+                // ensure_bash_available: bounded startup probe first, then
                 // OnceLock-guarded PortableGit download if needed (one-time ~50MB).
                 // Concurrent callers block on the single download, never duplicate.
                 if let Some(bash_dir) = ensure_bash_available() {
@@ -3587,7 +3587,7 @@ fn is_windows_bash_launcher(path: &str) -> bool {
 }
 
 #[cfg(any(windows, test))]
-fn first_usable_windows_bash_candidate<F>(stdout: &str, mut exists: F) -> Option<String>
+fn first_usable_windows_bash_candidate<F>(stdout: &str, mut is_usable: F) -> Option<String>
 where
     F: FnMut(&Path) -> bool,
 {
@@ -3598,8 +3598,82 @@ where
         }
 
         let path = Path::new(candidate);
-        exists(path).then(|| candidate.to_string())
+        is_usable(path).then(|| candidate.to_string())
     })
+}
+
+#[cfg(windows)]
+fn bash_executable_is_usable(path: &Path) -> bool {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const PROBE_OUTPUT: &[u8] = b"screenpipe-bash-ok";
+
+    let mut child = match std::process::Command::new(path)
+        .args(["--noprofile", "--norc", "-c", "printf screenpipe-bash-ok"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            warn!(
+                "bash candidate {} could not start: {}",
+                path.display(),
+                error
+            );
+            return false;
+        }
+    };
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stdout = Vec::new();
+                let Some(mut pipe) = child.stdout.take() else {
+                    warn!("bash candidate {} had no stdout pipe", path.display());
+                    return false;
+                };
+                if let Err(error) = pipe.read_to_end(&mut stdout) {
+                    warn!(
+                        "bash candidate {} probe output failed: {}",
+                        path.display(),
+                        error
+                    );
+                    return false;
+                }
+                let usable = status.success() && stdout == PROBE_OUTPUT;
+                if !usable {
+                    warn!(
+                        "bash candidate {} failed its startup probe (status: {})",
+                        path.display(),
+                        status
+                    );
+                }
+                return usable;
+            }
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                warn!("bash candidate {} startup probe timed out", path.display());
+                return false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                warn!(
+                    "bash candidate {} startup probe failed: {}",
+                    path.display(),
+                    error
+                );
+                return false;
+            }
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -3611,7 +3685,7 @@ pub fn find_bash_executable() -> Option<String> {
             .join("git-portable")
             .join("bin")
             .join("bash.exe");
-        if bundled.exists() {
+        if bundled.exists() && bash_executable_is_usable(&bundled) {
             info!("Found bundled bash at: {}", bundled.display());
             return Some(bundled.to_string_lossy().to_string());
         }
@@ -3623,7 +3697,7 @@ pub fn find_bash_executable() -> Option<String> {
         r"C:\Program Files (x86)\Git\bin\bash.exe",
     ];
     for p in &standard_paths {
-        if Path::new(p).exists() {
+        if Path::new(p).exists() && bash_executable_is_usable(Path::new(p)) {
             info!("Found system bash at: {}", p);
             return Some(p.to_string());
         }
@@ -3641,7 +3715,7 @@ pub fn find_bash_executable() -> Option<String> {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 if let Some(path) =
-                    first_usable_windows_bash_candidate(&stdout, |path| path.exists())
+                    first_usable_windows_bash_candidate(&stdout, bash_executable_is_usable)
                 {
                     info!("Found native bash on PATH: {}", path);
                     return Some(path);
@@ -3665,13 +3739,26 @@ fn download_portable_git() -> std::result::Result<String, String> {
     let local_app_data =
         std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA env var not set".to_string())?;
     let screenpipe_dir = PathBuf::from(&local_app_data).join("screenpipe");
+    download_portable_git_into(&screenpipe_dir)
+}
+
+#[cfg(windows)]
+fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<String, String> {
     let git_dir = screenpipe_dir.join("git-portable");
     let bash_path = git_dir.join("bin").join("bash.exe");
 
     // Already downloaded
-    if bash_path.exists() {
+    if bash_path.exists() && bash_executable_is_usable(&bash_path) {
         info!("PortableGit already present at {}", git_dir.display());
         return Ok(bash_path.to_string_lossy().to_string());
+    }
+    if bash_path.exists() {
+        warn!(
+            "PortableGit at {} failed its startup probe; reinstalling it",
+            git_dir.display()
+        );
+        std::fs::remove_dir_all(&git_dir)
+            .map_err(|e| format!("Failed to remove broken PortableGit install: {}", e))?;
     }
 
     // Pinned version for reproducibility
@@ -3810,6 +3897,12 @@ fn download_portable_git() -> std::result::Result<String, String> {
                 warn!("Failed to run post-install.bat (non-fatal): {}", e);
             }
         }
+    }
+
+    if !bash_executable_is_usable(&extracted_bash) {
+        let _ = std::fs::remove_dir_all(&extract_temp);
+        let _ = std::fs::remove_file(&temp_file);
+        return Err("Extracted PortableGit bash.exe failed its startup probe".to_string());
     }
 
     // Atomic rename: move extracted dir to final location
@@ -4068,7 +4161,7 @@ static BASH_DIR_ONCE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock:
 /// Returns the bash bin directory (for PATH injection) or None.
 #[cfg(windows)]
 pub fn ensure_bash_available() -> Option<String> {
-    // Fast path: if bash is already on disk, return immediately without touching OnceLock.
+    // Fast path: if bash is healthy, return immediately without touching OnceLock.
     // This avoids caching a stale "not found" from a previous failed attempt.
     if let Some(bash_path) = find_bash_executable() {
         return Path::new(&bash_path)
@@ -4108,8 +4201,12 @@ mod tests {
     fn windows_bash_launcher_detection_rejects_wsl_shims() {
         assert!(is_windows_bash_launcher(r#"C:\Windows\System32\bash.exe"#));
         assert!(is_windows_bash_launcher(r#"C:\Windows\Sysnative\bash.exe"#));
+        assert!(is_windows_bash_launcher(r#"C:\Windows\SysWOW64\bash.exe"#));
         assert!(is_windows_bash_launcher(
             r#"C:\Users\steve\AppData\Local\Microsoft\WindowsApps\bash.exe"#
+        ));
+        assert!(is_windows_bash_launcher(
+            r#""C:/WINDOWS/System32/BASH.EXE""#
         ));
         assert!(!is_windows_bash_launcher(
             r#"C:\Program Files\Git\bin\bash.exe"#
@@ -4128,6 +4225,65 @@ mod tests {
             first_usable_windows_bash_candidate(&candidates, |_| true).as_deref(),
             Some(r#"C:\Program Files\Git\bin\bash.exe"#)
         );
+    }
+
+    #[test]
+    fn windows_bash_candidate_skips_unusable_native_candidates() {
+        let candidates = [
+            r#"C:\tools\broken\bash.exe"#,
+            r#"C:\Windows\SysWOW64\bash.exe"#,
+            r#"C:\custom tools\git\bin\bash.exe"#,
+        ]
+        .join("\r\n");
+
+        assert_eq!(
+            first_usable_windows_bash_candidate(&candidates, |path| {
+                path == Path::new(r#"C:\custom tools\git\bin\bash.exe"#)
+            })
+            .as_deref(),
+            Some(r#"C:\custom tools\git\bin\bash.exe"#)
+        );
+    }
+
+    #[test]
+    fn windows_bash_candidate_rejects_wsl_only_output() {
+        let candidates = [
+            r#"C:\Windows\System32\bash.exe"#,
+            r#"C:\Users\steve\AppData\Local\Microsoft\WindowsApps\bash.exe"#,
+        ]
+        .join("\n");
+
+        assert_eq!(
+            first_usable_windows_bash_candidate(&candidates, |_| true),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "network-backed acceptance test for disposable Windows VMs"]
+    fn portable_git_fresh_install_and_broken_install_repair() {
+        let root = std::env::temp_dir().join(format!(
+            "screenpipe-portable-git-test-{}",
+            std::process::id()
+        ));
+        let screenpipe_dir = root.join("screenpipe");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let first = download_portable_git_into(&screenpipe_dir)
+            .expect("fresh PortableGit install should succeed");
+        assert!(bash_executable_is_usable(Path::new(&first)));
+
+        std::fs::write(&first, b"broken portable git")
+            .expect("test should corrupt the managed bash executable");
+        assert!(!bash_executable_is_usable(Path::new(&first)));
+
+        let repaired = download_portable_git_into(&screenpipe_dir)
+            .expect("broken managed PortableGit install should be replaced");
+        assert_eq!(repaired, first);
+        assert!(bash_executable_is_usable(Path::new(&repaired)));
+
+        std::fs::remove_dir_all(&root).expect("test should clean up its PortableGit install");
     }
 
     #[test]
