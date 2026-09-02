@@ -3567,7 +3567,41 @@ pub fn kill_process_group(pid: u32) -> Result<()> {
 /// (where bash is always available). Checks:
 /// 1. Our bundled PortableGit in %LOCALAPPDATA%\screenpipe\git-portable\
 /// 2. Standard Git for Windows install
-/// 3. bash.exe on PATH (Git Bash, MSYS2, WSL, etc.)
+/// 3. A native Windows bash.exe on PATH (Git Bash, MSYS2, etc.)
+///
+/// Windows' `System32\\bash.exe` and the WindowsApps alias are WSL launchers,
+/// not standalone shells. Treating either as usable makes Pi depend on an
+/// installed WSL distribution and prevents the PortableGit fallback.
+#[cfg(any(windows, test))]
+fn is_windows_bash_launcher(path: &str) -> bool {
+    let normalized = path
+        .trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+
+    normalized.ends_with("\\windows\\system32\\bash.exe")
+        || normalized.ends_with("\\windows\\sysnative\\bash.exe")
+        || normalized.ends_with("\\windows\\syswow64\\bash.exe")
+        || normalized.contains("\\microsoft\\windowsapps\\bash.exe")
+}
+
+#[cfg(any(windows, test))]
+fn first_usable_windows_bash_candidate<F>(stdout: &str, mut exists: F) -> Option<String>
+where
+    F: FnMut(&Path) -> bool,
+{
+    stdout.lines().find_map(|line| {
+        let candidate = line.trim().trim_matches('"');
+        if candidate.is_empty() || is_windows_bash_launcher(candidate) {
+            return None;
+        }
+
+        let path = Path::new(candidate);
+        exists(path).then(|| candidate.to_string())
+    })
+}
+
 #[cfg(windows)]
 pub fn find_bash_executable() -> Option<String> {
     // 1. Bundled PortableGit in screenpipe's data directory
@@ -3606,12 +3640,14 @@ pub fn find_bash_executable() -> Option<String> {
         {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                if let Some(line) = stdout.lines().next() {
-                    let path = line.trim().to_string();
-                    if !path.is_empty() && Path::new(&path).exists() {
-                        info!("Found bash on PATH: {}", path);
-                        return Some(path);
-                    }
+                if let Some(path) =
+                    first_usable_windows_bash_candidate(&stdout, |path| path.exists())
+                {
+                    info!("Found native bash on PATH: {}", path);
+                    return Some(path);
+                }
+                if stdout.lines().any(is_windows_bash_launcher) {
+                    info!("Ignoring Windows WSL bash launcher; PortableGit is required instead");
                 }
             }
         }
@@ -4067,6 +4103,32 @@ pub fn ensure_bash_available() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_bash_launcher_detection_rejects_wsl_shims() {
+        assert!(is_windows_bash_launcher(r#"C:\Windows\System32\bash.exe"#));
+        assert!(is_windows_bash_launcher(r#"C:\Windows\Sysnative\bash.exe"#));
+        assert!(is_windows_bash_launcher(
+            r#"C:\Users\steve\AppData\Local\Microsoft\WindowsApps\bash.exe"#
+        ));
+        assert!(!is_windows_bash_launcher(
+            r#"C:\Program Files\Git\bin\bash.exe"#
+        ));
+    }
+
+    #[test]
+    fn windows_bash_candidate_skips_wsl_and_uses_native_shell() {
+        let candidates = [
+            r#"C:\Windows\System32\bash.exe"#,
+            r#"C:\Program Files\Git\bin\bash.exe"#,
+        ]
+        .join("\n");
+
+        assert_eq!(
+            first_usable_windows_bash_candidate(&candidates, |_| true).as_deref(),
+            Some(r#"C:\Program Files\Git\bin\bash.exe"#)
+        );
+    }
 
     #[test]
     fn managed_pi_install_disables_dependency_lifecycle_scripts() {
