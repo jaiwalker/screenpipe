@@ -3743,13 +3743,16 @@ fn download_portable_git() -> std::result::Result<String, String> {
 }
 
 #[cfg(windows)]
-fn rename_directory_with_retry(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn retry_transient_windows_file_lock(
+    mut operation: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        match std::fs::rename(source, destination) {
+        match operation() {
             Ok(()) => return Ok(()),
             Err(error)
-                if error.kind() == std::io::ErrorKind::PermissionDenied
+                if (error.kind() == std::io::ErrorKind::PermissionDenied
+                    || matches!(error.raw_os_error(), Some(32 | 33)))
                     && std::time::Instant::now() < deadline =>
             {
                 // Git Bash under Windows-on-ARM emulation and endpoint security
@@ -3762,7 +3765,33 @@ fn rename_directory_with_retry(source: &Path, destination: &Path) -> std::io::Re
 }
 
 #[cfg(windows)]
+fn rename_directory_with_retry(source: &Path, destination: &Path) -> std::io::Result<()> {
+    retry_transient_windows_file_lock(|| std::fs::rename(source, destination))
+}
+
+#[cfg(windows)]
+fn remove_directory_with_retry(path: &Path) -> std::io::Result<()> {
+    retry_transient_windows_file_lock(|| match std::fs::remove_dir_all(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    })
+}
+
+#[cfg(windows)]
+fn remove_file_with_retry(path: &Path) -> std::io::Result<()> {
+    retry_transient_windows_file_lock(|| match std::fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    })
+}
+
+#[cfg(windows)]
 fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<String, String> {
+    static INSTALL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _install_guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "PortableGit install lock was poisoned".to_string())?;
+
     let git_dir = screenpipe_dir.join("git-portable");
     let bash_path = git_dir.join("bin").join("bash.exe");
 
@@ -3771,12 +3800,12 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
         info!("PortableGit already present at {}", git_dir.display());
         return Ok(bash_path.to_string_lossy().to_string());
     }
-    if bash_path.exists() {
+    if git_dir.exists() {
         warn!(
-            "PortableGit at {} failed its startup probe; reinstalling it",
+            "PortableGit at {} is incomplete or failed its startup probe; reinstalling it",
             git_dir.display()
         );
-        std::fs::remove_dir_all(&git_dir)
+        remove_directory_with_retry(&git_dir)
             .map_err(|e| format!("Failed to remove broken PortableGit install: {}", e))?;
     }
 
@@ -3796,9 +3825,17 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
         .map_err(|e| format!("Failed to create screenpipe data dir: {}", e))?;
 
     // Download to temp file
+    let unique_suffix = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| format!("System clock is before Unix epoch: {}", e))?
+            .as_nanos()
+    );
     let temp_file = std::env::temp_dir().join(format!(
-        "PortableGit-{}-64-bit.7z.exe",
-        PORTABLE_GIT_VERSION
+        "PortableGit-{}-{}.7z.exe",
+        PORTABLE_GIT_VERSION, unique_suffix
     ));
 
     // Use bun or curl to download (bun is always available since we bundle it)
@@ -3834,7 +3871,7 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
         }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let _ = std::fs::remove_file(&temp_file);
+            let _ = remove_file_with_retry(&temp_file);
             return Err(format!("PortableGit download failed: {}", stderr));
         }
         Err(e) => {
@@ -3851,8 +3888,7 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
     info!("Extracting PortableGit to {}...", git_dir.display());
 
     // Extract to a temp directory first (atomic: rename on success)
-    let extract_temp = screenpipe_dir.join("git-portable-extracting");
-    let _ = std::fs::remove_dir_all(&extract_temp);
+    let extract_temp = screenpipe_dir.join(format!("git-portable-extracting-{}", unique_suffix));
 
     {
         let mut cmd = std::process::Command::new(&temp_file);
@@ -3872,13 +3908,13 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                let _ = std::fs::remove_dir_all(&extract_temp);
-                let _ = std::fs::remove_file(&temp_file);
+                let _ = remove_directory_with_retry(&extract_temp);
+                let _ = remove_file_with_retry(&temp_file);
                 return Err(format!("PortableGit extraction failed: {}", stderr));
             }
             Err(e) => {
-                let _ = std::fs::remove_dir_all(&extract_temp);
-                let _ = std::fs::remove_file(&temp_file);
+                let _ = remove_directory_with_retry(&extract_temp);
+                let _ = remove_file_with_retry(&temp_file);
                 return Err(format!("Failed to run PortableGit extractor: {}", e));
             }
         }
@@ -3887,8 +3923,8 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
     // Verify extraction produced bash.exe
     let extracted_bash = extract_temp.join("bin").join("bash.exe");
     if !extracted_bash.exists() {
-        let _ = std::fs::remove_dir_all(&extract_temp);
-        let _ = std::fs::remove_file(&temp_file);
+        let _ = remove_directory_with_retry(&extract_temp);
+        let _ = remove_file_with_retry(&temp_file);
         return Err("Extraction completed but bash.exe not found in expected location".to_string());
     }
 
@@ -3919,15 +3955,20 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
     }
 
     if !bash_executable_is_usable(&extracted_bash) {
-        let _ = std::fs::remove_dir_all(&extract_temp);
-        let _ = std::fs::remove_file(&temp_file);
+        let _ = remove_directory_with_retry(&extract_temp);
+        let _ = remove_file_with_retry(&temp_file);
         return Err("Extracted PortableGit bash.exe failed its startup probe".to_string());
     }
 
     // Atomic rename: move extracted dir to final location
-    let _ = std::fs::remove_dir_all(&git_dir);
+    if git_dir.exists() {
+        remove_directory_with_retry(&git_dir).map_err(|e| {
+            let _ = remove_directory_with_retry(&extract_temp);
+            format!("Failed to clear PortableGit destination: {}", e)
+        })?;
+    }
     rename_directory_with_retry(&extract_temp, &git_dir).map_err(|e| {
-        let _ = std::fs::remove_dir_all(&extract_temp);
+        let _ = remove_directory_with_retry(&extract_temp);
         format!(
             "Failed to move extracted PortableGit to final location: {}",
             e
@@ -3935,7 +3976,7 @@ fn download_portable_git_into(screenpipe_dir: &Path) -> std::result::Result<Stri
     })?;
 
     // Clean up temp download
-    let _ = std::fs::remove_file(&temp_file);
+    let _ = remove_file_with_retry(&temp_file);
 
     let final_bash = git_dir.join("bin").join("bash.exe");
     info!(
@@ -4293,7 +4334,7 @@ mod tests {
             .expect("fresh PortableGit install should succeed");
         assert!(bash_executable_is_usable(Path::new(&first)));
 
-        std::fs::write(&first, b"broken portable git")
+        retry_transient_windows_file_lock(|| std::fs::write(&first, b"broken portable git"))
             .expect("test should corrupt the managed bash executable");
         assert!(!bash_executable_is_usable(Path::new(&first)));
 
@@ -4302,7 +4343,14 @@ mod tests {
         assert_eq!(repaired, first);
         assert!(bash_executable_is_usable(Path::new(&repaired)));
 
-        std::fs::remove_dir_all(&root).expect("test should clean up its PortableGit install");
+        remove_file_with_retry(Path::new(&repaired))
+            .expect("test should remove bash from the managed install");
+        let repaired_incomplete = download_portable_git_into(&screenpipe_dir)
+            .expect("incomplete managed PortableGit install should be replaced");
+        assert_eq!(repaired_incomplete, first);
+        assert!(bash_executable_is_usable(Path::new(&repaired_incomplete)));
+
+        remove_directory_with_retry(&root).expect("test should clean up its PortableGit install");
     }
 
     #[test]
