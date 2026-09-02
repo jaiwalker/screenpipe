@@ -59,6 +59,11 @@ const STICKY_PROCESS_WINDOW: Duration = Duration::from_secs(4);
 /// constant.
 const CANDIDATE_CONFIRM_WINDOW: Duration = Duration::from_secs(1);
 const ENDING_GRACE: Duration = Duration::from_secs(20);
+/// Ask for confirmation after a different room has remained the only visible
+/// room for ten seconds while the same browser audio session stays active.
+/// This gives users without a calendar a fast path without turning a preview
+/// of the next meeting link into an automatic split.
+const ROOM_CHANGE_PROMPT_WINDOW: Duration = Duration::from_secs(10);
 /// How long a browser must show a DIFFERENT conference room — with the current
 /// room never seen — while the meeting is still `Active` on the same audio
 /// session before the detector treats it as the next call. Long on purpose:
@@ -189,6 +194,8 @@ pub async fn run_audio_process_meeting_detection_loop(
     let mut stop_sub = subscribe_to_event::<DetectorStopSignal>("detector_stop_tracking");
     let mut auto_end_sub =
         subscribe_to_event::<MeetingAutoEndRequest>("meeting_auto_end_requested");
+    let mut room_change_response_sub =
+        subscribe_to_event::<MeetingRoomChangeResponse>(ROOM_CHANGE_RESPONSE_EVENT);
 
     info!(
         "audio-process meeting detector: loop started (profiles={}, ignored_apps={})",
@@ -233,6 +240,19 @@ pub async fn run_audio_process_meeting_detection_loop(
                 &detector,
             )
             .await;
+        }
+
+        while let Some(event) = room_change_response_sub.next().now_or_never().flatten() {
+            let response = event.data;
+            if active_or_ending_meeting_id(&state) == Some(response.meeting_id) {
+                let decision = response.decision;
+                if room_tracker.resolve_offer(&response) {
+                    info!(
+                        "audio-process meeting detector: ambiguous room change resolved by user ({:?}, meeting_id={})",
+                        decision, response.meeting_id
+                    );
+                }
+            }
         }
 
         {
@@ -338,11 +358,23 @@ pub async fn run_audio_process_meeting_detection_loop(
             });
             let policy = RoomChangePolicy {
                 confirm_window: ROOM_CHANGE_CONFIRM_WINDOW,
+                prompt_window: ROOM_CHANGE_PROMPT_WINDOW,
                 calendar_confirm_window: ROOM_CHANGE_CALENDAR_CONFIRM_WINDOW,
                 calendar_room_identities: &calendar_rooms,
                 calendar_boundary_crossed: boundary_crossed,
             };
-            detect_room_change(&state, &candidates, &mut room_tracker, now, &policy)
+            let action = detect_room_change(&state, &candidates, &mut room_tracker, now, &policy);
+            if let Some(offer) = room_tracker.take_offer() {
+                if let Err(error) =
+                    screenpipe_events::send_event("meeting_room_change_offer", offer)
+                {
+                    warn!(
+                        "audio-process meeting detector: failed to emit room-change offer: {}",
+                        error
+                    );
+                }
+            }
+            action
         };
         let (new_state, action) = match room_change {
             // `apply_state_action` installs the new `Active` state once the

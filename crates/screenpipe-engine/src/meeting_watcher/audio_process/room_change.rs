@@ -22,10 +22,10 @@
 //!    room on the same platform. Immediate.
 //! 2. **Room identity changed while active**: a resolved browser candidate
 //!    shows a different room for a sustained window with no sighting of the
-//!    current room. Short window when the new room is the conference URL of a
-//!    different scheduled calendar event that is in progress / about to
-//!    start; long window otherwise, so glancing at the next meeting's link
-//!    mid-call does not split the call.
+//!    current room. A matching next calendar event confirms quickly. Without
+//!    calendar evidence, ask after ten seconds and keep the longer automatic
+//!    fallback so glancing at the next meeting's link cannot silently split
+//!    the call.
 //! 3. **Calendar boundary on native re-acquire**: a native app (no URL) drops
 //!    the mic and re-takes it after the bound calendar event ended and the
 //!    calendar now selects a different event compatible with that platform.
@@ -48,6 +48,9 @@ pub(crate) struct RoomChangePolicy<'a> {
     /// How long a different room must be the only room seen while `Active`
     /// before the meeting rolls over, absent calendar corroboration.
     pub(crate) confirm_window: Duration,
+    /// How long ambiguous same-session evidence must persist before offering
+    /// the user a choice to keep the recording together or start a new note.
+    pub(crate) prompt_window: Duration,
     /// The shorter window used when the new room is a different scheduled
     /// event's conference URL (see `calendar_room_identities`).
     pub(crate) calendar_confirm_window: Duration,
@@ -63,6 +66,9 @@ pub(crate) struct RoomChangePolicy<'a> {
 struct PendingRoom {
     identity: String,
     since: Instant,
+    prompt_meeting_id: Option<i64>,
+    prompt_token: Option<String>,
+    resolution: Option<RoomChangeChoice>,
 }
 
 /// Remembers how long a different room has been continuously observed while
@@ -70,11 +76,13 @@ struct PendingRoom {
 #[derive(Debug, Default)]
 pub(crate) struct RoomChangeTracker {
     pending: Option<PendingRoom>,
+    pending_offer: Option<MeetingRoomChangeOffer>,
 }
 
 impl RoomChangeTracker {
     pub(crate) fn clear(&mut self) {
         self.pending = None;
+        self.pending_offer = None;
     }
 
     /// Record a sighting of `identity`; returns when this identity was first
@@ -86,10 +94,56 @@ impl RoomChangeTracker {
                 self.pending = Some(PendingRoom {
                     identity: identity.to_string(),
                     since: now,
+                    prompt_meeting_id: None,
+                    prompt_token: None,
+                    resolution: None,
                 });
                 now
             }
         }
+    }
+
+    fn resolution(&self, identity: &str) -> Option<RoomChangeChoice> {
+        self.pending
+            .as_ref()
+            .filter(|pending| pending.identity == identity)
+            .and_then(|pending| pending.resolution)
+    }
+
+    fn offer(&mut self, meeting_id: i64, platform: &str) {
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        if pending.prompt_token.is_some() || pending.resolution.is_some() {
+            return;
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        pending.prompt_meeting_id = Some(meeting_id);
+        pending.prompt_token = Some(token.clone());
+        self.pending_offer = Some(MeetingRoomChangeOffer {
+            meeting_id,
+            platform: platform.to_string(),
+            token,
+        });
+    }
+
+    pub(crate) fn take_offer(&mut self) -> Option<MeetingRoomChangeOffer> {
+        self.pending_offer.take()
+    }
+
+    /// Apply a response only when its unguessable token belongs to the
+    /// currently pending candidate. A stale notification click is ignored.
+    pub(crate) fn resolve_offer(&mut self, response: &MeetingRoomChangeResponse) -> bool {
+        let Some(pending) = self.pending.as_mut() else {
+            return false;
+        };
+        if pending.prompt_meeting_id != Some(response.meeting_id)
+            || pending.prompt_token.as_deref() != Some(response.token.as_str())
+        {
+            return false;
+        }
+        pending.resolution = Some(response.decision);
+        true
     }
 
     #[cfg(test)]
@@ -225,6 +279,22 @@ pub(crate) fn detect_room_change(
         // Still holding the mic under the same session: require the new room
         // to persist. A scheduled event with this exact room shortens the wait.
         let since = tracker.observe(&next_identity, now);
+        match tracker.resolution(&next_identity) {
+            Some(RoomChangeChoice::Switch) => {
+                tracker.clear();
+                return Some(room_changed(
+                    meeting_id,
+                    ended_session(),
+                    first_seen_at,
+                    is_browser,
+                    since,
+                    platform,
+                    next,
+                ));
+            }
+            Some(RoomChangeChoice::Keep) => return None,
+            None => {}
+        }
         let window = if policy.calendar_boundary_crossed
             && policy.calendar_room_identities.contains(&next_identity)
         {
@@ -243,6 +313,9 @@ pub(crate) fn detect_room_change(
                 platform,
                 next,
             ));
+        }
+        if now.duration_since(since) >= policy.prompt_window {
+            tracker.offer(meeting_id, platform);
         }
         return None;
     }

@@ -3111,10 +3111,156 @@ fn ending_meet(
 fn room_policy(rooms: &HashSet<String>, calendar_boundary_crossed: bool) -> RoomChangePolicy<'_> {
     RoomChangePolicy {
         confirm_window: Duration::from_secs(45),
+        prompt_window: Duration::from_secs(10),
         calendar_confirm_window: Duration::from_secs(5),
         calendar_room_identities: rooms,
         calendar_boundary_crossed,
     }
+}
+
+#[test]
+fn no_calendar_room_change_offers_a_fast_user_confirmed_split() {
+    let process = arc_process();
+    let t0 = Instant::now();
+    let active = active_meet(7, &process, ROOM_A, t0 - Duration::from_secs(600));
+    let room_b = meet_candidate(&process, ROOM_B, t0);
+    let rooms = HashSet::new();
+    let policy = room_policy(&rooms, false);
+    let mut tracker = RoomChangeTracker::default();
+
+    assert!(detect_room_change(
+        &active,
+        std::slice::from_ref(&room_b),
+        &mut tracker,
+        t0,
+        &policy,
+    )
+    .is_none());
+    assert!(tracker.take_offer().is_none());
+    assert!(detect_room_change(
+        &active,
+        std::slice::from_ref(&room_b),
+        &mut tracker,
+        t0 + Duration::from_secs(9),
+        &policy,
+    )
+    .is_none());
+    assert!(tracker.take_offer().is_none());
+
+    assert!(detect_room_change(
+        &active,
+        std::slice::from_ref(&room_b),
+        &mut tracker,
+        t0 + Duration::from_secs(10),
+        &policy,
+    )
+    .is_none());
+    let offer = tracker.take_offer().expect("room-change offer");
+    assert_eq!(offer.meeting_id, 7);
+    assert_eq!(offer.platform, "Google Meet");
+    assert!(tracker.take_offer().is_none(), "the offer is emitted once");
+
+    assert!(!tracker.resolve_offer(&MeetingRoomChangeResponse {
+        meeting_id: 7,
+        token: "stale-token".to_string(),
+        decision: RoomChangeChoice::Switch,
+    }));
+    assert!(!tracker.resolve_offer(&MeetingRoomChangeResponse {
+        meeting_id: 8,
+        token: offer.token.clone(),
+        decision: RoomChangeChoice::Switch,
+    }));
+    assert!(tracker.resolve_offer(&MeetingRoomChangeResponse {
+        meeting_id: 7,
+        token: offer.token,
+        decision: RoomChangeChoice::Switch,
+    }));
+
+    match detect_room_change(
+        &active,
+        std::slice::from_ref(&room_b),
+        &mut tracker,
+        t0 + Duration::from_secs(11),
+        &policy,
+    ) {
+        Some(AudioProcessStateAction::RoomChanged {
+            ended_meeting_id,
+            changed_at,
+            meeting_url,
+            ..
+        }) => {
+            assert_eq!(ended_meeting_id, 7);
+            assert_eq!(changed_at, t0);
+            assert_eq!(meeting_url.as_deref(), Some(ROOM_B));
+        }
+        other => panic!("expected user-confirmed RoomChanged, got {other:?}"),
+    }
+}
+
+#[test]
+fn keeping_an_ambiguous_room_change_suppresses_the_automatic_split() {
+    let process = arc_process();
+    let t0 = Instant::now();
+    let active = active_meet(7, &process, ROOM_A, t0 - Duration::from_secs(600));
+    let room_a = meet_candidate(&process, ROOM_A, t0);
+    let room_b = meet_candidate(&process, ROOM_B, t0);
+    let rooms = HashSet::new();
+    let policy = room_policy(&rooms, false);
+    let mut tracker = RoomChangeTracker::default();
+
+    assert!(detect_room_change(&active, &[room_b.clone()], &mut tracker, t0, &policy).is_none());
+    assert!(detect_room_change(
+        &active,
+        &[room_b.clone()],
+        &mut tracker,
+        t0 + Duration::from_secs(10),
+        &policy,
+    )
+    .is_none());
+    let offer = tracker.take_offer().expect("room-change offer");
+    assert!(tracker.resolve_offer(&MeetingRoomChangeResponse {
+        meeting_id: 7,
+        token: offer.token,
+        decision: RoomChangeChoice::Keep,
+    }));
+
+    assert!(detect_room_change(
+        &active,
+        &[room_b.clone()],
+        &mut tracker,
+        t0 + Duration::from_secs(90),
+        &policy,
+    )
+    .is_none());
+    assert!(tracker.take_offer().is_none());
+
+    // Seeing the original room again resolves the ambiguity. A later,
+    // distinct episode may offer once more instead of being ignored forever.
+    assert!(detect_room_change(
+        &active,
+        &[room_a],
+        &mut tracker,
+        t0 + Duration::from_secs(91),
+        &policy,
+    )
+    .is_none());
+    assert!(detect_room_change(
+        &active,
+        &[room_b.clone()],
+        &mut tracker,
+        t0 + Duration::from_secs(92),
+        &policy,
+    )
+    .is_none());
+    assert!(detect_room_change(
+        &active,
+        &[room_b],
+        &mut tracker,
+        t0 + Duration::from_secs(102),
+        &policy,
+    )
+    .is_none());
+    assert!(tracker.take_offer().is_some());
 }
 
 fn calendar_event_with_url(

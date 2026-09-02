@@ -155,6 +155,7 @@ pub async fn e2e_simulate_back_to_back_rooms(
     let calendar_rooms = calendar_room_identities_now(&events, now, bound_key.as_deref());
     let policy = RoomChangePolicy {
         confirm_window: ROOM_CHANGE_CONFIRM_WINDOW,
+        prompt_window: ROOM_CHANGE_PROMPT_WINDOW,
         calendar_confirm_window: ROOM_CHANGE_CALENDAR_CONFIRM_WINDOW,
         calendar_room_identities: &calendar_rooms,
         calendar_boundary_crossed: calendar_boundary_crossed(
