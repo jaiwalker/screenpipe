@@ -36,6 +36,7 @@ interface UpdateBannerState {
   isInstalling: boolean;
   pendingUpdate: Update | null;
   authRequired: AuthRequiredInfo | null;
+  waitingForMeeting: boolean;
   // Version the user dismissed in this session. Periodic re-checks and
   // providers-remount hydration would otherwise re-show the same banner
   // immediately after the user clicked X.
@@ -45,6 +46,7 @@ interface UpdateBannerState {
   setIsInstalling: (installing: boolean) => void;
   setPendingUpdate: (update: Update | null) => void;
   setAuthRequired: (info: AuthRequiredInfo | null) => void;
+  setWaitingForMeeting: (waiting: boolean) => void;
   dismiss: (version: string) => void;
   resetDismissed: () => void;
 }
@@ -55,12 +57,14 @@ export const useUpdateBanner = create<UpdateBannerState>((set) => ({
   isInstalling: false,
   pendingUpdate: null,
   authRequired: null,
+  waitingForMeeting: false,
   dismissedVersion: null,
   setIsVisible: (visible) => set({ isVisible: visible }),
   setUpdateInfo: (info) => set({ updateInfo: info }),
   setIsInstalling: (installing) => set({ isInstalling: installing }),
   setPendingUpdate: (update) => set({ pendingUpdate: update }),
   setAuthRequired: (info) => set({ authRequired: info }),
+  setWaitingForMeeting: (waiting) => set({ waitingForMeeting: waiting }),
   dismiss: (version) => set({ isVisible: false, authRequired: null, dismissedVersion: version }),
   resetDismissed: () => set({ dismissedVersion: null }),
 }));
@@ -103,7 +107,7 @@ async function getWindowsUpdateOptions(settings: Settings | null | undefined) {
 }
 
 export function UpdateBanner({ className, compact = false, variant = "default" }: UpdateBannerProps) {
-  const { isVisible, updateInfo, isInstalling, setIsInstalling, pendingUpdate, authRequired, dismiss } = useUpdateBanner();
+  const { isVisible, updateInfo, isInstalling, setIsInstalling, pendingUpdate, authRequired, waitingForMeeting, dismiss } = useUpdateBanner();
   const { toast } = useToast();
   const { settings } = useSettings();
 
@@ -197,14 +201,21 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
         const outcome = res.status === "ok" ? res.data : "errored";
         if (outcome !== "proceed") {
           setIsInstalling(false);
-          toast({
-            title: "screenpipe is still starting up",
-            description:
-              outcome === "errored"
-                ? "startup error — open settings to see details before restarting"
-                : "finish startup first, then click update again",
-            variant: "destructive",
-          });
+          if (outcome === "meeting") {
+            toast({
+              title: "update paused during your meeting",
+              description: "screenpipe will keep recording — try the update again after your meeting ends",
+            });
+          } else {
+            toast({
+              title: "screenpipe is still starting up",
+              description:
+                outcome === "errored"
+                  ? "startup error — open settings to see details before restarting"
+                  : "finish startup first, then click update again",
+              variant: "destructive",
+            });
+          }
           return;
         }
         // restart scheduled off-thread; runtime will tear down shortly.
@@ -280,7 +291,7 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
         type="button"
         data-testid="update-banner"
         onClick={handleUpdate}
-        disabled={isInstalling}
+        disabled={isInstalling || waitingForMeeting}
         className={cn(
           "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg border border-border bg-card/50 hover:bg-card transition-colors text-left disabled:opacity-60",
           className,
@@ -289,9 +300,11 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
         <Sparkles className="h-4 w-4 text-primary shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="text-xs font-medium text-foreground truncate">
-            {isInstalling ? "Restarting…" : "Restart to update"}
+            {isInstalling ? "Restarting…" : waitingForMeeting ? "Update ready" : "Restart to update"}
           </div>
-          <div className="text-[10px] text-muted-foreground truncate">v{updateInfo.version}</div>
+          <div className="text-[10px] text-muted-foreground truncate">
+            v{updateInfo.version}{waitingForMeeting ? " · restarts after your meeting" : ""}
+          </div>
         </div>
       </button>
     );
@@ -304,15 +317,15 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
         className
       )}>
         <Sparkles className="h-3 w-3 text-primary" />
-        <span>v{updateInfo.version} ready</span>
+        <span>v{updateInfo.version} ready{waitingForMeeting ? " — restarts after your meeting" : ""}</span>
         <Button
           variant="ghost"
           size="sm"
           className="h-5 px-2 text-xs"
           onClick={handleUpdate}
-          disabled={isInstalling}
+          disabled={isInstalling || waitingForMeeting}
         >
-          {isInstalling ? "restarting..." : "restart to update"}
+          {isInstalling ? "restarting..." : waitingForMeeting ? "waiting for meeting" : "restart to update"}
         </Button>
       </div>
     );
@@ -327,6 +340,7 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
         <Sparkles className="h-4 w-4 text-primary" />
         <span>
           screenpipe <span className="font-medium">v{updateInfo.version}</span> is ready
+          {waitingForMeeting ? " — restarts after your meeting" : ""}
         </span>
       </div>
       <div className="flex items-center gap-2">
@@ -335,9 +349,9 @@ export function UpdateBanner({ className, compact = false, variant = "default" }
           size="sm"
           className="h-7 px-3 text-xs"
           onClick={handleUpdate}
-          disabled={isInstalling}
+          disabled={isInstalling || waitingForMeeting}
         >
-          {isInstalling ? "restarting..." : "restart to update"}
+          {isInstalling ? "restarting..." : waitingForMeeting ? "waiting for meeting" : "restart to update"}
         </Button>
         <Button
           variant="ghost"
@@ -366,11 +380,13 @@ interface PendingUpdateSnapshot {
 // state from Rust so it can recover if the event fired before this hook
 // registered (boot-time webview race).
 export function useUpdateListener() {
-  const { setIsVisible, setUpdateInfo, setAuthRequired } = useUpdateBanner();
+  const { setIsVisible, setUpdateInfo, setAuthRequired, setWaitingForMeeting } = useUpdateBanner();
 
   useEffect(() => {
     let unlistenAvailable: (() => void) | undefined;
     let unlistenAuth: (() => void) | undefined;
+    let unlistenWaiting: (() => void) | undefined;
+    let unlistenMeetingFinished: (() => void) | undefined;
 
     // Rust re-emits update-available on every periodic check, and providers
     // hydration runs on every remount — both would otherwise resurrect a
@@ -378,6 +394,7 @@ export function useUpdateListener() {
     // callback so a newer version still shows even if an older one is dismissed.
     const showIfNotDismissed = (info: UpdateInfo) => {
       setUpdateInfo(info);
+      setWaitingForMeeting(false);
       if (useUpdateBanner.getState().dismissedVersion !== info.version) {
         setIsVisible(true);
       }
@@ -400,6 +417,23 @@ export function useUpdateListener() {
         showAuthIfNotDismissed(event.payload);
       });
 
+      unlistenWaiting = await listen<{ version: string }>("update-waiting-for-meeting", (event) => {
+        const state = useUpdateBanner.getState();
+        if (
+          state.updateInfo?.version === event.payload.version &&
+          state.dismissedVersion !== event.payload.version
+        ) {
+          setWaitingForMeeting(true);
+          setIsVisible(true);
+        }
+      });
+
+      unlistenMeetingFinished = await listen<{ version: string }>("update-meeting-finished", (event) => {
+        if (useUpdateBanner.getState().updateInfo?.version === event.payload.version) {
+          setWaitingForMeeting(false);
+        }
+      });
+
       // Hydrate from Rust in case the event fired before we mounted.
       try {
         const resPending = await commands.getPendingUpdate();
@@ -409,6 +443,7 @@ export function useUpdateListener() {
             showAuthIfNotDismissed({ version: pending.version, message: "sign in to get the latest update" });
           } else if (pending.downloaded) {
             showIfNotDismissed({ version: pending.version, body: pending.body });
+            setWaitingForMeeting(pending.waiting_for_meeting);
           }
         }
       } catch (e) {
@@ -422,6 +457,8 @@ export function useUpdateListener() {
     return () => {
       unlistenAvailable?.();
       unlistenAuth?.();
+      unlistenWaiting?.();
+      unlistenMeetingFinished?.();
     };
-  }, [setIsVisible, setUpdateInfo, setAuthRequired]);
+  }, [setIsVisible, setUpdateInfo, setAuthRequired, setWaitingForMeeting]);
 }

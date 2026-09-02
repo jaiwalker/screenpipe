@@ -2898,12 +2898,13 @@
       ],
       "features": [
         "update-surfacing",
+        "updater-meeting-safety",
         "settings-persistence"
       ],
       "criticality": "high",
       "confidence": "partial",
       "ux": "mixed",
-      "notes": "Synthetic update-available event surfaces the restart-to-update banner. A real Auto-update toggle plus delayed store save verifies restart waits for preference persistence and survives settings-store re-hydration; an E2E-only handoff suppresses the destructive relaunch. Real check/download/install + rollback stay manual via e2e/mock-updates because the debug E2E build disables updater checks."
+      "notes": "Synthetic updater events surface the restart-to-update banner, then show and disable its meeting-deferral state until meeting-finished resumes it. A real Auto-update toggle plus delayed store save verifies restart waits for preference persistence and survives settings-store re-hydration; an E2E-only handoff suppresses the destructive relaunch. Native unit tests cover the durable meeting probe, fail-closed unknown state, and quiet-window reset when a meeting starts during the countdown. Real check/download/install + rollback stay manual via e2e/mock-updates because the debug E2E build disables updater checks."
     },
     {
       "spec": "viewer-deeplink.spec.ts",

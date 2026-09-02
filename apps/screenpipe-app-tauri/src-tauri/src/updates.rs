@@ -11,11 +11,12 @@ use dark_light::Mode;
 use log::{debug, error, info, warn};
 use semver::Version;
 use serde_json;
+use std::future::Future;
 #[cfg(any(target_os = "macos", test))]
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::menu::{MenuItem, MenuItemBuilder};
 use tauri::{Emitter, Manager, Wry};
 use tauri_plugin_dialog::DialogExt;
@@ -202,6 +203,8 @@ pub struct PendingUpdateSnapshot {
     pub downloaded: bool,
     /// True when download failed with 401/403 — user must sign in.
     pub auth_required: bool,
+    /// True while auto-update is waiting for the active meeting to end.
+    pub waiting_for_meeting: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,6 +271,89 @@ const AUTO_UPDATE_GATE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// is actively waiting after a click — better to surface "still starting,
 /// try again" than to block the click indefinitely.
 const BANNER_GATE_TIMEOUT_SECS: u64 = 60;
+
+/// Existing auto-update grace period, now also used as a quiet window: a
+/// meeting must remain inactive for the full interval before Screenpipe exits.
+/// If a call starts during the countdown, the countdown resets.
+const AUTO_UPDATE_RESTART_QUIET_PERIOD: Duration = Duration::from_secs(30);
+
+/// Meeting DB polling backs up lifecycle events and closes the race where an
+/// event fires just before the updater subscribes. One second keeps the
+/// post-meeting restart responsive without putting meaningful load on SQLite.
+const AUTO_UPDATE_MEETING_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MeetingActivity {
+    Inactive,
+    Active,
+    /// A failed status read is treated conservatively: never restart while we
+    /// cannot prove that no meeting is active.
+    Unknown(String),
+}
+
+/// Read the same durable meeting-row state as `GET /meetings/status` without
+/// routing an internal request through the local HTTP server.
+async fn meeting_activity_for_update(app: &tauri::AppHandle) -> MeetingActivity {
+    let db = {
+        let state = app.state::<RecordingState>();
+        let server = state.server.lock().await;
+        let Some(server) = server.as_ref() else {
+            // Signed-out / idle installs have no engine and therefore no
+            // Screenpipe-managed active meeting to interrupt.
+            return MeetingActivity::Inactive;
+        };
+        server.db.clone()
+    };
+
+    match db.has_active_meeting().await {
+        Ok(true) => MeetingActivity::Active,
+        Ok(false) => MeetingActivity::Inactive,
+        Err(error) => MeetingActivity::Unknown(error.to_string()),
+    }
+}
+
+/// Wait until meeting state is continuously inactive for `quiet_period`.
+///
+/// Polling is deliberate. Meeting start/end events are lossy broadcast signals;
+/// the meetings table is the durable source of truth and also covers manual,
+/// calendar, and auto-detected calls through one path. `on_deferred` fires once
+/// when an active/unknown state first interrupts the countdown.
+async fn wait_for_meeting_safe_window<Probe, ProbeFuture, OnDeferred, DeferredFuture>(
+    quiet_period: Duration,
+    poll_interval: Duration,
+    mut probe: Probe,
+    mut on_deferred: OnDeferred,
+) -> bool
+where
+    Probe: FnMut() -> ProbeFuture,
+    ProbeFuture: Future<Output = MeetingActivity>,
+    OnDeferred: FnMut(MeetingActivity) -> DeferredFuture,
+    DeferredFuture: Future<Output = ()>,
+{
+    let mut inactive_since: Option<Instant> = None;
+    let mut was_deferred = false;
+
+    loop {
+        match probe().await {
+            MeetingActivity::Inactive => {
+                let since = inactive_since.get_or_insert_with(Instant::now);
+                let elapsed = since.elapsed();
+                if elapsed >= quiet_period {
+                    return was_deferred;
+                }
+                tokio::time::sleep(poll_interval.min(quiet_period - elapsed)).await;
+            }
+            blocking_state => {
+                inactive_since = None;
+                if !was_deferred {
+                    was_deferred = true;
+                    on_deferred(blocking_state).await;
+                }
+                tokio::time::sleep(poll_interval).await;
+            }
+        }
+    }
+}
 
 /// Cooldown after an update *download/install* fails for a non-auth reason.
 /// The periodic check runs every 5 min; without this, a machine that can
@@ -357,6 +443,24 @@ pub async fn restart_for_update(
     let gate = await_restart_gate(cap, "banner-triggered restart").await;
     if !gate.should_restart() {
         return Ok(gate.as_str().to_string());
+    }
+
+    // A manual banner/tray click must obey the same meeting boundary as the
+    // automatic path. Auto-update already has a waiter that resumes after the
+    // meeting; manual-update users can click again when their call is over.
+    match meeting_activity_for_update(&app).await {
+        MeetingActivity::Inactive => {}
+        MeetingActivity::Active => {
+            info!("banner restart: active meeting detected, deferring update");
+            return Ok("meeting".to_string());
+        }
+        MeetingActivity::Unknown(error) => {
+            warn!(
+                "banner restart: meeting status unavailable, deferring update: {}",
+                error
+            );
+            return Ok("meeting".to_string());
+        }
     }
 
     // The native tray calls this function directly, without passing through
@@ -581,11 +685,19 @@ pub async fn trigger_update_now(app: tauri::AppHandle) {
             Ok(outcome) => {
                 warn!("tray update flow: restart deferred (outcome={})", outcome);
                 manager.set_menu_restart_ready();
-                notify_update_state(
-                    &app,
-                    "screenpipe is still starting up",
-                    "the update will install once startup finishes — try again in a moment.",
-                );
+                if outcome == "meeting" {
+                    notify_update_state(
+                        &app,
+                        "update paused during your meeting",
+                        "screenpipe will keep recording. try the update again after the meeting ends.",
+                    );
+                } else {
+                    notify_update_state(
+                        &app,
+                        "screenpipe is still starting up",
+                        "the update will install once startup finishes — try again in a moment.",
+                    );
+                }
             }
             Err(e) => {
                 error!("tray update flow: restart for update failed: {}", e);
@@ -879,6 +991,85 @@ impl UpdatesManager {
         })
     }
 
+    /// Hold an automatic restart until no meeting has been active for the
+    /// normal 30-second restart grace period. This protects both already-active
+    /// calls and calls that begin while the update countdown is running.
+    async fn wait_for_auto_update_restart_window(&self, version: &str) -> bool {
+        let probe_app = self.app.clone();
+        let waiting_app = self.app.clone();
+        let waiting_pending = self.pending_update.clone();
+        let waiting_menu = self.update_menu_item.clone();
+        let waiting_version = version.to_string();
+
+        let was_deferred = wait_for_meeting_safe_window(
+            AUTO_UPDATE_RESTART_QUIET_PERIOD,
+            AUTO_UPDATE_MEETING_POLL_INTERVAL,
+            move || {
+                let app = probe_app.clone();
+                async move { meeting_activity_for_update(&app).await }
+            },
+            move |activity| {
+                let app = waiting_app.clone();
+                let pending = waiting_pending.clone();
+                let menu = waiting_menu.clone();
+                let version = waiting_version.clone();
+                async move {
+                    match activity {
+                        MeetingActivity::Active => info!(
+                            "auto-update v{} paused until the active meeting ends",
+                            version
+                        ),
+                        MeetingActivity::Unknown(error) => warn!(
+                            "auto-update v{} paused because meeting status is unavailable: {}",
+                            version, error
+                        ),
+                        MeetingActivity::Inactive => unreachable!(
+                            "the deferral callback only runs for blocking meeting states"
+                        ),
+                    }
+
+                    if let Some(snapshot) = pending.lock().await.as_mut() {
+                        snapshot.waiting_for_meeting = true;
+                    }
+                    if let Some(item) = menu.as_ref() {
+                        let _ = item.set_enabled(false);
+                        let _ = item.set_text("Update ready — waiting for meeting to end");
+                    }
+                    let _ = app.emit(
+                        "update-waiting-for-meeting",
+                        serde_json::json!({ "version": version }),
+                    );
+                    notify_update_state(
+                        &app,
+                        "update ready — meeting in progress",
+                        "screenpipe will keep recording and restart after your meeting ends.",
+                    );
+                }
+            },
+        )
+        .await;
+
+        if was_deferred {
+            if let Some(snapshot) = self.pending_update.lock().await.as_mut() {
+                snapshot.waiting_for_meeting = false;
+            }
+            if let Some(item) = self.update_menu_item.as_ref() {
+                let _ = item.set_text("Installing update after meeting…");
+                let _ = item.set_enabled(false);
+            }
+            let _ = self.app.emit(
+                "update-meeting-finished",
+                serde_json::json!({ "version": version }),
+            );
+            info!(
+                "auto-update v{} resuming after meeting-safe quiet window",
+                version
+            );
+        }
+
+        was_deferred
+    }
+
     /// `force` = user-initiated check (tray/dock/Settings). Bypasses the
     /// post-failure cooldown so "click to retry" always re-attempts the
     /// download; periodic and boot checks pass `false`.
@@ -1087,6 +1278,7 @@ impl UpdatesManager {
                 body: update.body.clone().unwrap_or_default(),
                 downloaded: false,
                 auth_required: false,
+                waiting_for_meeting: false,
             });
 
             let auto_update = load_auto_update_enabled(&self.app);
@@ -1187,6 +1379,23 @@ impl UpdatesManager {
             if let Some(ref item) = self.update_menu_item {
                 item.set_enabled(false)?;
                 item.set_text("Downloading latest version of screenpipe")?;
+            }
+
+            // On Windows `download_and_install` launches the installer and can
+            // terminate this process before control returns. Therefore its
+            // meeting and boot gates must run before download/install, unlike
+            // macOS/Linux where download/staging is non-destructive.
+            #[cfg(target_os = "windows")]
+            if auto_update {
+                let label = format!("auto-update v{}", update.version);
+                if !await_restart_gate(AUTO_UPDATE_GATE_TIMEOUT, &label)
+                    .await
+                    .should_restart()
+                {
+                    return Result::Ok(true);
+                }
+                self.wait_for_auto_update_restart_window(&update.version)
+                    .await;
             }
 
             #[cfg(target_os = "windows")]
@@ -1418,7 +1627,10 @@ impl UpdatesManager {
                 let result = if auto_update {
                     notification
                         .title("screenpipe updating")
-                        .body(format!("v{} downloaded — restarting now", version_str))
+                        .body(format!(
+                            "v{} downloaded — restarting when no meeting is active",
+                            version_str
+                        ))
                         .show()
                 } else {
                     notification
@@ -1448,6 +1660,14 @@ impl UpdatesManager {
                     return Result::Ok(true);
                 }
 
+                // Windows already passed this gate before invoking the
+                // exit-capable installer. macOS/Linux stage safely first, then
+                // wait here. The quiet window replaces the old blind 30-second
+                // sleep and resets whenever a meeting starts.
+                #[cfg(not(target_os = "windows"))]
+                self.wait_for_auto_update_restart_window(&update.version)
+                    .await;
+
                 // Only the first trigger applies; defer to an in-flight restart.
                 if UPDATE_RESTART_STARTED.swap(true, Ordering::SeqCst) {
                     info!("auto-update: update-restart already in progress, deferring");
@@ -1460,10 +1680,9 @@ impl UpdatesManager {
                     "update-restarting",
                     serde_json::json!({
                         "version": update.version,
-                        "delay_secs": 30,
+                        "delay_secs": 0,
                     }),
                 );
-                tokio::time::sleep(Duration::from_secs(30)).await;
                 // Time-bounded: never let a wedged capture/audio teardown stall
                 // the relaunch (see PRE_EXIT_TEARDOWN_TIMEOUT / 2026-06-26 report).
                 match bounded_teardown(
@@ -1785,6 +2004,107 @@ mod tests {
 
     const HOUR: Duration = Duration::from_secs(3600);
 
+    #[tokio::test]
+    async fn update_restart_waits_until_meeting_ends() {
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deferred = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe_counter = probes.clone();
+        let deferred_counter = deferred.clone();
+
+        let was_deferred = wait_for_meeting_safe_window(
+            Duration::from_millis(6),
+            Duration::from_millis(1),
+            move || {
+                let call = probe_counter.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if call < 3 {
+                        MeetingActivity::Active
+                    } else {
+                        MeetingActivity::Inactive
+                    }
+                }
+            },
+            move |_| {
+                deferred_counter.fetch_add(1, Ordering::SeqCst);
+                async {}
+            },
+        )
+        .await;
+
+        assert!(was_deferred);
+        assert_eq!(deferred.load(Ordering::SeqCst), 1);
+        assert!(probes.load(Ordering::SeqCst) >= 5);
+    }
+
+    #[tokio::test]
+    async fn meeting_start_during_countdown_resets_restart_window() {
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let deferred = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe_counter = probes.clone();
+        let deferred_counter = deferred.clone();
+
+        let was_deferred = wait_for_meeting_safe_window(
+            Duration::from_millis(8),
+            Duration::from_millis(2),
+            move || {
+                let call = probe_counter.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if call == 2 {
+                        MeetingActivity::Active
+                    } else {
+                        MeetingActivity::Inactive
+                    }
+                }
+            },
+            move |_| {
+                deferred_counter.fetch_add(1, Ordering::SeqCst);
+                async {}
+            },
+        )
+        .await;
+
+        assert!(was_deferred, "a meeting interrupted the initial countdown");
+        assert_eq!(deferred.load(Ordering::SeqCst), 1);
+        assert!(
+            probes.load(Ordering::SeqCst) >= 7,
+            "the full quiet window must elapse again after the meeting"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_meeting_state_fails_closed_then_recovers() {
+        let probes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed_reason = Arc::new(std::sync::Mutex::new(None::<MeetingActivity>));
+        let probe_counter = probes.clone();
+        let reason_slot = observed_reason.clone();
+
+        let was_deferred = wait_for_meeting_safe_window(
+            Duration::from_millis(4),
+            Duration::from_millis(1),
+            move || {
+                let call = probe_counter.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if call == 0 {
+                        MeetingActivity::Unknown("database busy".to_string())
+                    } else {
+                        MeetingActivity::Inactive
+                    }
+                }
+            },
+            move |reason| {
+                *reason_slot.lock().unwrap() = Some(reason);
+                async {}
+            },
+        )
+        .await;
+
+        assert!(was_deferred);
+        assert_eq!(
+            *observed_reason.lock().unwrap(),
+            Some(MeetingActivity::Unknown("database busy".to_string()))
+        );
+    }
+
     #[test]
     fn sweep_removes_installer_leftovers_only() {
         let dir = tempfile::tempdir().unwrap();
@@ -1989,8 +2309,9 @@ mod tests {
     #[test]
     fn old_settings_use_stable_update_channel() {
         assert_eq!(consumer_update_channel(None), "stable");
-        assert!(consumer_update_endpoint(consumer_update_channel(None))
-            .contains("/app-update/stable/"));
+        assert!(
+            consumer_update_endpoint(consumer_update_channel(None)).contains("/app-update/stable/")
+        );
     }
 
     #[test]

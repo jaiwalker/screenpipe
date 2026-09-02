@@ -11,8 +11,8 @@ and layer declared in the manifest, weighted by confidence and criticality.
 - Manifest: `e2e/coverage-map.json`
 - Specs directory: `e2e/specs`
 - Mapped specs: 140
-- Declared test blocks: 401
-- Weighted coverage points: 322.1
+- Declared test blocks: 402
+- Weighted coverage points: 322.8
 
 Confidence weights: strong=1.0, partial=0.7, conditional=0.4, smoke=0.3.
 Criticality weights: high=1.0, medium=0.7, low=0.4.
@@ -23,9 +23,9 @@ can execute more runtime cases than this number shows.
 
 | Platform | Specs | Declared tests | Weighted points | Layers | Features | Critical score |
 | --- | --- | --- | --- | --- | --- | --- |
-| windows | 107 | 340 | 283.1 | 15 | 122 | 85% |
-| macos | 136 | 363 | 291.9 | 17 | 132 | 88% |
-| linux | 95 | 298 | 252.5 | 14 | 119 | 80% |
+| windows | 107 | 341 | 283.8 | 15 | 123 | 85% |
+| macos | 136 | 364 | 292.6 | 17 | 133 | 88% |
+| linux | 95 | 299 | 253.2 | 14 | 120 | 80% |
 
 ## Runtime Results
 
@@ -49,8 +49,8 @@ pass/fail/skip counts.
 | os-integration | 7 specs / 32 tests / 26.9 pts | 15 specs / 30 tests / 18.4 pts | 2 specs / 15 tests / 10.8 pts |
 | performance | 3 specs / 45 tests / 45.0 pts | 5 specs / 36 tests / 31.8 pts | 2 specs / 30 tests / 30.0 pts |
 | pipes | 6 specs / 20 tests / 20.0 pts | 8 specs / 26 tests / 26.0 pts | 6 specs / 20 tests / 20.0 pts |
-| real-ui-e2e | 80 specs / 238 tests / 201.9 pts | 97 specs / 255 tests / 215.9 pts | 74 specs / 214 tests / 187.9 pts |
-| settings | 15 specs / 42 tests / 39.0 pts | 17 specs / 36 tests / 31.7 pts | 14 specs / 33 tests / 30.0 pts |
+| real-ui-e2e | 80 specs / 239 tests / 202.6 pts | 97 specs / 256 tests / 216.6 pts | 74 specs / 215 tests / 188.6 pts |
+| settings | 15 specs / 43 tests / 39.7 pts | 17 specs / 37 tests / 32.4 pts | 14 specs / 34 tests / 30.7 pts |
 | storage-privacy | 10 specs / 44 tests / 35.3 pts | 10 specs / 29 tests / 28.1 pts | 7 specs / 22 tests / 21.1 pts |
 | tauri-command | 23 specs / 62 tests / 48.9 pts | 35 specs / 84 tests / 66.3 pts | 22 specs / 63 tests / 49.8 pts |
 | window-lifecycle | 22 specs / 71 tests / 59.5 pts | 23 specs / 54 tests / 39.9 pts | 16 specs / 44 tests / 34.4 pts |
@@ -231,7 +231,7 @@ pass/fail/skip counts.
 | tray-recording-status.spec.ts | windows | os-integration, tauri-command | tray-recording-status | high | strong | command | 1 | Drives Starting to Recording and reads back the status item from the successfully installed native tray menu. |
 | tray-recording-toggle.spec.ts | macos | os-integration, tauri-command, capture-ocr | tray-recording-toggle | high | strong | command | 1 | Runs the tray's shared native action and proves a real CaptureSession pauses and resumes without the frontend shortcut-event path. |
 | tray-search.spec.ts | windows, macos, linux | window-lifecycle, tauri-command, real-ui-e2e | tray-search, home-search, window-lifecycle | high | partial | command | 2 | Invokes open_search_window and verifies focused floating Search. |
-| updater-banner.spec.ts | windows, macos, linux | real-ui-e2e, settings | update-surfacing, settings-persistence | high | partial | mixed | 2 | Synthetic update-available event surfaces the restart-to-update banner. A real Auto-update toggle plus delayed store save verifies restart waits for preference persistence and survives settings-store re-hydration; an E2E-only handoff suppresses the destructive relaunch. Real check/download/install + rollback stay manual via e2e/mock-updates because the debug E2E build disables updater checks. |
+| updater-banner.spec.ts | windows, macos, linux | real-ui-e2e, settings | update-surfacing, updater-meeting-safety, settings-persistence | high | partial | mixed | 3 | Synthetic updater events surface the restart-to-update banner, then show and disable its meeting-deferral state until meeting-finished resumes it. A real Auto-update toggle plus delayed store save verifies restart waits for preference persistence and survives settings-store re-hydration; an E2E-only handoff suppresses the destructive relaunch. Native unit tests cover the durable meeting probe, fail-closed unknown state, and quiet-window reset when a meeting starts during the countdown. Real check/download/install + rollback stay manual via e2e/mock-updates because the debug E2E build disables updater checks. |
 | viewer-deeplink.spec.ts | windows, macos, linux | window-lifecycle, tauri-command | viewer-deeplink, window-lifecycle | medium | partial | command | 3 | Viewer window creation and per-path dedupe. |
 | window-activation.spec.ts | macos | window-lifecycle, tauri-command, real-ui-e2e | window-lifecycle, chat | medium | conditional | real-user-flow | 2 | macOS-only show_window_activated focus coverage. |
 | window-lifecycle.spec.ts | windows, macos, linux | window-lifecycle, tauri-command, real-ui-e2e | window-lifecycle, onboarding, tray-search | high | strong | mixed | 3 | Home, Search, and onboarding window routing. |

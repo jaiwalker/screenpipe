@@ -4,9 +4,9 @@
 
 /**
  * E2E coverage for the update-available BANNER surfacing — the user-visible
- * "restart to update" prompt and the settings-save handoff immediately before
- * restart. These are the updater slices that are deterministic inside the
- * shared WebDriver session.
+ * "restart to update" prompt, meeting deferral state, and settings-save
+ * handoff immediately before restart. These are the updater slices that are
+ * deterministic inside the shared WebDriver session.
  *
  * Why only the banner (and not a real check / download / install):
  *   - The WDIO suite drives a `--profile debug-dev --features e2e` build, and
@@ -24,11 +24,12 @@
  * when Rust emits `update-available {version, body}` (src-tauri/src/updates.rs),
  * `useUpdateListener` (mounted globally in app/providers.tsx) flips the banner
  * visible and the home sidebar renders the "Restart to update / v<version>"
- * affordance (components/update-banner.tsx). It also makes the settings save
- * deliberately slow, enables Auto-update, and clicks restart immediately. An
- * E2E-only handoff stops before the destructive relaunch so WebDriver survives
- * while the test proves that restart becomes ready only after the preference
- * reaches disk.
+ * affordance (components/update-banner.tsx). A meeting-deferral event then
+ * disables that action and explains when restart will resume. The spec also
+ * makes the settings save deliberately slow, enables Auto-update, and clicks
+ * restart immediately. An E2E-only handoff stops before the destructive
+ * relaunch so WebDriver survives while the test proves that restart becomes
+ * ready only after the preference reaches disk.
  *
  * Run against an existing --features e2e debug build:
  *   cd apps/screenpipe-app-tauri
@@ -123,6 +124,59 @@ describe("Update banner surfacing", function () {
 
     const filepath = await saveScreenshot("updater-banner-visible");
     expect(existsSync(filepath)).toBe(true);
+  });
+
+  it("shows that auto-update is waiting for the meeting and prevents an early restart", async () => {
+    const emitErr = (await browser.executeAsync(
+      (payload: { version: string }, done: (v?: unknown) => void) => {
+        const g = globalThis as unknown as {
+          __TAURI__?: { event?: { emit: (n: string, p: unknown) => Promise<unknown> } };
+        };
+        const emit = g.__TAURI__?.event?.emit;
+        if (!emit) {
+          done("global __TAURI__.event.emit unavailable");
+          return;
+        }
+        void emit("update-waiting-for-meeting", payload)
+          .then(() => done(null))
+          .catch((e) => done(String(e)));
+      },
+      { version: SYNTHETIC_VERSION },
+    )) as string | null;
+    expect(emitErr).toBeNull();
+
+    const banner = await waitForTestId("update-banner", 15_000);
+    await browser.waitUntil(
+      async () => (await banner.getText()).toLowerCase().includes("restarts after your meeting"),
+      { timeout: t(10_000), timeoutMsg: "meeting-aware updater state did not appear" },
+    );
+    expect(await banner.isEnabled()).toBe(false);
+
+    const filepath = await saveScreenshot("updater-waits-for-meeting");
+    expect(existsSync(filepath)).toBe(true);
+
+    const resumeErr = (await browser.executeAsync(
+      (payload: { version: string }, done: (v?: unknown) => void) => {
+        const g = globalThis as unknown as {
+          __TAURI__?: { event?: { emit: (n: string, p: unknown) => Promise<unknown> } };
+        };
+        const emit = g.__TAURI__?.event?.emit;
+        if (!emit) {
+          done("global __TAURI__.event.emit unavailable");
+          return;
+        }
+        void emit("update-meeting-finished", payload)
+          .then(() => done(null))
+          .catch((e) => done(String(e)));
+      },
+      { version: SYNTHETIC_VERSION },
+    )) as string | null;
+    expect(resumeErr).toBeNull();
+    await browser.waitUntil(async () => banner.isEnabled(), {
+      timeout: t(10_000),
+      timeoutMsg: "update banner did not resume after meeting finished",
+    });
+    expect((await banner.getText()).toLowerCase()).toContain("restart to update");
   });
 
   it("persists an Auto-update opt-in before a back-to-back update restart", async () => {
