@@ -23,6 +23,8 @@ import { isOnboardingCheckoutResolved } from "@/lib/onboarding-checkout";
 import { submitHostedCheckoutStart } from "@/lib/onboarding-checkout-navigation";
 import {
   TRIAL_ACTIVATION_CHECKOUT_STATE_KEY,
+  TRIAL_ACTIVATION_EXPERIMENT_FLAG,
+  TRIAL_ACTIVATION_TREATMENT,
   TRIAL_ACTIVATION_UNLOCKED_STEP,
 } from "@/lib/first-run/trial-activation";
 
@@ -150,8 +152,8 @@ export function TrialActivationPaywall({
       if (result.status === "error") throw new Error(result.error);
       window.sessionStorage.removeItem(TRIAL_ACTIVATION_CHECKOUT_STATE_KEY);
       posthog.capture("onboarding_plan_activated", {
-        experiment: "first-summary-card-trial-v1",
-        variant: "summary_first",
+        experiment: TRIAL_ACTIVATION_EXPERIMENT_FLAG,
+        variant: TRIAL_ACTIVATION_TREATMENT,
         plan: "free",
         confirmation: "free_no_card",
         source: "checkout_dialog",
