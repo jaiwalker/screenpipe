@@ -15,6 +15,14 @@ export const commands = {
 async activateAppAfterOauth() : Promise<void> {
     await TAURI_INVOKE("activate_app_after_oauth");
 },
+async analyzeWorkflows(days: number | null) : Promise<Result<JsonValue, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("analyze_workflows", { days }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Reconcile the live app + the next-boot config with the current enterprise
  * hidden-UI policy. The frontend calls this right after pushing a freshly
@@ -461,6 +469,14 @@ async ensureWebviewFocus() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+async ensureWorkflowsRuntime() : Promise<Result<JsonValue, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("ensure_workflows_runtime") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 /**
  * Export a recording to `output_path` (an .mp4).
  *
@@ -830,6 +846,9 @@ async getSyncStatus() : Promise<Result<SyncStatusResponse, string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async getWorkflowsRuntime() : Promise<JsonValue> {
+    return await TAURI_INVOKE("get_workflows_runtime");
 },
 async hideMainWindow() : Promise<void> {
     await TAURI_INVOKE("hide_main_window");

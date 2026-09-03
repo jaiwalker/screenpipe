@@ -618,21 +618,20 @@ const DEFAULT_IGNORED_WINDOWS_PER_OS: Record<string, string[]> = {
 	linux: ["Info center", "Discover", "Parted"],
 };
 
-// Workflows is intentionally pinned to one explicit confidential model. The
-// setup card verifies and stores the user's inference key before any request;
-// it never silently falls back through Screenpipe Cloud's Auto routing.
+// Workflows explicitly requests Luna through the authenticated Screenpipe
+// gateway. The native discovery path records the actually served model so a
+// gateway resilience fallback is never presented as a Luna result.
 const SCREENPIPE_PRESET_ID = "screenpipe"; // Legacy migration sentinel.
 
 export function makeDefaultPresets(_isPro: boolean): AIPreset[] {
 	return [
 		{
-			id: "tinfoil-glm-5.3",
-			provider: "custom",
-			url: "https://inference.tinfoil.sh/v1",
-			model: "glm-5-3",
-			apiKey: "",
-			maxContextChars: 4_194_304,
-			maxTokens: 8_192,
+			id: "workflows-luna-5.6",
+			provider: "screenpipe-cloud",
+			url: "",
+			model: "gpt-5.6-luna",
+			maxContextChars: 4_200_000,
+			maxTokens: 128_000,
 			defaultPreset: true,
 			prompt: "",
 		},

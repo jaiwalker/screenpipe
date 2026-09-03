@@ -29,11 +29,13 @@ The app should not:
 - Send, publish, delete, spend, or mutate records without approval.
 - Hide sources, tool calls, or corrections behind a chat transcript.
 - Upload raw screen or audio memory by default.
-- Claim that the prototype workflow miner is production-connected yet.
+- Present generated evidence or agent runs as completed actions.
 
 ## Current implementation boundary
 
-The Tauri foundation, operating-system permissions, local settings store, and Screenpipe engine startup are real. The workflow opportunities and execution records in this branch are clearly labeled sample data; they make the complete product experience interactive while the workflow-mining and execution backend is connected in later work.
+Capture selection and workflow discovery are real. At launch, Workflows checks the installed Screenpipe API on port 3030 and reuses it only when frames or audio are fresh. If no fresh recorder exists, the isolated Workflows profile starts its own engine. The native process queries bounded `/activity-summary` bundles, keeps credentials out of JavaScript, and explicitly requests `gpt-5.6-luna` through the Screenpipe gateway. The discovery and evidence views show that live result.
+
+The builder, dry-run, publish, supervision, and outcomes screens remain an interaction preview. They are labeled as such and do not execute external actions.
 
 ## Screenshots
 
@@ -69,7 +71,7 @@ bun install --frozen-lockfile
 bun run dev:web
 ```
 
-Open `http://127.0.0.1:1430/home`. The browser development mode supplies a local mock for Tauri IPC and the Screenpipe engine. To run the native app, use the repository's native build queue:
+Open `http://127.0.0.1:1430/home`. Browser development mode is useful for layout review but cannot perform native discovery. To use the real recorder and gateway, run the native app through the repository's build queue:
 
 ```bash
 bun run dev:tauri
@@ -91,4 +93,4 @@ The main experience can be reviewed at `home?view=` followed by:
 - `memory`
 - `controls`
 
-Onboarding preview states use `onboarding?preview=welcome`, `privacy`, `permissions`, `engine`, or `ready`. Preview mode is only for deterministic visual review; ordinary onboarding invokes the real native permission and engine-startup components.
+Onboarding preview states use `onboarding?preview=welcome`, `privacy`, `permissions`, `engine`, `model`, or `ready`. Preview mode is only for deterministic visual review; ordinary onboarding invokes the real native permission and recorder-selection components.

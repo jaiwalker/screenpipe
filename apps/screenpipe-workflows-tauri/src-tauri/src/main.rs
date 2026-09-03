@@ -137,6 +137,7 @@ mod updates;
 mod voice_training;
 mod window;
 mod windows_ca_bundle;
+mod workflows_runtime;
 #[cfg(target_os = "windows")]
 mod windows_crash_dump;
 #[cfg(target_os = "windows")]
@@ -474,6 +475,11 @@ async fn main() {
     // telemetry store read below — all of which resolve the data directory or
     // the focus port. No-op in release builds. See `dev_isolation`.
     dev_isolation::apply();
+
+    // A second recorder wastes resources and can contend for macOS capture
+    // permissions. Reuse the installed Screenpipe recorder whenever it is
+    // producing fresh data; the isolated Workflows engine is the fallback.
+    let reuse_external_recorder = workflows_runtime::external_recorder_is_fresh().await;
 
     #[cfg(target_os = "linux")]
     linux_webkit_env::configure();
@@ -1818,7 +1824,7 @@ async fn main() {
             // Uses retry loop because CGPreflightScreenCaptureAccess can return false
             // transiently on startup before TCC fully initializes.
             #[cfg(target_os = "macos")]
-            if onboarding_store.is_completed || app_ui_hidden {
+            if (onboarding_store.is_completed || app_ui_hidden) && !reuse_external_recorder {
                 let mut screen_ok = false;
                 let mut mic_ok = false;
                 for attempt in 0..3 {
@@ -1876,6 +1882,11 @@ async fn main() {
                         database = %launch_db_path.display(),
                         "Skipping server and capture startup: durable SQLite quarantine is active"
                     );
+                    break 'start_server;
+                }
+                if reuse_external_recorder {
+                    info!("Workflows is using the fresh Screenpipe recorder on port 3030");
+                    crate::health::set_recording_status(crate::health::RecordingStatus::Paused);
                     break 'start_server;
                 }
                 let store_clone = store.clone();

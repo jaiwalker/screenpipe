@@ -171,6 +171,9 @@ fn server_access_policy(
 }
 
 pub(crate) fn server_access_allowed(app: &tauri::AppHandle, store: &SettingsStore) -> bool {
+    if crate::workflows_runtime::account_free_local_recording() {
+        return true;
+    }
     let startup_authentication = app
         .try_state::<crate::startup_auth::AuthenticationStatus>()
         .map(|status| *status)
@@ -205,6 +208,9 @@ pub(crate) fn recording_access_allowed(app: &tauri::AppHandle, store: &SettingsS
             .flatten()
             .unwrap_or_default()
             .blocks_trial_activation_recording();
+    if crate::workflows_runtime::account_free_local_recording() {
+        return !trial_activation_paywall;
+    }
     let resolved_authentication = app
         .try_state::<crate::startup_auth::AuthenticationStatus>()
         .map(|status| *status)
@@ -950,6 +956,11 @@ pub async fn spawn_screenpipe(
     app: tauri::AppHandle,
     _override_args: Option<Vec<String>>,
 ) -> Result<(), String> {
+    if crate::workflows_runtime::external_recorder_is_fresh().await {
+        state.set_capture_intent(false);
+        info!("spawn_screenpipe: fresh installed Screenpipe recorder found; reusing it");
+        return Ok(());
+    }
     // A summary-paywall install still needs the long-lived local read server
     // for Timeline, but it must not publish capture intent or restart capture.
     let store = SettingsStore::get(&app).ok().flatten().unwrap_or_default();
