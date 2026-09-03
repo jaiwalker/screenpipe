@@ -24,6 +24,7 @@ export type WorkflowScreenshot = {
   frameId: number;
   timestamp: string;
   app: string;
+  matchDistanceSeconds: number;
   dataUrl: string;
 };
 
@@ -35,6 +36,7 @@ export type WorkflowStage = {
   apps: string[];
   confidence: number;
   observedOccurrences: number;
+  observedDays: number;
   evidence: WorkflowEvidence[];
   screenshot?: WorkflowScreenshot | null;
 };
@@ -46,6 +48,9 @@ export type WorkflowQuality = {
   evidenceCount: number;
   distinctDays: number;
   stageEvidenceCoverage: number;
+  repeatedStageCoverage: number;
+  screenshotCount: number;
+  stageScreenshotCoverage: number;
   reasons: string[];
 };
 
@@ -90,11 +95,14 @@ export type AnalysisQuality = {
   totalFrames: number;
   appAttributionCoverage: number;
   parsedContextCount: number;
+  verifiedEvidenceCount: number;
+  screenshotCount: number;
+  screenshotCoverage: number;
   warnings: string[];
 };
 
 export type WorkflowAnalysis = {
-  schemaVersion: 2;
+  schemaVersion: 4;
   analysis: { workflows: WorkflowMap[] };
   analyzedAt: string;
   days: number;

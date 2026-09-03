@@ -475,7 +475,7 @@ function workflowPreviewImage(label: string, hue: number) {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-function createBrowserDevWorkflowAnalysis() {
+function createBrowserDevWorkflowAnalysis(days = 7) {
   const evidence = (timestamp: string, app: string, detail: string) => ({ timestamp, app, detail });
   const releaseStages = [
     ["Review the change set", "Read the release diff and note risk areas.", 14, 0, "GitHub", "2026-08-31T16:20:00Z", 91],
@@ -484,8 +484,12 @@ function createBrowserDevWorkflowAnalysis() {
   ].map(([name, description, activeMinutes, waitingMinutes, app, timestamp, confidence], index) => ({
     name, description, activeMinutes, waitingMinutes, apps: [app], confidence,
     observedOccurrences: 2,
-    evidence: [evidence(timestamp as string, app as string, `${description} Observed in this fictional preview.`)],
-    screenshot: { frameId: 100 + index, timestamp, app, dataUrl: workflowPreviewImage(name as string, 72 + index * 31) },
+    observedDays: 2,
+    evidence: [
+      evidence(new Date(Date.parse(timestamp as string) - 2 * 86_400_000).toISOString(), app as string, `${description} Earlier fictional observation.`),
+      evidence(timestamp as string, app as string, `${description} Later fictional observation.`),
+    ],
+    screenshot: { frameId: 100 + index, timestamp, app, matchDistanceSeconds: 18 + index * 7, dataUrl: workflowPreviewImage(name as string, 72 + index * 31) },
   }));
   const supportStages = [
     ["Read the report", "Understand the reported behavior and affected surface.", 6, 0, "Intercom", "2026-08-31T20:10:00Z", 84],
@@ -495,27 +499,32 @@ function createBrowserDevWorkflowAnalysis() {
   ].map(([name, description, activeMinutes, waitingMinutes, app, timestamp, confidence], index) => ({
     name, description, activeMinutes, waitingMinutes, apps: [app], confidence,
     observedOccurrences: 2,
-    evidence: [evidence(timestamp as string, app as string, `${description} Observed in this fictional preview.`)],
-    screenshot: { frameId: 200 + index, timestamp, app, dataUrl: workflowPreviewImage(name as string, 145 + index * 24) },
+    observedDays: 2,
+    evidence: [
+      evidence(new Date(Date.parse(timestamp as string) - 2 * 86_400_000).toISOString(), app as string, `${description} Earlier fictional observation.`),
+      evidence(timestamp as string, app as string, `${description} Later fictional observation.`),
+    ],
+    screenshot: { frameId: 200 + index, timestamp, app, matchDistanceSeconds: 12 + index * 9, dataUrl: workflowPreviewImage(name as string, 145 + index * 24) },
   }));
   const workflow = (rank: number, title: string, description: string, trigger: string, outcome: string, stages: typeof releaseStages, apps: string[], bottlenecks: unknown[]) => {
     const activeMinutes = stages.reduce((sum, stage) => sum + Number(stage.activeMinutes), 0);
     const waitingMinutes = stages.reduce((sum, stage) => sum + Number(stage.waitingMinutes), 0);
     const workflowEvidence = stages.flatMap((stage) => stage.evidence);
-    return { rank, analysisDays: 7, title, description, repetitions: 3, frequency: "A few times a week", trigger, outcome, totalMinutes: activeMinutes + waitingMinutes, activeMinutes, waitingMinutes, appSwitches: apps.length + 1, confidence: 86, apps, handoffs: [], variations: ["The depth of review changes with the size of the work."], stages, bottlenecks, evidence: workflowEvidence, quality: { grade: "strong", evidenceCount: workflowEvidence.length, distinctDays: 3, stageEvidenceCoverage: 100, reasons: [`${workflowEvidence.length} captured observations support this map`, "Evidence spans 3 separate days", `${stages.length} of ${stages.length} stages have direct captured evidence`] } };
+    return { rank, analysisDays: days, title, description, repetitions: 3, frequency: `Evidence on 3 of ${days} days`, trigger, outcome, totalMinutes: activeMinutes + waitingMinutes, activeMinutes, waitingMinutes, appSwitches: apps.length + 1, confidence: 86, apps, handoffs: [], variations: ["The depth of review changes with the size of the work."], stages, bottlenecks, evidence: workflowEvidence, quality: { grade: "strong", evidenceCount: workflowEvidence.length, distinctDays: 3, stageEvidenceCoverage: 100, repeatedStageCoverage: 100, screenshotCount: stages.length, stageScreenshotCoverage: 100, reasons: [`${workflowEvidence.length} verified captured observations support this map`, "Evidence spans 3 separate days", `${stages.length} of ${stages.length} stages have direct captured evidence`, `${stages.length} of ${stages.length} stages were observed on more than one day`, `${stages.length} of ${stages.length} stages have a closely matched local screenshot`] } };
   };
+  const workflows = [
+    workflow(1, "Investigate a support report", "Move from the initial report through reproduction, diagnosis, and a clear response.", "A detailed support report arrives", "The customer receives a concrete answer", supportStages as typeof releaseStages, ["Intercom", "Screenpipe", "Cursor"], [{ label: "Context is rebuilt across tools", stage: "Trace the cause", type: "switching", detail: "The investigation moves between the report, captured evidence, and code.", estimatedMinutesPerRun: 4, confidence: 76, evidence: "2026-08-31T21:15:00Z · Cursor: Compare logs and code around the failing path." }]),
+    workflow(2, "Publish a product release", "Review the candidate, wait for checks, and turn the final change set into release notes.", "A release candidate is ready", "The release is approved with notes", releaseStages, ["GitHub", "Terminal", "Docs"], [{ label: "Checks create a pause", stage: "Run release checks", type: "waiting", detail: "Hands-on work pauses while the suite completes.", estimatedMinutesPerRun: 11, confidence: 82, evidence: "2026-08-30T17:05:00Z · Terminal: Start the checks and inspect any failures." }]),
+  ];
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     analyzedAt: "2026-09-03T18:00:00Z",
-    days: 7,
+    days,
     source: "screenpipe",
-    bundleCount: 7,
+    bundleCount: days,
     observedActiveMinutes: 1264,
-    quality: { grade: "strong", usableDays: 7, requestedDays: 7, capturedMinutes: 1264, totalFrames: 18420, appAttributionCoverage: 96, parsedContextCount: 911, warnings: [] },
-    analysis: { workflows: [
-      workflow(1, "Publish a product release", "Review the candidate, wait for checks, and turn the final change set into release notes.", "A release candidate is ready", "The release is approved with notes", releaseStages, ["GitHub", "Terminal", "Docs"], [{ label: "Checks create a pause", stage: "Run release checks", type: "waiting", detail: "Hands-on work pauses while the suite completes.", estimatedMinutesPerRun: 11, confidence: 82, evidence: "A repeated gap follows the start of release checks." }]),
-      workflow(2, "Investigate a support report", "Move from the initial report through reproduction, diagnosis, and a clear response.", "A detailed support report arrives", "The customer receives a concrete answer", supportStages as typeof releaseStages, ["Intercom", "Screenpipe", "Cursor"], [{ label: "Context is rebuilt across tools", stage: "Trace the cause", type: "switching", detail: "The investigation moves between the report, captured evidence, and code.", estimatedMinutesPerRun: 4, confidence: 76, evidence: "The same investigation sequence spans three apps." }]),
-    ] },
+    quality: { grade: "strong", usableDays: days, requestedDays: days, capturedMinutes: 1264, totalFrames: 18420, appAttributionCoverage: 96, parsedContextCount: 911, verifiedEvidenceCount: workflows.reduce((sum, item) => sum + item.quality.evidenceCount, 0), screenshotCount: 7, screenshotCoverage: 100, warnings: [] },
+    analysis: { workflows },
   };
 }
 
@@ -809,7 +818,7 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
           reason: "ready",
         };
       case "analyze_workflows":
-        return createBrowserDevWorkflowAnalysis();
+        return createBrowserDevWorkflowAnalysis(Number(input.days ?? 7));
       case "get_screenpipe_base_dir":
         return "/Users/screenpipe/.screenpipe";
       case "get_chats_dir":

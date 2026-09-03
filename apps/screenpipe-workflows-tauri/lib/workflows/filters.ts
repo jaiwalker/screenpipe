@@ -11,6 +11,7 @@ import type {
 export type WorkflowDurationFilter = "all" | "short" | "medium" | "long";
 export type WorkflowQualityFilter = "all" | "good" | "strong";
 export type WorkflowFrictionFilter = "all" | WorkflowBottleneck["type"];
+export type WorkflowScreenshotFilter = "all" | "complete" | "partial" | "none";
 
 export type WorkflowFilters = {
   query: string;
@@ -18,6 +19,7 @@ export type WorkflowFilters = {
   duration: WorkflowDurationFilter;
   friction: WorkflowFrictionFilter;
   app: string;
+  screenshots: WorkflowScreenshotFilter;
 };
 
 export const defaultWorkflowFilters: WorkflowFilters = {
@@ -26,6 +28,7 @@ export const defaultWorkflowFilters: WorkflowFilters = {
   duration: "all",
   friction: "all",
   app: "all",
+  screenshots: "all",
 };
 
 const qualityRank: Record<WorkflowQualityGrade, number> = {
@@ -85,6 +88,24 @@ export function filterWorkflows(
     ) {
       return false;
     }
+    if (
+      filters.screenshots === "complete" &&
+      workflow.quality.stageScreenshotCoverage !== 100
+    ) {
+      return false;
+    }
+    if (
+      filters.screenshots === "partial" &&
+      (workflow.quality.stageScreenshotCoverage <= 0 || workflow.quality.stageScreenshotCoverage >= 100)
+    ) {
+      return false;
+    }
+    if (
+      filters.screenshots === "none" &&
+      workflow.quality.stageScreenshotCoverage !== 0
+    ) {
+      return false;
+    }
     return true;
   });
 }
@@ -95,6 +116,6 @@ export function activeFilterCount(filters: WorkflowFilters) {
     filters.duration !== "all",
     filters.friction !== "all",
     filters.app !== "all",
+    filters.screenshots !== "all",
   ].filter(Boolean).length;
 }
-

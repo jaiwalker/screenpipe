@@ -154,6 +154,11 @@ pub use recording::*;
 pub use icons::*;
 pub use store::get_store;
 
+// This parallel product is intentionally analysis-only. Keep copied Screenpipe
+// capabilities compiled for now, but do not start agent, suggestion, calendar,
+// or shortcut surfaces from the Workflows binary.
+const WORKFLOWS_MAPPING_ONLY: bool = true;
+
 mod config;
 pub use config::get_base_dir;
 
@@ -457,12 +462,14 @@ macro_rules! define_specta_builder {
 async fn main() {
     // Handle private ACP subprocess modes before Tauri initializes. The
     // protocol host lives in core; desktop contributes only schedule projection.
-    if let Some(exit_code) = screenpipe_core::agents::acp::run_hidden_mode(Arc::new(
-        provider_automations::ProviderAutomationObserver,
-    ))
-    .await
-    {
-        std::process::exit(exit_code);
+    if !WORKFLOWS_MAPPING_ONLY {
+        if let Some(exit_code) = screenpipe_core::agents::acp::run_hidden_mode(Arc::new(
+            provider_automations::ProviderAutomationObserver,
+        ))
+        .await
+        {
+            std::process::exit(exit_code);
+        }
     }
 
     // The packaged updater E2E latches whether the replacement process began
@@ -1581,7 +1588,9 @@ async fn main() {
 
             // Install Pi only after the shared authentication bootstrap has
             // resolved and application initialization has begun.
-            crate::pi::ensure_pi_installed_background();
+            if !WORKFLOWS_MAPPING_ONLY {
+                crate::pi::ensure_pi_installed_background();
+            }
 
             // Escape hatch: SCREENPIPE_SKIP_ONBOARDING=1 marks onboarding complete
             // at startup so corp/VDI/headless environments (where the interactive
@@ -1695,7 +1704,7 @@ async fn main() {
             // setup is backgrounded and idempotent: it installs missing MCP +
             // skill entries, refreshes stale screenpipe launchers, and leaves
             // unrelated tool settings alone.
-            if !app_ui_hidden {
+            if !WORKFLOWS_MAPPING_ONLY && !app_ui_hidden {
                 let local_api = recording::local_api_context_from_app(&app.handle());
                 skills::connect_detected_ai_tools_in_background(
                     store.recording.api_auth,
@@ -1743,7 +1752,11 @@ async fn main() {
             // macOS-only: on Windows/Linux the non-macOS chat builder doesn't
             // set .visible(false), causing a visible chat window on startup.
             #[cfg(target_os = "macos")]
-            if onboarding_store.is_completed && !app_ui_hidden && !headless_startup {
+            if !WORKFLOWS_MAPPING_ONLY
+                && onboarding_store.is_completed
+                && !app_ui_hidden
+                && !headless_startup
+            {
                 let app_handle_chat = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     // Wait for main window to finish setup
@@ -1769,7 +1782,11 @@ async fn main() {
             // always-on-top windows during startup, so skip this on Windows.
             #[cfg(not(target_os = "windows"))]
             {
-                if onboarding_store.is_completed && !app_ui_hidden && !headless_startup {
+                if !WORKFLOWS_MAPPING_ONLY
+                    && onboarding_store.is_completed
+                    && !app_ui_hidden
+                    && !headless_startup
+                {
                     let app_handle_search = app.handle().clone();
                     tauri::async_runtime::spawn(async move {
                         // Stagger after the chat pre-create (3s) so the two hidden
@@ -1792,7 +1809,8 @@ async fn main() {
             // Show the shortcut overlay after onboarding. The command applies
             // saved snoozes/preferences and the bounded re-show of the smaller
             // cross-platform design. Skip when the timeline itself is unavailable.
-            if onboarding_store.is_completed
+            if !WORKFLOWS_MAPPING_ONLY
+                && onboarding_store.is_completed
                 && !app_ui_hidden
                 && !headless_startup
                 && !store.recording.disable_timeline
@@ -1831,7 +1849,7 @@ async fn main() {
                     let startup_perms = permissions::do_permissions_check(false);
                     screen_ok = startup_perms.screen_recording.permitted();
                     mic_ok = startup_perms.microphone.permitted();
-                    if screen_ok && mic_ok {
+                    if screen_ok && (WORKFLOWS_MAPPING_ONLY || mic_ok) {
                         break;
                     }
                     if attempt < 2 {
@@ -1843,7 +1861,9 @@ async fn main() {
                     }
                 }
 
-                if !screen_ok || !mic_ok {
+                let capture_permissions_ready =
+                    screen_ok && (WORKFLOWS_MAPPING_ONLY || mic_ok);
+                if !capture_permissions_ready {
                     warn!(
                         "Startup permission check failed after retries — screen: {}, mic: {}. Showing recovery window.",
                         screen_ok, mic_ok
@@ -2374,14 +2394,18 @@ async fn main() {
                 });
             }
             crate::disk_pressure_notifications::start(app_handle.clone());
-            activity_history::start(app_handle.clone());
-            first_run_summary::start(app_handle.clone());
+            if !WORKFLOWS_MAPPING_ONLY {
+                activity_history::start(app_handle.clone());
+                first_run_summary::start(app_handle.clone());
+            }
 
             // Background ChatGPT OAuth token refresh — keeps access tokens
             // fresh so the lazy path in get_valid_token() rarely needs to
             // refresh at request time. Separate from OAuthRefreshScheduler
             // which only handles screenpipe-connect integrations.
-            crate::chatgpt_oauth::start_background_refresh();
+            if !WORKFLOWS_MAPPING_ONLY {
+                crate::chatgpt_oauth::start_background_refresh();
+            }
 
             #[cfg(target_os = "macos")]
             crate::window::reset_to_regular_and_refresh_tray(&app_handle);
@@ -2394,7 +2418,9 @@ async fn main() {
             // instance), apply_shortcuts early-returns and skips the rest. Fix this to:
             // 1. Collect per-shortcut failures instead of aborting on the first one
             // 2. Emit a user-visible notification listing the conflicting shortcuts
-            if app_ui_hidden {
+            if WORKFLOWS_MAPPING_ONLY {
+                info!("Workflows mapping-only mode: global shortcuts are disabled");
+            } else if app_ui_hidden {
                 info!("enterprise: hidden UI mode active, skipping global app shortcuts");
             } else if headless_startup {
                 info!("headless: skipping global shortcuts while UI is dormant");
@@ -2407,7 +2433,8 @@ async fn main() {
                 });
             }
 
-            // Auto-start suggestions scheduler (always on)
+            // Prepare suggestion state for copied commands, but never start its
+            // background analysis loop in the Workflows product.
             let suggestions_state = app_handle.state::<suggestions::SuggestionsState>();
             // Initialize enhanced AI config from saved settings
             {
@@ -2440,34 +2467,35 @@ async fn main() {
                 enhanced_ai: suggestions_state.enhanced_ai.clone(),
             };
             let app_handle_for_suggestions = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                suggestions::auto_start_scheduler(
-                    app_handle_for_suggestions,
-                    &suggestions_state_clone,
-                )
-                .await;
-            });
+            if !WORKFLOWS_MAPPING_ONLY {
+                tauri::async_runtime::spawn(async move {
+                    suggestions::auto_start_scheduler(
+                        app_handle_for_suggestions,
+                        &suggestions_state_clone,
+                    )
+                    .await;
+                });
+            }
 
-            // Start calendar events publisher (publishes to event bus for meeting detection)
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-                calendar::start_calendar_events_publisher().await;
-            });
+            if !WORKFLOWS_MAPPING_ONLY {
+                // Calendar publishers support full Screenpipe meeting surfaces,
+                // not mapping, so the Workflows product leaves them stopped.
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                    calendar::start_calendar_events_publisher().await;
+                });
 
-            // Start ICS calendar poller (polls ICS feeds every 10 min)
-            let ics_app_handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
-                ics_calendar::start_ics_calendar_poller(ics_app_handle).await;
-            });
+                let ics_app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+                    ics_calendar::start_ics_calendar_poller(ics_app_handle).await;
+                });
 
-            // Start Google Calendar publisher (polls /connections/google-calendar/events
-            // every 60s and pushes into the calendar_events bus). Required for the
-            // 2-3 min prewarm toast to work for users on Google Calendar.
-            let gcal_app_handle = app_handle.clone();
-            tauri::async_runtime::spawn(async move {
-                google_calendar::start_google_calendar_publisher(gcal_app_handle).await;
-            });
+                let gcal_app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    google_calendar::start_google_calendar_publisher(gcal_app_handle).await;
+                });
+            }
 
             // Enterprise telemetry sync (no-op stub on consumer builds).
             // Runs forever in background; only takes effect on enterprise-

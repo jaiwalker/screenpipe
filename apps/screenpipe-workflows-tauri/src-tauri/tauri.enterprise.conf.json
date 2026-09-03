@@ -13,8 +13,8 @@
     "active": true,
     "publisher": "Mediar, Inc.",
     "category": "DeveloperTool",
-    "shortDescription": "Turn repeated work into supervised agents",
-    "longDescription": "Screenpipe Workflows learns repeated work from local desktop context, then helps you review, test, and supervise agents.",
+    "shortDescription": "Map how your repeated work actually happens",
+    "longDescription": "Screenpipe Workflows reconstructs repeated work from private desktop history so you can inspect its stages, time, waiting, bottlenecks, and supporting evidence.",
     "copyright": "",
     "targets": [
       "app",

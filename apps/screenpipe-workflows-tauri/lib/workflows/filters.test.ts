@@ -37,6 +37,7 @@ function workflow(overrides: Partial<WorkflowMap> = {}): WorkflowMap {
         apps: ["GitHub"],
         confidence: 84,
         observedOccurrences: 2,
+        observedDays: 2,
         evidence: [
           { timestamp: "2026-09-01T10:00:00Z", app: "GitHub", detail: "Opened the release diff" },
         ],
@@ -50,6 +51,7 @@ function workflow(overrides: Partial<WorkflowMap> = {}): WorkflowMap {
         apps: ["Terminal"],
         confidence: 79,
         observedOccurrences: 2,
+        observedDays: 2,
         evidence: [
           { timestamp: "2026-09-02T10:00:00Z", app: "Terminal", detail: "Ran the release suite" },
         ],
@@ -73,7 +75,10 @@ function workflow(overrides: Partial<WorkflowMap> = {}): WorkflowMap {
       evidenceCount: 4,
       distinctDays: 2,
       stageEvidenceCoverage: 100,
+      repeatedStageCoverage: 100,
       reasons: [],
+      screenshotCount: 1,
+      stageScreenshotCoverage: 50,
     },
     ...overrides,
   };
@@ -96,5 +101,28 @@ describe("workflow filters", () => {
     });
     expect(filtered.map((item) => item.title)).toEqual(["Review a release"]);
     expect(activeFilterCount({ ...defaultWorkflowFilters, duration: "medium", quality: "good" })).toBe(2);
+  });
+
+  it("filters by local screenshot coverage", () => {
+    const complete = workflow({
+      title: "Complete screenshots",
+      quality: {
+        ...workflow().quality,
+        screenshotCount: 2,
+        stageScreenshotCoverage: 100,
+      },
+    });
+    const none = workflow({
+      title: "No screenshots",
+      quality: {
+        ...workflow().quality,
+        screenshotCount: 0,
+        stageScreenshotCoverage: 0,
+      },
+    });
+    expect(filterWorkflows([complete, none], {
+      ...defaultWorkflowFilters,
+      screenshots: "complete",
+    }).map((item) => item.title)).toEqual(["Complete screenshots"]);
   });
 });
