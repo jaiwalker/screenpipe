@@ -39,6 +39,13 @@ import {
   type WorkflowFilters,
 } from "@/lib/workflows/filters";
 import {
+  activityPeriodLabel,
+  mergeWorkflowCatalog,
+  WORKFLOW_CATALOG_DAYS,
+  workflowsForActivityPeriod,
+  type WorkflowActivityPeriod,
+} from "@/lib/workflows/catalog";
+import {
   analyzeCapturedWork,
   type AnalysisQuality,
   ensureWorkflowRuntime,
@@ -116,7 +123,7 @@ function withoutScreenshotCopies(analysis: WorkflowAnalysis): WorkflowAnalysis {
     ...analysis,
     quality: {
       ...analysis.quality,
-      grade: analysis.quality.grade === "strong" ? "good" : analysis.quality.grade,
+      grade: "limited",
       screenshotCount: 0,
       screenshotCoverage: 0,
       warnings: [
@@ -158,9 +165,8 @@ function AppShell({
   workflowCount,
   query,
   setQuery,
-  analysisDays,
-  setAnalysisDays,
-  appliedDays,
+  activityPeriod,
+  setActivityPeriod,
   children,
 }: {
   view: AppView;
@@ -169,9 +175,8 @@ function AppShell({
   workflowCount: number;
   query: string;
   setQuery: (value: string) => void;
-  analysisDays: number;
-  setAnalysisDays: (value: number) => void;
-  appliedDays?: number;
+  activityPeriod: WorkflowActivityPeriod;
+  setActivityPeriod: (value: WorkflowActivityPeriod) => void;
   children: React.ReactNode;
 }) {
   const activeView = view === "workflow" ? "workflows" : view;
@@ -210,13 +215,13 @@ function AppShell({
           <label className={styles.search}><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => navigate("workflows")} placeholder="Search workflows, steps, and evidence" aria-label="Search workflows, steps, and evidence" />{query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={12} /></button> : <kbd>⌘ K</kbd>}</label>
           <label className={styles.periodControl}>
             <CalendarRange size={13} />
-            <span>Period</span>
-            <select value={analysisDays} onChange={(event) => setAnalysisDays(Number(event.target.value))} aria-label="Analysis period">
-              <option value={3}>3 days</option>
-              <option value={7}>7 days</option>
-              <option value={14}>14 days</option>
+            <span>Show</span>
+            <select value={activityPeriod} onChange={(event) => setActivityPeriod(Number(event.target.value) as WorkflowActivityPeriod)} aria-label="Workflow activity period">
+              <option value={0}>All known</option>
+              <option value={7}>Active this week</option>
+              <option value={30}>Active in 30 days</option>
+              <option value={90}>Active in 90 days</option>
             </select>
-            {appliedDays && appliedDays !== analysisDays ? <small>refresh to apply</small> : null}
           </label>
           <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{runtime?.recording ? "Recording" : "Starting"}</Pill>
         </header>
@@ -227,19 +232,19 @@ function AppShell({
   );
 }
 
-function EmptyWorkMap({ analyzing, analyze, days = 7 }: { analyzing: boolean; analyze: () => void; days?: number }) {
-  if (analyzing) return <ProcessingView days={days} />;
+function EmptyWorkMap({ analyzing, analyze }: { analyzing: boolean; analyze: () => void }) {
+  if (analyzing) return <ProcessingView />;
   return (
     <section className={styles.emptyState}>
       <div className={styles.emptyMark}><Workflow size={23} /></div>
       <h2>Your first work map starts here</h2>
-      <p>Screenpipe will look across the last {days} days for repeated sequences, then map the stages, time, waiting, app changes, and bottlenecks it can verify.</p>
-      <button className={styles.primaryButton} onClick={analyze}>Build my work map <ArrowRight size={14} /></button>
+      <p>Screenpipe will build a lasting catalog from the last {WORKFLOW_CATALOG_DAYS} days, then keep known workflows as new work is observed.</p>
+      <button className={styles.primaryButton} onClick={analyze}>Build my workflow catalog <ArrowRight size={14} /></button>
     </section>
   );
 }
 
-function ProcessingView({ days }: { days: number }) {
+function ProcessingView() {
   const [active, setActive] = useState(0);
   useEffect(() => {
     const timer = window.setInterval(() => setActive((value) => (value + 1) % processingSteps.length), 2400);
@@ -247,7 +252,7 @@ function ProcessingView({ days }: { days: number }) {
   }, []);
   return (
     <section className={styles.processing}>
-      <div className={styles.processingHead}><span className={styles.spinner} /><div><h2>Building your work map</h2><p>Reviewing {days} days can take about a minute. Your raw screen history stays on this Mac.</p></div></div>
+      <div className={styles.processingHead}><span className={styles.spinner} /><div><h2>Building your workflow catalog</h2><p>Reviewing {WORKFLOW_CATALOG_DAYS} days in smaller periods can take a few minutes. Your raw screen history stays on this Mac.</p></div></div>
       <div className={styles.processingSteps}>
         {processingSteps.map(([title, detail], index) => (
           <div key={title} className={index === active ? styles.processingActive : ""}>
@@ -321,7 +326,8 @@ function OverviewView({
   analyze,
   openWorkflow,
   navigate,
-  analysisDays,
+  knownWorkflowCount,
+  activityPeriod,
   runtime,
   refreshRuntime,
 }: {
@@ -331,7 +337,8 @@ function OverviewView({
   analyze: () => void;
   openWorkflow: (index: number) => void;
   navigate: (view: AppView) => void;
-  analysisDays: number;
+  knownWorkflowCount: number;
+  activityPeriod: WorkflowActivityPeriod;
   runtime: WorkflowRuntime | null;
   refreshRuntime: () => void;
 }) {
@@ -344,13 +351,13 @@ function OverviewView({
     <>
       <section className={styles.hero}>
         <div>
-          <Pill><Workflow size={12} />{workflows.length ? `${workflows.length} workflows mapped` : "Ready to map your work"}</Pill>
+          <Pill><Workflow size={12} />{knownWorkflowCount ? `${knownWorkflowCount} known workflows` : "Ready to map your work"}</Pill>
           <h1>See how your work<br /><em>actually flows.</em></h1>
           <p>A granular map of the work hidden across your day: what starts it, every stage, how long it takes, where you wait, and where it gets stuck.</p>
-          <button className={styles.analyzeButton} onClick={analyze} disabled={analyzing || runtime?.processingAvailable === false}>{analyzing ? <><span className={styles.spinnerSmall} />Building work map…</> : <><RefreshCw size={14} />{workflows.length ? `Refresh ${analysisDays}-day map` : `Analyze the last ${analysisDays} days`}</>}</button>
+          <button className={styles.analyzeButton} onClick={analyze} disabled={analyzing || runtime?.processingAvailable === false}>{analyzing ? <><span className={styles.spinnerSmall} />Refreshing catalog…</> : <><RefreshCw size={14} />{knownWorkflowCount ? "Refresh workflow catalog" : `Analyze the last ${WORKFLOW_CATALOG_DAYS} days`}</>}</button>
         </div>
         <div className={styles.heroProof}>
-          <span>{analysis ? `Last ${analysis.days} days` : `Selected ${analysisDays}-day period`}</span>
+          <span>{analysis ? `Catalog scan · last ${analysis.days} days` : `${WORKFLOW_CATALOG_DAYS}-day catalog`}</span>
           <strong>{formatMinutes(analysis?.observedActiveMinutes ?? 0)}</strong>
           <small>captured active time reviewed</small>
           <div><i style={{ width: `${Math.min(100, workflows.length * 18)}%` }} /></div>
@@ -360,13 +367,19 @@ function OverviewView({
       <RuntimeNotice runtime={runtime} refresh={refreshRuntime} />
       {error && <ErrorNotice message={error} retry={analyze} />}
       {analysis?.quality && <AnalysisQualityPanel quality={analysis.quality} />}
-      {!workflows.length ? <EmptyWorkMap analyzing={analyzing} analyze={analyze} days={analysisDays} /> : (
+      {!knownWorkflowCount ? <EmptyWorkMap analyzing={analyzing} analyze={analyze} /> : !workflows.length ? (
+        <section className={styles.emptyState}>
+          <Clock3 size={23} />
+          <h2>No known workflows were active in this period</h2>
+          <p>Your catalog still contains {knownWorkflowCount} workflow{knownWorkflowCount === 1 ? "" : "s"}. Choose “All known” above to see them.</p>
+        </section>
+      ) : (
         <>
           <section className={styles.statGrid} aria-label="Work map summary">
             <div><span>Combined mapped duration</span><strong>{formatMinutes(mappedMinutes)}</strong><small>one conservative estimate per workflow</small></div>
             <div><span>Combined waiting estimate</span><strong>{formatMinutes(waitingMinutes)}</strong><small>one estimated occurrence per workflow</small></div>
             <div><span>Bottlenecks found</span><strong>{bottleneckCount}</strong><small>linked to specific workflow stages</small></div>
-            <div><span>Workflows mapped</span><strong>{workflows.length}</strong><small>from {analysis?.days ?? 7} days of work</small></div>
+            <div><span>Workflows shown</span><strong>{workflows.length}</strong><small>{activityPeriodLabel(activityPeriod).toLocaleLowerCase()}</small></div>
           </section>
           <div className={styles.sectionHeading}><div><span>Where time goes</span><h2>Your workflows, active time vs. waiting</h2></div><button className={styles.textButton} onClick={() => navigate("workflows")}>View all workflows <ArrowRight size={14} /></button></div>
           <section className={styles.timeMap}>
@@ -389,7 +402,7 @@ function OverviewView({
   );
 }
 
-function WorkflowsView({ workflows, filters, setFilters, openWorkflow, analyze, analyzing, analysisDays }: { workflows: WorkflowMap[]; filters: WorkflowFilters; setFilters: (filters: WorkflowFilters) => void; openWorkflow: (index: number) => void; analyze: () => void; analyzing: boolean; analysisDays: number }) {
+function WorkflowsView({ workflows, knownWorkflowCount, activityPeriod, filters, setFilters, openWorkflow, analyze, analyzing }: { workflows: WorkflowMap[]; knownWorkflowCount: number; activityPeriod: WorkflowActivityPeriod; filters: WorkflowFilters; setFilters: (filters: WorkflowFilters) => void; openWorkflow: (index: number) => void; analyze: () => void; analyzing: boolean }) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const visible = useMemo(() => filterWorkflows(workflows, filters), [filters, workflows]);
   const availableApps = useMemo(() => [...new Set(workflows.flatMap((workflow) => workflow.apps))].sort((a, b) => a.localeCompare(b)), [workflows]);
@@ -401,10 +414,10 @@ function WorkflowsView({ workflows, filters, setFilters, openWorkflow, analyze, 
 
   return (
     <>
-      <div className={styles.pageHeader}><div><span>Process inventory</span><h1>Your workflows</h1><p>Each map is reconstructed from repeated captured work. Times are per run and shown as estimates where exact timing is not available.</p></div><button className={styles.primaryButton} onClick={analyze} disabled={analyzing}><RefreshCw size={14} />Refresh maps</button></div>
-      {!workflows.length ? <EmptyWorkMap analyzing={analyzing} analyze={analyze} days={analysisDays} /> : <>
+      <div className={styles.pageHeader}><div><span>Process inventory</span><h1>Your workflows</h1><p>This catalog persists across refreshes. The activity selector narrows what you see without deleting workflows that were not repeated recently.</p></div><button className={styles.primaryButton} onClick={analyze} disabled={analyzing}><RefreshCw size={14} />Refresh catalog</button></div>
+      {!knownWorkflowCount ? <EmptyWorkMap analyzing={analyzing} analyze={analyze} /> : !workflows.length ? <section className={styles.emptyState}><Clock3 size={23} /><h2>No known workflows were active in this period</h2><p>Your {knownWorkflowCount} known workflows are still in the catalog. Choose “All known” to see them.</p></section> : <>
         <section className={styles.filterBar} aria-label="Workflow filters">
-          <div><strong>{visible.length} of {workflows.length} workflows</strong><span>{filters.query ? `matching “${filters.query}”` : "Ranked by repeated time and evidence"}</span></div>
+          <div><strong>{visible.length} of {workflows.length} shown</strong><span>{filters.query ? `matching “${filters.query}”` : activityPeriodLabel(activityPeriod)}</span></div>
           {(filterCount > 0 || filters.query) && <button className={styles.clearButton} onClick={() => setFilters(defaultWorkflowFilters)}><X size={12} />Clear</button>}
           <button className={filtersOpen || filterCount ? styles.filterButtonActive : styles.filterButton} onClick={() => setFiltersOpen((open) => !open)}><SlidersHorizontal size={14} />Filters{filterCount ? ` (${filterCount})` : ""}<ChevronDown size={13} /></button>
         </section>
@@ -543,14 +556,18 @@ export function WorkflowsApp() {
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [selectedWorkflow, setSelectedWorkflow] = useState(0);
-  const [analysisDays, setAnalysisDays] = useState(7);
+  const [activityPeriod, setActivityPeriod] = useState<WorkflowActivityPeriod>(0);
   const [filters, setFilters] = useState<WorkflowFilters>(defaultWorkflowFilters);
   const view = useMemo<AppView>(() => {
     const requested = searchParams.get("view") ?? searchParams.get("section");
     return isAppView(requested) ? requested : "overview";
   }, [searchParams]);
   const navigate = (target: AppView) => router.push(`/home?view=${target}`);
-  const workflows = analysis?.analysis.workflows ?? [];
+  const knownWorkflows = analysis?.analysis.workflows ?? [];
+  const workflows = useMemo(
+    () => workflowsForActivityPeriod(knownWorkflows, activityPeriod, analysis?.analyzedAt ?? new Date().toISOString()),
+    [activityPeriod, analysis?.analyzedAt, knownWorkflows],
+  );
   const activeWorkflow = workflows[selectedWorkflow] ?? workflows[0] ?? null;
   const openWorkflow = useCallback((index: number) => {
     if (index < 0) return;
@@ -571,7 +588,6 @@ export function WorkflowsApp() {
         const parsed = JSON.parse(saved) as WorkflowAnalysis;
         if (parsed?.schemaVersion === 5 && Array.isArray(parsed?.analysis?.workflows)) {
           setAnalysis(parsed);
-          setAnalysisDays(parsed.days);
         }
         else window.localStorage.removeItem("screenpipe-workflows:last-analysis");
       } catch {
@@ -590,11 +606,12 @@ export function WorkflowsApp() {
       if (!nextRuntime.processingAvailable) {
         throw new Error(nextRuntime.cloudAuthAvailable ? "Work history is not ready yet. Check the setup above, then try again." : "Connect your account before building a work map.");
       }
-      const nextAnalysis = await analyzeCapturedWork(analysisDays);
-      setAnalysis(nextAnalysis);
+      const nextAnalysis = await analyzeCapturedWork(WORKFLOW_CATALOG_DAYS);
+      const mergedAnalysis = mergeWorkflowCatalog(analysis, nextAnalysis);
+      setAnalysis(mergedAnalysis);
       setSelectedWorkflow(0);
       try {
-        window.localStorage.setItem("screenpipe-workflows:last-analysis", JSON.stringify(withoutScreenshotCopies(nextAnalysis)));
+        window.localStorage.setItem("screenpipe-workflows:last-analysis", JSON.stringify(withoutScreenshotCopies(mergedAnalysis)));
       } catch {
         // The in-memory map remains usable even when browser storage is full.
       }
@@ -603,17 +620,17 @@ export function WorkflowsApp() {
     } finally {
       setAnalyzing(false);
     }
-  }, [analysisDays]);
+  }, [analysis]);
 
   let content: React.ReactNode;
   switch (view) {
-    case "overview": content = <OverviewView analysis={analysis} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} analysisDays={analysisDays} runtime={runtime} refreshRuntime={refreshRuntime} />; break;
-    case "workflows": content = <WorkflowsView workflows={workflows} filters={filters} setFilters={setFilters} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} analysisDays={analysisDays} />; break;
+    case "overview": content = <OverviewView analysis={analysis ? { ...analysis, analysis: { workflows } } : null} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} runtime={runtime} refreshRuntime={refreshRuntime} />; break;
+    case "workflows": content = <WorkflowsView workflows={workflows} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} filters={filters} setFilters={setFilters} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} />; break;
     case "workflow": content = <WorkflowDetail workflow={activeWorkflow} navigate={navigate} />; break;
     case "bottlenecks": content = <BottlenecksView workflows={workflows} openWorkflow={openWorkflow} />; break;
     case "evidence": content = <EvidenceView workflows={workflows} openWorkflow={openWorkflow} />; break;
     case "privacy": content = <PrivacyView runtime={runtime} />; break;
   }
 
-  return <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={workflows.length} query={filters.query} setQuery={(query) => setFilters((current) => ({ ...current, query }))} analysisDays={analysisDays} setAnalysisDays={setAnalysisDays} appliedDays={analysis?.days}>{content}</AppShell>;
+  return <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={knownWorkflows.length} query={filters.query} setQuery={(query) => setFilters((current) => ({ ...current, query }))} activityPeriod={activityPeriod} setActivityPeriod={(period) => { setActivityPeriod(period); setSelectedWorkflow(0); }}>{content}</AppShell>;
 }
