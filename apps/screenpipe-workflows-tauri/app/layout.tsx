@@ -38,7 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className="light" suppressHydrationWarning>
       <head>
         <title>Screenpipe Workflows</title>
-        <meta name="description" content="Turn repeated desktop work into supervised agents." />
+        <meta name="description" content="See how your work actually flows, where time goes, and what gets stuck." />
       </head>
       <body>
         <Providers>{children}</Providers>

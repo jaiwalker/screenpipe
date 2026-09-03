@@ -5,75 +5,82 @@
 "use client";
 
 import {
-  Activity,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  Bot,
-  Check,
   ChevronRight,
-  CircleDot,
+  Clock3,
+  Eye,
   FileCheck2,
-  Fingerprint,
-  Gauge,
+  GitBranch,
   History,
-  Inbox,
+  LayoutDashboard,
+  ListTree,
   LockKeyhole,
-  MemoryStick,
-  Pause,
-  Radar,
+  RefreshCw,
   Search,
   ShieldCheck,
-  Sparkles,
-  TriangleAlert,
   Workflow,
-  X,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  type AppView,
-  type WorkflowView,
-  isAppView,
-  nextWorkflowView,
-  previousWorkflowView,
-  workflowViews,
-} from "@/lib/workflows/navigation";
-import { LunaModelCard } from "@/components/workflows/luna-model-card";
+import { type AppView, isAppView } from "@/lib/workflows/navigation";
 import {
   analyzeCapturedWork,
   ensureWorkflowRuntime,
   type WorkflowAnalysis,
-  type WorkflowOpportunity,
+  type WorkflowBottleneck,
+  type WorkflowMap,
   type WorkflowRuntime,
 } from "@/lib/workflows/runtime";
 import styles from "./workflows-app.module.css";
 
-const steps = [
-  ["Find the call", "Match the latest investor meeting and its full transcript."],
-  ["Build the evidence pack", "Keep only claims supported by what was actually discussed."],
-  ["Draft the follow-up", "Write in your concise founder voice with one clear ask."],
-  ["Attach the approved deck", "Use the exact current investor deck, never a guessed file."],
-  ["Ask before sending", "Show the email, recipients, and attachment for final approval."],
-];
+const processingSteps = [
+  ["Gathering the last seven days", "Preparing a bounded view of your recent work"],
+  ["Finding repeated sequences", "Connecting actions that belong to the same workflow"],
+  ["Measuring each stage", "Separating hands-on work from waiting and switching"],
+  ["Locating bottlenecks", "Checking each friction point against captured evidence"],
+] as const;
 
-function BrandMark() {
-  return (
-    <span className={styles.brandMark} aria-hidden="true">
-      <span />
-      <span />
-      <span />
-    </span>
-  );
+function formatMinutes(value: number) {
+  const minutes = Math.max(0, Math.round(value || 0));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
 }
 
-function Pill({ children, tone = "plain" }: { children: React.ReactNode; tone?: "plain" | "green" | "dark" }) {
+function BrandMark() {
+  return <span className={styles.brandMark} aria-hidden="true"><span /><span /><span /></span>;
+}
+
+function Pill({ children, tone = "plain" }: { children: React.ReactNode; tone?: "plain" | "green" | "warm" }) {
   return <span className={`${styles.pill} ${styles[`pill_${tone}`]}`}>{children}</span>;
 }
 
-function AppShell({ view, navigate, runtime, workflowCount, children }: { view: AppView; navigate: (view: AppView) => void; runtime: WorkflowRuntime | null; workflowCount: number; children: React.ReactNode }) {
-  const primary = view === "agents" || view === "memory" || view === "controls" ? view : "workflows";
-  const isLiveDiscovery = view === "opportunities" || view === "evidence" || view === "memory" || view === "controls";
-  const recorderLabel = runtime?.source === "screenpipe" ? "Screenpipe recording" : runtime?.source === "workflows" ? "Workflows recording" : "Starting recorder";
+function AppShell({
+  view,
+  navigate,
+  runtime,
+  workflowCount,
+  children,
+}: {
+  view: AppView;
+  navigate: (view: AppView) => void;
+  runtime: WorkflowRuntime | null;
+  workflowCount: number;
+  children: React.ReactNode;
+}) {
+  const activeView = view === "workflow" ? "workflows" : view;
+  const recorderLabel = runtime?.recording ? "Work history active" : "Preparing work history";
+  const nav = [
+    ["overview", LayoutDashboard, "Overview"],
+    ["workflows", ListTree, "Workflows"],
+    ["bottlenecks", AlertTriangle, "Bottlenecks"],
+    ["evidence", FileCheck2, "Evidence"],
+    ["privacy", ShieldCheck, "Privacy"],
+  ] as const;
+
   return (
     <div className={styles.app}>
       <aside className={styles.sidebar}>
@@ -82,216 +89,224 @@ function AppShell({ view, navigate, runtime, workflowCount, children }: { view: 
           <div><strong>Screenpipe</strong><span>Workflows</span></div>
         </div>
         <nav className={styles.nav} aria-label="Primary navigation">
-          <button className={primary === "workflows" ? styles.navActive : ""} onClick={() => navigate("opportunities")}><Workflow size={16} />Workflows<span>{workflowCount || "—"}</span></button>
-          <button className={primary === "agents" ? styles.navActive : ""} onClick={() => navigate("agents")}><Bot size={16} />Agents<span>0</span></button>
-          <button className={primary === "memory" ? styles.navActive : ""} onClick={() => navigate("memory")}><MemoryStick size={16} />Memory</button>
-          <button className={primary === "controls" ? styles.navActive : ""} onClick={() => navigate("controls")}><ShieldCheck size={16} />Controls</button>
+          {nav.map(([target, Icon, label]) => (
+            <button key={target} className={activeView === target ? styles.navActive : ""} onClick={() => navigate(target)}>
+              <Icon size={16} />{label}
+              {target === "workflows" && <span>{workflowCount || "—"}</span>}
+            </button>
+          ))}
         </nav>
         <div className={styles.sidebarBottom}>
-          <div className={styles.learningStatus}><i /><div><strong>{recorderLabel}</strong><span>Raw capture stays on this Mac</span></div></div>
-          <button className={styles.profile}><span>LB</span><div><strong>Louis</strong><small>Local workspace</small></div><ChevronRight size={14} /></button>
+          <div className={styles.learningStatus}><i /><div><strong>{recorderLabel}</strong><span>Private on this Mac</span></div></div>
+          <div className={styles.readOnlyNote}><Eye size={14} /><span><strong>Analysis only</strong>Maps your work. Never performs it.</span></div>
         </div>
       </aside>
       <section className={styles.workspace}>
         <header className={styles.topbar} data-tauri-drag-region>
           <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" />
           <div className={styles.search}><Search size={15} /><span>Search workflows and evidence</span><kbd>⌘ K</kbd></div>
-          <button className={styles.modelButton} onClick={() => navigate("controls")}><ShieldCheck size={13} />Luna 5.6 · Gateway</button>
+          <Pill><History size={12} />Last 7 days</Pill>
           <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{runtime?.recording ? "Recording" : "Starting"}</Pill>
-          <button className={styles.iconButton} aria-label="Inbox"><Inbox size={17} /><i /></button>
         </header>
-        <div className={styles.prototypeBanner}><Sparkles size={13} />{isLiveDiscovery ? "Live captured-data discovery · nothing acts without your approval" : "Builder preview · publishing and external actions are not enabled in this build"}</div>
+        <div className={styles.purposeBanner}><Eye size={13} />This app only maps and measures your work. It does not run anything.</div>
         <main className={styles.main}>{children}</main>
       </section>
     </div>
   );
 }
 
-function StageRail({ view, navigate }: { view: WorkflowView; navigate: (view: AppView) => void }) {
-  const labels = ["Discover", "Prove", "Draft", "Constrain", "Test", "Publish", "Supervise", "Learn"];
-  const current = workflowViews.indexOf(view);
+function EmptyWorkMap({ analyzing, analyze }: { analyzing: boolean; analyze: () => void }) {
+  if (analyzing) return <ProcessingView />;
   return (
-    <div className={styles.stageRail}>
-      {workflowViews.map((stage, index) => (
-        <button key={stage} onClick={() => navigate(stage)} className={index === current ? styles.stageCurrent : index < current ? styles.stageDone : ""}>
-          <span>{index < current ? <Check size={11} /> : index + 1}</span>{labels[index]}
-        </button>
-      ))}
-    </div>
+    <section className={styles.emptyState}>
+      <div className={styles.emptyMark}><Workflow size={23} /></div>
+      <h2>Your first work map starts here</h2>
+      <p>Screenpipe will look across the last seven days for repeated sequences, then map the stages, time, waiting, app changes, and bottlenecks it can support.</p>
+      <button className={styles.primaryButton} onClick={analyze}>Build my work map <ArrowRight size={14} /></button>
+    </section>
   );
 }
 
-function OpportunityView({
-  navigate,
+function ProcessingView() {
+  const [active, setActive] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setActive((value) => (value + 1) % processingSteps.length), 2400);
+    return () => window.clearInterval(timer);
+  }, []);
+  return (
+    <section className={styles.processing}>
+      <div className={styles.processingHead}><span className={styles.spinner} /><div><h2>Building your work map</h2><p>This can take about a minute. Your raw screen history stays on this Mac.</p></div></div>
+      <div className={styles.processingSteps}>
+        {processingSteps.map(([title, detail], index) => (
+          <div key={title} className={index === active ? styles.processingActive : ""}>
+            <span>{index + 1}</span><div><strong>{title}</strong><p>{detail}</p></div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ErrorNotice({ message }: { message: string }) {
+  return <div className={styles.errorNotice}><AlertTriangle size={16} /><div><strong>Couldn’t finish the work map</strong><p>{message}</p></div></div>;
+}
+
+function OverviewView({
   analysis,
   analyzing,
   error,
-  selectOpportunity,
   analyze,
+  openWorkflow,
+  navigate,
 }: {
-  navigate: (view: AppView) => void;
   analysis: WorkflowAnalysis | null;
   analyzing: boolean;
   error: string;
-  selectOpportunity: (index: number) => void;
   analyze: () => void;
+  openWorkflow: (index: number) => void;
+  navigate: (view: AppView) => void;
 }) {
-  const opportunities = analysis?.analysis.opportunities ?? [];
-  const totalMinutes = opportunities.reduce((sum, item) => sum + (item.estimatedMinutes * item.repetitions), 0);
-  const totalRepetitions = opportunities.reduce((sum, item) => sum + item.repetitions, 0);
-  const appCount = new Set(opportunities.flatMap((item) => item.apps)).size;
+  const workflows = analysis?.analysis.workflows ?? [];
+  const mappedMinutes = workflows.reduce((sum, item) => sum + item.totalMinutes * item.repetitions, 0);
+  const waitingMinutes = workflows.reduce((sum, item) => sum + item.waitingMinutes * item.repetitions, 0);
+  const bottleneckCount = workflows.reduce((sum, item) => sum + item.bottlenecks.length, 0);
+
   return (
     <>
-      <div className={styles.hero}>
+      <section className={styles.hero}>
         <div>
-          <Pill tone={opportunities.length ? "green" : "plain"}><Radar size={12} /> {opportunities.length ? `${opportunities.length} captured patterns found` : "Ready to inspect captured work"}</Pill>
-          <h1>Your repeated work,<br /><em>ready to become agents.</em></h1>
-          <p>Analyze a bounded summary from the recorder already running on this computer. Luna finds repeated patterns; you inspect its evidence before anything can become an agent.</p>
-          <button className={styles.analyzeButton} onClick={analyze} disabled={analyzing}>{analyzing ? <><span className={styles.spinner} />Analyzing 7 days with Luna…</> : <><Sparkles size={14} />{opportunities.length ? "Analyze again" : "Analyze the last 7 days"}</>}</button>
+          <Pill tone={workflows.length ? "green" : "plain"}><Workflow size={12} />{workflows.length ? `${workflows.length} workflows mapped` : "Ready to map your work"}</Pill>
+          <h1>See how your work<br /><em>actually flows.</em></h1>
+          <p>A granular map of the work hidden across your day: what starts it, every stage, how long it takes, where you wait, and where it gets stuck.</p>
+          <button className={styles.analyzeButton} onClick={analyze} disabled={analyzing}>{analyzing ? <><span className={styles.spinnerSmall} />Building work map…</> : <><RefreshCw size={14} />{workflows.length ? "Refresh work map" : "Analyze the last 7 days"}</>}</button>
         </div>
-        <div className={styles.weekCard}>
-          <span>{analysis ? `Analyzed ${analysis.days} days` : "Awaiting analysis"}</span><strong>{Math.floor(totalMinutes / 60)}h {totalMinutes % 60}m</strong><small>estimated repeatable work observed</small>
-          <div><i style={{ width: `${Math.min(100, totalMinutes / 4)}%` }} /></div><b>{totalRepetitions} supported repetitions across {appCount} apps</b>
+        <div className={styles.heroProof}>
+          <span>Last seven days</span>
+          <strong>{formatMinutes(analysis?.observedActiveMinutes ?? 0)}</strong>
+          <small>captured active time reviewed</small>
+          <div><i style={{ width: `${Math.min(100, workflows.length * 18)}%` }} /></div>
+          <p>{analysis ? `${analysis.bundleCount} days with usable work history` : "No sample workflows—only your captured work"}</p>
         </div>
-      </div>
-      <div className={styles.sectionHeading}><div><h2>Opportunities</h2><p>{analysis ? `Requested ${analysis.modelRequested}; served ${analysis.modelServed}. ${analysis.bundleCount} captured daily bundles processed.` : "Nothing here is sample data. Run an analysis to populate this list."}</p></div><button className={styles.textButton} onClick={analyze}><History size={14} />Refresh evidence</button></div>
-      {error && <div className={styles.analysisError}><TriangleAlert size={15} /><div><strong>Analysis did not complete</strong><p>{error}</p></div></div>}
-      {!opportunities.length && !error && <div className={styles.emptyDiscovery}>{analyzing ? <><span className={styles.spinnerLarge} /><h2>Luna is reading bounded activity summaries</h2><p>Screen recordings stay local. This usually takes under a minute.</p></> : <><Radar size={24} /><h2>No generated workflows yet</h2><p>Run the first analysis to replace this empty state with patterns from your actual captured work.</p></>}</div>}
-      <div className={styles.opportunityList}>
-        {opportunities.map((item, index) => (
-          <article className={`${styles.opportunity} ${index === 0 ? styles.opportunityFeatured : ""}`} key={item.title}>
-            <div className={styles.opportunityRank}>0{index + 1}</div>
-            <div className={styles.opportunityBody}>
-              <div className={styles.opportunityTitle}><h3>{item.title}</h3>{index === 0 && <Pill tone="green">Strongest captured pattern</Pill>}</div>
-              <p>{item.description}</p>
-              <div className={styles.apps}>{item.apps.map(app => <span key={app}>{app.slice(0, 1)}</span>)}<small>{item.apps.join(" · ")}</small></div>
-            </div>
-            <div className={styles.metrics}><div><strong>{item.repetitions} repeats</strong><span>in {item.analysisDays} days</span></div><div><strong>{item.estimatedMinutes} min each</strong><span>estimated active time</span></div><div><strong>{item.confidence}%</strong><span>model confidence</span></div></div>
-            <button className={styles.primaryButton} onClick={() => { selectOpportunity(index); navigate("evidence"); }}>Review evidence <ArrowRight size={14} /></button>
-          </article>
-        ))}
-      </div>
+      </section>
+      {error && <ErrorNotice message={error} />}
+      {!workflows.length ? <EmptyWorkMap analyzing={analyzing} analyze={analyze} /> : (
+        <>
+          <section className={styles.statGrid} aria-label="Work map summary">
+            <div><span>Mapped workflow time</span><strong>{formatMinutes(mappedMinutes)}</strong><small>estimated across observed repeats</small></div>
+            <div><span>Waiting inside workflows</span><strong>{formatMinutes(waitingMinutes)}</strong><small>supported or conservatively estimated</small></div>
+            <div><span>Bottlenecks found</span><strong>{bottleneckCount}</strong><small>linked to specific workflow stages</small></div>
+            <div><span>Workflows mapped</span><strong>{workflows.length}</strong><small>from {analysis?.days ?? 7} days of work</small></div>
+          </section>
+          <div className={styles.sectionHeading}><div><span>Where time goes</span><h2>Your workflows, active time vs. waiting</h2></div><button className={styles.textButton} onClick={() => navigate("workflows")}>View all workflows <ArrowRight size={14} /></button></div>
+          <section className={styles.timeMap}>
+            {workflows.map((workflow, index) => {
+              const total = Math.max(1, workflow.totalMinutes);
+              const activeWidth = Math.round((workflow.activeMinutes / total) * 100);
+              return (
+                <button key={workflow.title} onClick={() => openWorkflow(index)}>
+                  <div className={styles.timeMapTitle}><span>0{index + 1}</span><div><strong>{workflow.title}</strong><small>{workflow.repetitions} observed runs · {workflow.frequency}</small></div></div>
+                  <div className={styles.timeBar}><i style={{ width: `${activeWidth}%` }} /><b style={{ width: `${100 - activeWidth}%` }} /></div>
+                  <div className={styles.timeLegend}><span><i />{formatMinutes(workflow.activeMinutes)} active</span><span><i />{formatMinutes(workflow.waitingMinutes)} waiting</span><strong>{formatMinutes(workflow.totalMinutes)} / run</strong></div>
+                  <ChevronRight size={16} />
+                </button>
+              );
+            })}
+          </section>
+        </>
+      )}
     </>
   );
 }
 
-function WorkflowHeader({ view, navigate, eyebrow, title, description }: { view: WorkflowView; navigate: (view: AppView) => void; eyebrow: string; title: string; description: string }) {
+function WorkflowsView({ workflows, openWorkflow, analyze, analyzing }: { workflows: WorkflowMap[]; openWorkflow: (index: number) => void; analyze: () => void; analyzing: boolean }) {
   return (
     <>
-      <button className={styles.backButton} onClick={() => navigate("opportunities")}><ArrowLeft size={14} />All opportunities</button>
-      <StageRail view={view} navigate={navigate} />
-      <div className={styles.workflowHeader}><div><span>{eyebrow}</span><h1>{title}</h1><p>{description}</p></div><Pill tone="plain">Investor follow-up</Pill></div>
+      <div className={styles.pageHeader}><div><span>Process inventory</span><h1>Your workflows</h1><p>Each map is reconstructed from repeated captured work. Times are per run and shown as estimates where exact timing is not available.</p></div><button className={styles.primaryButton} onClick={analyze} disabled={analyzing}><RefreshCw size={14} />Refresh maps</button></div>
+      {!workflows.length ? <EmptyWorkMap analyzing={analyzing} analyze={analyze} /> : <div className={styles.workflowGrid}>{workflows.map((workflow, index) => (
+        <button key={workflow.title} className={styles.workflowCard} onClick={() => openWorkflow(index)}>
+          <div className={styles.workflowCardTop}><span>0{index + 1}</span><Pill tone={workflow.bottlenecks.length ? "warm" : "plain"}>{workflow.bottlenecks.length} bottleneck{workflow.bottlenecks.length === 1 ? "" : "s"}</Pill></div>
+          <h2>{workflow.title}</h2><p>{workflow.description}</p>
+          <div className={styles.cardPath}><span>{workflow.trigger}</span><ArrowRight size={12} /><span>{workflow.outcome}</span></div>
+          <div className={styles.cardMetrics}><div><span>Per run</span><strong>{formatMinutes(workflow.totalMinutes)}</strong></div><div><span>Stages</span><strong>{workflow.stages.length}</strong></div><div><span>Repeats</span><strong>{workflow.repetitions}</strong></div><div><span>Apps</span><strong>{workflow.apps.length}</strong></div></div>
+          <div className={styles.cardFooter}><span>{workflow.frequency}</span><strong>Open map <ChevronRight size={14} /></strong></div>
+        </button>
+      ))}</div>}
     </>
   );
 }
 
-function FlowFooter({ view, navigate, label }: { view: WorkflowView; navigate: (view: AppView) => void; label: string }) {
-  return (
-    <div className={styles.flowFooter}>
-      <button className={styles.secondaryButton} onClick={() => navigate(previousWorkflowView(view))}><ArrowLeft size={14} />Back</button>
-      <span>Nothing runs without your approval.</span>
-      <button className={styles.primaryButton} onClick={() => navigate(nextWorkflowView(view))}>{label}<ArrowRight size={14} /></button>
-    </div>
-  );
-}
-
-function EvidenceView({ navigate, opportunity }: { navigate: (view: AppView) => void; opportunity: WorkflowOpportunity | null }) {
-  if (!opportunity) {
-    return <div className={styles.emptyDiscovery}><Radar size={24} /><h2>No captured pattern selected</h2><p>Analyze your captured work, then choose a workflow to inspect.</p><button className={styles.primaryButton} onClick={() => navigate("opportunities")}>Back to discovery</button></div>;
-  }
-  const observedSteps = opportunity.steps.length ? opportunity.steps : ["Review the captured evidence", "Describe the repeatable sequence", "Choose what may be automated"];
-  const observedEvidence = opportunity.evidence.length ? opportunity.evidence : [{ timestamp: "Captured period", app: opportunity.apps[0] ?? "Screenpipe", detail: opportunity.description }];
+function WorkflowDetail({ workflow, navigate }: { workflow: WorkflowMap | null; navigate: (view: AppView) => void }) {
+  if (!workflow) return <section className={styles.emptyState}><ListTree size={23} /><h2>No workflow selected</h2><button className={styles.primaryButton} onClick={() => navigate("workflows")}>View workflows</button></section>;
+  const total = Math.max(1, workflow.totalMinutes);
+  const activeWidth = Math.round((workflow.activeMinutes / total) * 100);
   return (
     <>
-      <WorkflowHeader view="evidence" navigate={navigate} eyebrow={`Observed ${opportunity.repetitions} times in ${opportunity.analysisDays} days`} title={opportunity.title} description="This proposal came from captured activity. Challenge the evidence and edit every assumption before turning it into an agent." />
-      <div className={styles.twoColumn}>
-        <section className={styles.panel}><div className={styles.panelTitle}><div><span>Observed sequence</span><h2>What appears to repeat</h2></div><Pill tone="green">{opportunity.confidence}% confidence</Pill></div><div className={styles.sequence}>{observedSteps.map((step, index) => <div key={`${step}-${index}`}><b>{index + 1}</b><div><strong>{step}</strong><p>Proposed from the bounded captured summary; edit before publishing.</p></div><span>{index === observedSteps.length - 1 ? "review" : "observed"}</span></div>)}</div></section>
-        <section className={styles.panel}><div className={styles.panelTitle}><div><span>Traceable evidence</span><h2>Why Luna proposed this pattern</h2></div><FileCheck2 size={20} /></div><div className={styles.evidence}>{observedEvidence.map((item, index) => <button key={`${item.timestamp}-${index}`}><span className={styles.evidenceThumb}><i>{index + 1}</i></span><div><strong>{item.timestamp} · {item.app}</strong><p>{item.detail}</p></div><ChevronRight size={15} /></button>)}</div><div className={styles.localNote}><LockKeyhole size={16} /><div><strong>Raw recording stays local</strong><p>This view contains only the bounded evidence summary used for analysis.</p></div></div></section>
-      </div>
-      <FlowFooter view="evidence" navigate={navigate} label="Preview agent builder" />
+      <button className={styles.backButton} onClick={() => navigate("workflows")}><ArrowLeft size={14} />All workflows</button>
+      <section className={styles.detailHeader}>
+        <div><Pill>{workflow.repetitions} runs in {workflow.analysisDays} days</Pill><h1>{workflow.title}</h1><p>{workflow.description}</p></div>
+        <div className={styles.detailTotal}><span>Estimated time per run</span><strong>{formatMinutes(workflow.totalMinutes)}</strong><small>{formatMinutes(workflow.activeMinutes)} active · {formatMinutes(workflow.waitingMinutes)} waiting</small></div>
+      </section>
+      <section className={styles.detailStats}>
+        <div><span>Frequency</span><strong>{workflow.frequency}</strong></div>
+        <div><span>App switches</span><strong>{workflow.appSwitches || "Not clear"}</strong></div>
+        <div><span>Handoffs</span><strong>{workflow.handoffs.length || "None observed"}</strong></div>
+        <div><span>Evidence confidence</span><strong>{workflow.confidence}%</strong></div>
+      </section>
+      <section className={styles.flowMap}>
+        <div className={styles.flowEndpoint}><span>Starts when</span><strong>{workflow.trigger}</strong></div>
+        <div className={styles.stageList}>
+          {workflow.stages.map((stage, index) => {
+            const inferredWait = workflow.bottlenecks
+              .filter((item) => item.stage.toLowerCase() === stage.name.toLowerCase() && (item.type === "waiting" || item.type === "handoff"))
+              .reduce((sum, item) => sum + item.estimatedMinutesPerRun, 0);
+            const stageWaiting = Math.max(stage.waitingMinutes, inferredWait);
+            const stageTotal = stage.activeMinutes + stageWaiting;
+            const hasBottleneck = workflow.bottlenecks.some((item) => item.stage.toLowerCase() === stage.name.toLowerCase());
+            return <article key={`${stage.name}-${index}`} className={hasBottleneck ? styles.stageBottleneck : ""}>
+              <div className={styles.stageNumber}>{index + 1}</div>
+              <div className={styles.stageBody}><div><h3>{stage.name}</h3>{hasBottleneck && <Pill tone="warm"><AlertTriangle size={11} />Bottleneck</Pill>}</div><p>{stage.description}</p><span>{stage.apps.join(" · ") || "App not clear"}</span></div>
+              <div className={styles.stageTime}><strong>{formatMinutes(stageTotal)}</strong><span>{formatMinutes(stage.activeMinutes)} active</span><span>{formatMinutes(stageWaiting)} waiting</span></div>
+            </article>;
+          })}
+        </div>
+        <div className={styles.flowEndpoint}><span>Ends with</span><strong>{workflow.outcome}</strong></div>
+      </section>
+      <section className={styles.detailColumns}>
+        <div className={styles.panel}><div className={styles.panelTitle}><div><span>Time split</span><h2>Hands-on work vs. waiting</h2></div><Clock3 size={18} /></div><div className={styles.bigTimeBar}><i style={{ width: `${activeWidth}%` }} /><b style={{ width: `${100 - activeWidth}%` }} /></div><div className={styles.splitLegend}><div><i /><span>Active work</span><strong>{formatMinutes(workflow.activeMinutes)}</strong></div><div><i /><span>Waiting</span><strong>{formatMinutes(workflow.waitingMinutes)}</strong></div></div></div>
+        <div className={styles.panel}><div className={styles.panelTitle}><div><span>Workflow variations</span><h2>What changes between runs</h2></div><GitBranch size={18} /></div>{workflow.variations.length ? <ul className={styles.plainList}>{workflow.variations.map((item) => <li key={item}>{item}</li>)}</ul> : <p className={styles.panelEmpty}>No clear variations were supported in this period.</p>}{!!workflow.handoffs.length && <div className={styles.handoffs}><strong>Handoffs observed</strong>{workflow.handoffs.map((item) => <span key={item}><ArrowRight size={11} />{item}</span>)}</div>}</div>
+      </section>
+      {!!workflow.bottlenecks.length && <><div className={styles.sectionHeading}><div><span>Friction</span><h2>Bottlenecks in this workflow</h2></div><button className={styles.textButton} onClick={() => navigate("bottlenecks")}>View all bottlenecks <ArrowRight size={14} /></button></div><BottleneckList items={workflow.bottlenecks.map((item) => ({ ...item, workflowTitle: workflow.title, repetitions: workflow.repetitions }))} /></>}
     </>
   );
 }
 
-function DraftView({ navigate }: { navigate: (view: AppView) => void }) {
-  const [selected, setSelected] = useState(2);
-  return (
-    <>
-      <WorkflowHeader view="draft" navigate={navigate} eyebrow="Draft agent" title="Turn the pattern into an editable plan" description="The agent is a transparent sequence of actions—not a black box. Change any step before it can run." />
-      <div className={styles.builder}>
-        <section className={styles.stepList}>{steps.map(([title, detail], index) => <button className={selected === index ? styles.stepSelected : ""} onClick={() => setSelected(index)} key={title}><span>{index + 1}</span><div><strong>{title}</strong><small>{index === 4 ? "Requires approval" : "Read-only until approved"}</small></div><ChevronRight size={15} /></button>)}<button className={styles.addStep}>+ Add a step</button></section>
-        <section className={styles.editor}><div className={styles.editorHead}><div><span>Step {selected + 1}</span><h2>{steps[selected][0]}</h2></div><button className={styles.iconButton}><X size={15} /></button></div><label>Instruction<textarea value={steps[selected][1]} readOnly /></label><div className={styles.fieldGrid}><label>Tool<select defaultValue={selected === 0 ? "Screenpipe memory" : "Gmail"}><option>Screenpipe memory</option><option>Gmail</option><option>Google Drive</option></select></label><label>Access<select defaultValue="Read only"><option>Read only</option><option>Draft only</option><option>Write with approval</option></select></label></div><label>Success condition<input value="Evidence and source timestamp are attached" readOnly /></label><div className={styles.editorHint}><Fingerprint size={16} /><p><strong>Trace every output.</strong> This step must include a link back to the desktop evidence it used.</p></div></section>
-      </div>
-      <FlowFooter view="draft" navigate={navigate} label="Set boundaries" />
-    </>
-  );
+type RankedBottleneck = WorkflowBottleneck & { workflowTitle: string; repetitions: number };
+
+function BottleneckList({ items, openWorkflow }: { items: RankedBottleneck[]; openWorkflow?: (title: string) => void }) {
+  return <div className={styles.bottleneckList}>{items.map((item, index) => (
+    <article key={`${item.workflowTitle}-${item.label}-${index}`}>
+      <div className={styles.bottleneckRank}>0{index + 1}</div>
+      <div className={styles.bottleneckMain}><div><Pill tone="warm">{item.type}</Pill><span>{item.workflowTitle} · {item.stage}</span></div><h3>{item.label}</h3><p>{item.detail}</p><small><FileCheck2 size={11} />{item.evidence}</small></div>
+      <div className={styles.bottleneckTime}><span>Estimated delay</span><strong>{item.estimatedMinutesPerRun ? formatMinutes(item.estimatedMinutesPerRun) : "Unclear"}</strong><small>per run · {item.confidence}% confidence</small></div>
+      {openWorkflow && <button className={styles.iconLink} onClick={() => openWorkflow(item.workflowTitle)} aria-label={`Open ${item.workflowTitle}`}><ChevronRight size={16} /></button>}
+    </article>
+  ))}</div>;
 }
 
-function BoundariesView({ navigate }: { navigate: (view: AppView) => void }) {
-  const [approval, setApproval] = useState(true);
-  const [exactDeck, setExactDeck] = useState(true);
-  const [privateOnly, setPrivateOnly] = useState(true);
-  return (
-    <>
-      <WorkflowHeader view="boundaries" navigate={navigate} eyebrow="Constrain the agent" title="Decide what it may never improvise" description="Boundaries are enforced at runtime and shown beside every proposed action." />
-      <div className={styles.boundaryLayout}><section className={styles.panel}><div className={styles.panelTitle}><div><span>Non-negotiable rules</span><h2>Run policy</h2></div><ShieldCheck size={20} /></div>{[["Ask before every send", "The agent may draft, but only you can send an email.", approval, setApproval], ["Use only the approved deck", "Never substitute a similar file or generate a new attachment.", exactDeck, setExactDeck], ["Keep investor context private", "Do not send captured evidence or transcripts to third parties.", privateOnly, setPrivateOnly]].map(([title, detail, checked, setter]) => <button className={styles.toggleRow} key={String(title)} onClick={() => (setter as (v: boolean) => void)(!checked)}><div><strong>{String(title)}</strong><p>{String(detail)}</p></div><span className={checked ? styles.toggleOn : ""}><i /></span></button>)}</section><section className={styles.panel}><div className={styles.panelTitle}><div><span>Allowed scope</span><h2>Tools and data</h2></div></div><div className={styles.scopeList}><div><span>G</span><div><strong>Gmail</strong><p>Read threads · Create drafts</p></div><Pill>Never send</Pill></div><div><span>D</span><div><strong>Google Drive</strong><p>Read one approved folder</p></div><Pill>Read only</Pill></div><div><span>S</span><div><strong>Screenpipe memory</strong><p>Search local meeting context</p></div><Pill>On device</Pill></div></div><button className={styles.secondaryWide}>Edit connected tools</button></section></div>
-      <FlowFooter view="boundaries" navigate={navigate} label="Run a safe test" />
-    </>
-  );
+function BottlenecksView({ workflows, openWorkflow }: { workflows: WorkflowMap[]; openWorkflow: (index: number) => void }) {
+  const items = workflows.flatMap((workflow) => workflow.bottlenecks.map((item) => ({ ...item, workflowTitle: workflow.title, repetitions: workflow.repetitions }))).sort((a, b) => (b.estimatedMinutesPerRun * b.repetitions) - (a.estimatedMinutesPerRun * a.repetitions));
+  const totalDelay = items.reduce((sum, item) => sum + item.estimatedMinutesPerRun * item.repetitions, 0);
+  const openByTitle = (title: string) => openWorkflow(workflows.findIndex((workflow) => workflow.title === title));
+  return <><div className={styles.pageHeader}><div><span>Friction map</span><h1>Where work gets stuck</h1><p>Ranked delays, switching, rework, and handoffs from the workflows in this captured period.</p></div>{!!items.length && <div className={styles.headerMetric}><span>Estimated delay observed</span><strong>{formatMinutes(totalDelay)}</strong></div>}</div>{items.length ? <BottleneckList items={items} openWorkflow={openByTitle} /> : <section className={styles.emptyState}><AlertTriangle size={23} /><h2>No supported bottlenecks yet</h2><p>Build a work map first. Weak or unclear friction points are omitted.</p></section>}</>;
 }
 
-function DryRunView({ navigate }: { navigate: (view: AppView) => void }) {
-  return (
-    <>
-      <WorkflowHeader view="dry-run" navigate={navigate} eyebrow="Dry run · Nothing was sent" title="Test the agent on a real past case" description="Replay a previous follow-up, compare the proposed work with what you actually did, and correct it before publishing." />
-      <div className={styles.dryRun}><section className={styles.testSummary}><Pill tone="green"><Check size={12} /> 5 of 5 steps completed</Pill><h2>Test: RedBird follow-up · Aug 28</h2><p>Finished in 42 seconds using captured context from the original call.</p><div className={styles.runTimeline}>{steps.map(([title], index) => <div key={title}><span><Check size={11} /></span><strong>{title}</strong><small>{index === 4 ? "Held for approval" : `${4 + index * 2}s`}</small></div>)}</div></section><section className={styles.emailPreview}><div className={styles.emailChrome}><i /><i /><i /><span>Draft comparison</span></div><div className={styles.emailMeta}><span>To</span><strong>sam@redbirdcap.com</strong><span>Subject</span><strong>Screenpipe follow-up</strong></div><div className={styles.emailBody}>Sam — great speaking today.<br /><br />As promised, here’s the current deck. The product stays local by default and turns repeated desktop work into reviewed agents.<br /><br />Would Tuesday work for a deeper product session?<br /><br />Louis</div><div className={styles.diffNote}><Sparkles size={15} /><div><strong>1 difference from your original</strong><p>The test used “deeper product session.” You wrote “technical walkthrough.”</p></div><button>Use my wording</button></div></section></div>
-      <FlowFooter view="dry-run" navigate={navigate} label="Approve the test" />
-    </>
-  );
+function EvidenceView({ workflows, openWorkflow }: { workflows: WorkflowMap[]; openWorkflow: (index: number) => void }) {
+  const items = workflows.flatMap((workflow, workflowIndex) => workflow.evidence.map((evidence) => ({ ...evidence, workflowTitle: workflow.title, workflowIndex })));
+  return <><div className={styles.pageHeader}><div><span>Traceable observations</span><h1>Evidence behind the maps</h1><p>Use these captured observations to challenge workflow stages, time estimates, and bottlenecks.</p></div><Pill><LockKeyhole size={12} />Raw recording stays local</Pill></div>{items.length ? <section className={styles.evidenceList}>{items.map((item, index) => <button key={`${item.timestamp}-${index}`} onClick={() => openWorkflow(item.workflowIndex)}><span className={styles.evidenceIndex}>{String(index + 1).padStart(2, "0")}</span><div><span>{item.timestamp} · {item.app}</span><strong>{item.workflowTitle}</strong><p>{item.detail}</p></div><ChevronRight size={16} /></button>)}</section> : <section className={styles.emptyState}><FileCheck2 size={23} /><h2>No analyzed evidence yet</h2><p>Build your first work map to see the observations behind it.</p></section>}</>;
 }
 
-function PublishView({ navigate }: { navigate: (view: AppView) => void }) {
-  return (
-    <>
-      <WorkflowHeader view="publish" navigate={navigate} eyebrow="Ready to publish" title="Make this a supervised agent" description="It will prepare work when the trigger occurs, then wait for you wherever a boundary requires approval." />
-      <div className={styles.publishCard}><div className={styles.publishIcon}><Bot size={28} /></div><div className={styles.publishInfo}><Pill tone="green">Passed dry run</Pill><h2>Investor follow-up agent</h2><p>After an investor call ends, prepare an evidence-backed follow-up and wait for approval.</p><div className={styles.publishStats}><div><span>Trigger</span><strong>Investor meeting ends</strong></div><div><span>Expected work saved</span><strong>~19 minutes / run</strong></div><div><span>Final action</span><strong>Approval required</strong></div></div></div><div className={styles.publishChecklist}><strong>Before publishing</strong>{["5 steps reviewed", "3 boundaries active", "1 safe test passed", "All write actions require approval"].map(x => <span key={x}><Check size={13} />{x}</span>)}</div></div>
-      <FlowFooter view="publish" navigate={navigate} label="Publish agent" />
-    </>
-  );
-}
-
-function RunView({ navigate }: { navigate: (view: AppView) => void }) {
-  const [approved, setApproved] = useState(false);
-  return (
-    <>
-      <WorkflowHeader view="run" navigate={navigate} eyebrow="Live run · Today, 11:42 AM" title={approved ? "Follow-up sent with your approval" : "Your agent needs one decision"} description={approved ? "The complete run is logged with its evidence, edits, and approval." : "The draft is ready. Review the recipient, wording, and attachment before anything leaves your computer."} />
-      <div className={styles.liveRun}><section className={styles.panel}><div className={styles.panelTitle}><div><span>Run progress</span><h2>Northzone follow-up</h2></div><Pill tone={approved ? "plain" : "green"}>{approved ? "Complete" : "Waiting for you"}</Pill></div><div className={styles.runTimeline}>{steps.map(([title], index) => <div key={title} className={!approved && index === 4 ? styles.waiting : ""}><span>{approved || index < 4 ? <Check size={11} /> : <Pause size={10} />}</span><strong>{title}</strong><small>{index === 4 && !approved ? "Approval" : "Complete"}</small></div>)}</div><div className={styles.auditNote}><Activity size={15} />Every tool call, source, edit, and decision is recorded.</div></section><section className={styles.approvalCard}>{approved ? <div className={styles.successState}><span><Check size={26} /></span><h2>Approved and sent</h2><p>The run completed at 11:44 AM. No other actions were taken.</p><button className={styles.primaryButton} onClick={() => navigate("outcomes")}>View what it learned<ArrowRight size={14} /></button></div> : <><div className={styles.approvalHead}><span><ShieldCheck size={18} /></span><div><strong>Approval required</strong><small>Email send · external action</small></div></div><div className={styles.recipient}><span>To</span><strong>partner@northzone.com</strong><span>Attachment</span><strong>Screenpipe — Investor deck Sep 2026.pdf</strong></div><div className={styles.messageBox}>Thanks for the thoughtful conversation today. As promised, I attached the current deck. The core idea is simple: Screenpipe learns the repeated work on your computer, then turns it into agents you can inspect and supervise.</div><div className={styles.approvalActions}><button className={styles.secondaryButton}>Edit draft</button><button className={styles.primaryButton} onClick={() => setApproved(true)}>Approve and send<Check size={14} /></button></div></>}</section></div>
-      {!approved && <div className={styles.flowFooter}><button className={styles.secondaryButton} onClick={() => navigate("publish")}><ArrowLeft size={14} />Agent settings</button><span>The agent is paused until you decide.</span><button className={styles.textButton} onClick={() => navigate("outcomes")}>Preview learning view<ArrowRight size={14} /></button></div>}
-    </>
-  );
-}
-
-function OutcomesView({ navigate }: { navigate: (view: AppView) => void }) {
-  return (
-    <>
-      <WorkflowHeader view="outcomes" navigate={navigate} eyebrow="Learn from outcomes" title="The agent improves from your decisions" description="Edits become proposed rules. Screenpipe never silently changes a published agent." />
-      <div className={styles.outcomeGrid}><section className={styles.outcomeHero}><span><Gauge size={18} />Last 30 days</span><strong>2h 46m</strong><p>active work saved across 9 supervised runs</p><div><i style={{ width: "88%" }} /></div><small>8 approved · 1 edited · 0 failed</small></section><section className={styles.panel}><div className={styles.panelTitle}><div><span>Proposed learning</span><h2>A correction repeated twice</h2></div><Sparkles size={18} /></div><div className={styles.learningRule}><span>When asking for a second meeting</span><del>deeper product session</del><ins>technical walkthrough</ins><p>You made this edit in 2 of the last 3 runs.</p></div><div className={styles.ruleActions}><button className={styles.secondaryButton}>Ignore</button><button className={styles.primaryButton}>Add as a rule<Check size={14} /></button></div></section></div><div className={styles.sectionHeading}><div><h2>Recent runs</h2><p>Every outcome remains traceable to the original evidence.</p></div></div><div className={styles.runTable}><div><span>Northzone · Today</span><strong>Approved</strong><small>18m saved</small><button>View trace</button></div><div><span>RedBird · Aug 28</span><strong>Edited</strong><small>16m saved</small><button>View trace</button></div><div><span>Accel · Aug 25</span><strong>Approved</strong><small>21m saved</small><button>View trace</button></div></div>
-      <div className={styles.flowFooter}><button className={styles.secondaryButton} onClick={() => navigate("run")}><ArrowLeft size={14} />Back to run</button><span>Learning stays reviewable.</span><button className={styles.primaryButton} onClick={() => navigate("opportunities")}>Find another workflow<ArrowRight size={14} /></button></div>
-    </>
-  );
-}
-
-function AgentsView({ navigate }: { navigate: (view: AppView) => void }) {
-  return <><div className={styles.simpleHeader}><Pill><CircleDot size={12} />0 published</Pill><h1>Your supervised agents</h1><p>Captured patterns do not become agents automatically. Publishing will arrive after the discovery and review loop is proven.</p></div><div className={styles.emptyDiscovery}><Bot size={24} /><h2>No agents are running</h2><p>Review a real captured pattern first. This build never sends messages, publishes, deletes, or spends money.</p><button className={styles.primaryButton} onClick={() => navigate("opportunities")}>Open workflow discovery<ArrowRight size={14} /></button></div></>;
-}
-
-function MemoryView({ opportunities, selectOpportunity, navigate }: { opportunities: WorkflowOpportunity[]; selectOpportunity: (index: number) => void; navigate: (view: AppView) => void }) {
-  const rows = opportunities.flatMap((item, opportunityIndex) => item.evidence.map((evidenceItem) => ({ ...evidenceItem, title: item.title, opportunityIndex })));
-  return <><div className={styles.simpleHeader}><Pill><MemoryStick size={12} />Analyzed evidence</Pill><h1>The evidence behind every proposed workflow</h1><p>This is the bounded evidence returned by the last live analysis, not a sample activity feed.</p></div><div className={styles.memorySearch}><Search size={18} /><span>Search will apply to analyzed evidence in a later build</span></div>{rows.length ? <div className={styles.memoryTimeline}>{rows.map((item, index) => <div key={`${item.timestamp}-${index}`}><span>{item.app}</span><div><strong>{item.timestamp} · {item.title}</strong><p>{item.detail}</p></div><button onClick={() => { selectOpportunity(item.opportunityIndex); navigate("evidence"); }}>Inspect</button></div>)}</div> : <div className={styles.emptyDiscovery}><MemoryStick size={24} /><h2>No analyzed evidence yet</h2><p>Run workflow discovery to populate this view from captured activity.</p></div>}</>;
-}
-
-function ControlsView() {
-  return <><div className={styles.simpleHeader}><Pill><ShieldCheck size={12} />Global policy</Pill><h1>Control what agents can learn and do</h1><p>These defaults apply before individual workflow rules. Discovery is live; external actions remain disabled in this build.</p></div><div className={styles.modelSetup}><LunaModelCard /></div><div className={styles.controlsGrid}><section className={styles.panel}><h2>Always require approval</h2>{["Send email or messages", "Publish externally", "Edit or delete records", "Spend money"].map(x => <div className={styles.controlRow} key={x}><span><Check size={11} /></span><strong>{x}</strong><small>Enforced</small></div>)}</section><section className={styles.panel}><h2>Never learn from</h2>{["1Password", "Private browsing windows", "Banking and payroll", "Excluded people and domains"].map(x => <div className={styles.controlRow} key={x}><span><X size={11} /></span><strong>{x}</strong><small>Excluded</small></div>)}</section><section className={styles.panel}><h2>Data boundary</h2><div className={styles.dataBoundary}><LockKeyhole size={22} /><strong>Raw capture stays local</strong><p>Only bounded activity summaries are sent to the Screenpipe gateway when you request analysis.</p></div></section></div></>;
+function PrivacyView({ runtime }: { runtime: WorkflowRuntime | null }) {
+  return <><div className={styles.pageHeader}><div><span>Privacy</span><h1>Your work stays yours</h1><p>A simple boundary: raw recordings remain on this Mac, and this app only analyzes your work. It cannot take actions for you.</p></div></div><section className={styles.privacyGrid}><article><LockKeyhole size={21} /><h2>Raw history stays local</h2><p>Screen and audio recordings are kept on this device by default.</p><Pill tone="green">On this Mac</Pill></article><article><Eye size={21} /><h2>Only when you ask</h2><p>A bounded summary is processed when you choose to refresh your work map.</p><Pill>Read-only analysis</Pill></article><article><ShieldCheck size={21} /><h2>No actions</h2><p>Screenpipe Workflows does not send, publish, edit, delete, or run your work.</p><Pill>Mapping only</Pill></article></section><section className={styles.statusPanel}><div><span className={runtime?.recording ? styles.statusLive : ""} /><div><strong>{runtime?.recording ? "Work history is active" : "Work history is starting"}</strong><p>{runtime?.source === "screenpipe" ? "Using the history already captured by Screenpipe without recording twice." : "Screenpipe Workflows is preparing its private work history."}</p></div></div><Pill tone={runtime?.recording ? "green" : "plain"}>{runtime?.recording ? "Ready" : "Checking"}</Pill></section></>;
 }
 
 export function WorkflowsApp() {
@@ -301,23 +316,32 @@ export function WorkflowsApp() {
   const [analysis, setAnalysis] = useState<WorkflowAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
-  const [selectedOpportunity, setSelectedOpportunity] = useState(0);
+  const [selectedWorkflow, setSelectedWorkflow] = useState(0);
   const view = useMemo<AppView>(() => {
     const requested = searchParams.get("view") ?? searchParams.get("section");
-    return isAppView(requested) ? requested : "opportunities";
+    return isAppView(requested) ? requested : "overview";
   }, [searchParams]);
   const navigate = (target: AppView) => router.push(`/home?view=${target}`);
-  const opportunities = analysis?.analysis.opportunities ?? [];
-  const activeOpportunity = opportunities[selectedOpportunity] ?? opportunities[0] ?? null;
+  const workflows = analysis?.analysis.workflows ?? [];
+  const activeWorkflow = workflows[selectedWorkflow] ?? workflows[0] ?? null;
+  const openWorkflow = useCallback((index: number) => {
+    if (index < 0) return;
+    setSelectedWorkflow(index);
+    router.push("/home?view=workflow");
+  }, [router]);
 
   useEffect(() => {
     const saved = window.localStorage.getItem("screenpipe-workflows:last-analysis");
     if (saved) {
-      try { setAnalysis(JSON.parse(saved) as WorkflowAnalysis); } catch { window.localStorage.removeItem("screenpipe-workflows:last-analysis"); }
+      try {
+        const parsed = JSON.parse(saved) as WorkflowAnalysis;
+        if (Array.isArray(parsed?.analysis?.workflows)) setAnalysis(parsed);
+        else window.localStorage.removeItem("screenpipe-workflows:last-analysis");
+      } catch {
+        window.localStorage.removeItem("screenpipe-workflows:last-analysis");
+      }
     }
-    void ensureWorkflowRuntime()
-      .then(setRuntime)
-      .catch((error) => setAnalysisError(error instanceof Error ? error.message : String(error || "Could not initialize the recorder.")));
+    void ensureWorkflowRuntime().then(setRuntime).catch((error) => setAnalysisError(error instanceof Error ? error.message : String(error || "Could not prepare your work history.")));
   }, []);
 
   const analyze = useCallback(async () => {
@@ -328,10 +352,10 @@ export function WorkflowsApp() {
       setRuntime(nextRuntime);
       const nextAnalysis = await analyzeCapturedWork(7);
       setAnalysis(nextAnalysis);
-      setSelectedOpportunity(0);
+      setSelectedWorkflow(0);
       window.localStorage.setItem("screenpipe-workflows:last-analysis", JSON.stringify(nextAnalysis));
     } catch (error) {
-      setAnalysisError(error instanceof Error ? error.message : String(error || "Workflow analysis failed."));
+      setAnalysisError(error instanceof Error ? error.message : String(error || "Work map analysis failed."));
     } finally {
       setAnalyzing(false);
     }
@@ -339,17 +363,13 @@ export function WorkflowsApp() {
 
   let content: React.ReactNode;
   switch (view) {
-    case "opportunities": content = <OpportunityView navigate={navigate} analysis={analysis} analyzing={analyzing} error={analysisError} selectOpportunity={setSelectedOpportunity} analyze={() => void analyze()} />; break;
-    case "evidence": content = <EvidenceView navigate={navigate} opportunity={activeOpportunity} />; break;
-    case "draft": content = <DraftView navigate={navigate} />; break;
-    case "boundaries": content = <BoundariesView navigate={navigate} />; break;
-    case "dry-run": content = <DryRunView navigate={navigate} />; break;
-    case "publish": content = <PublishView navigate={navigate} />; break;
-    case "run": content = <RunView navigate={navigate} />; break;
-    case "outcomes": content = <OutcomesView navigate={navigate} />; break;
-    case "agents": content = <AgentsView navigate={navigate} />; break;
-    case "memory": content = <MemoryView opportunities={opportunities} selectOpportunity={setSelectedOpportunity} navigate={navigate} />; break;
-    case "controls": content = <ControlsView />; break;
+    case "overview": content = <OverviewView analysis={analysis} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} />; break;
+    case "workflows": content = <WorkflowsView workflows={workflows} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} />; break;
+    case "workflow": content = <WorkflowDetail workflow={activeWorkflow} navigate={navigate} />; break;
+    case "bottlenecks": content = <BottlenecksView workflows={workflows} openWorkflow={openWorkflow} />; break;
+    case "evidence": content = <EvidenceView workflows={workflows} openWorkflow={openWorkflow} />; break;
+    case "privacy": content = <PrivacyView runtime={runtime} />; break;
   }
-  return <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={opportunities.length}>{content}</AppShell>;
+
+  return <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={workflows.length}>{content}</AppShell>;
 }

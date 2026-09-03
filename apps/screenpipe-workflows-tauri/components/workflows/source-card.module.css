@@ -13,13 +13,12 @@
 .details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 16px 0 12px; }
 .details div { min-width: 0; border: 1px solid #e7e8e2; border-radius: 8px; background: #fafaf7; padding: 10px 11px; }
 .details span { display: block; color: #989b93; font-size: 8px; text-transform: uppercase; letter-spacing: .07em; }
-.details strong { display: block; overflow: hidden; margin-top: 5px; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.details strong { display: block; overflow: hidden; margin-top: 5px; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .messageRow { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 12px; padding-top: 3px; }
 .message { min-height: 16px; margin: 0; color: #73786d; font-size: 9px; line-height: 1.4; }
 .messageError { color: #a43e30; }
-.messageRow button,.continue { min-width: 112px; height: 36px; border: 0; border-radius: 8px; background: #1b1d19; color: #fff; padding: 0 14px; font-size: 9px; font-weight: 740; cursor: pointer; }
+.messageRow button, .continue { min-width: 112px; height: 36px; border: 0; border-radius: 8px; background: #1b1d19; color: #fff; padding: 0 14px; font-size: 9px; font-weight: 740; cursor: pointer; }
 .messageRow button:disabled { cursor: default; opacity: .48; }
-.privacy { display: flex; align-items: center; gap: 6px; margin-top: 9px; color: #92968d; font-size: 8px; }
 .continue { width: 100%; margin-top: 12px; display: flex; align-items: center; justify-content: center; gap: 6px; }
 
 @media (max-width: 720px) {

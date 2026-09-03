@@ -4,10 +4,10 @@
 
 "use client";
 
-import { Check, Loader2, MonitorUp, RefreshCw, TriangleAlert } from "lucide-react";
+import { Check, Eye, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ensureWorkflowRuntime, type WorkflowRuntime } from "@/lib/workflows/runtime";
-import styles from "./luna-model-card.module.css";
+import styles from "./source-card.module.css";
 
 export function RecorderSourceCard({ onContinue }: { onContinue: () => void }) {
   const [runtime, setRuntime] = useState<WorkflowRuntime | null>(null);
@@ -30,25 +30,25 @@ export function RecorderSourceCard({ onContinue }: { onContinue: () => void }) {
 
   const ready = runtime?.recording === true;
   return (
-    <section className={styles.card} aria-label="Recording source setup">
+    <section className={styles.card} aria-label="Work history setup">
       <div className={styles.header}>
         <div>
-          <span className={styles.eyebrow}><MonitorUp size={12} />One recorder, automatically</span>
-          <h2>{runtime?.source === "screenpipe" ? "Using your existing Screenpipe recording" : "Starting Workflows recording"}</h2>
-          <p>If the Screenpipe app is already capturing, Workflows relies on that data. Otherwise this app starts its own isolated local recorder after permissions are granted.</p>
+          <span className={styles.eyebrow}><Eye size={12} />Work history</span>
+          <h2>{runtime?.source === "screenpipe" ? "Your recent work is ready" : "Starting your private work history"}</h2>
+          <p>Screenpipe Workflows uses the work history already on this Mac. If Screenpipe is open, both apps share the same history without recording twice.</p>
         </div>
         <span className={`${styles.status} ${ready ? styles.statusReady : error ? styles.statusError : ""}`}>
           {checking ? <Loader2 size={12} className="animate-spin" /> : ready ? <Check size={12} /> : <TriangleAlert size={12} />}
-          {checking ? "Checking" : ready ? "Recording" : "Waiting"}
+          {checking ? "Checking" : ready ? "Ready" : "Waiting"}
         </span>
       </div>
       <div className={styles.details}>
-        <div><span>Capture owner</span><strong>{runtime?.source === "screenpipe" ? "Screenpipe" : runtime?.source === "workflows" ? "Workflows" : "Detecting"}</strong></div>
-        <div><span>Data route</span><strong>Authenticated local API</strong></div>
-        <div><span>Duplicate capture</span><strong>Prevented</strong></div>
+        <div><span>Recent work</span><strong>{ready ? "Available" : "Checking"}</strong></div>
+        <div><span>Stored on</span><strong>This Mac</strong></div>
+        <div><span>Recording twice</span><strong>Prevented</strong></div>
       </div>
       <div className={styles.messageRow}>
-        <p className={`${styles.message} ${error ? styles.messageError : ""}`}>{error || runtime?.reason || "Checking the recorder…"}</p>
+        <p className={`${styles.message} ${error ? styles.messageError : ""}`}>{error || (ready ? "Ready to map the stages, time, and bottlenecks in your work." : "Checking your work history…")}</p>
         <button onClick={check} disabled={checking}><RefreshCw size={12} /> {checking ? "Checking…" : "Check again"}</button>
       </div>
       <button className={styles.continue} onClick={onContinue} disabled={!ready}>Continue <Check size={13} /></button>

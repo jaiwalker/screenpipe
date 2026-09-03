@@ -37,24 +37,25 @@ describe("Screenpipe Workflows onboarding", () => {
     preview = "welcome";
   });
 
-  it("opens with the product promise instead of a login or settings screen", () => {
+  it("opens with workflow mapping rather than an automation promise", () => {
     render(<OnboardingPage />);
-    expect(screen.getByText("Turn the work you repeat into agents.")).toBeInTheDocument();
-    expect(screen.getByText("Nothing runs yet.")).toBeInTheDocument();
+    expect(screen.getByText("See how your work actually happens.")).toBeInTheDocument();
+    expect(screen.getByText("Analysis only.")).toBeInTheDocument();
+    expect(screen.queryByText(/agent/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/sign in/i)).not.toBeInTheDocument();
   });
 
-  it("makes the observe, propose, supervise model explicit", () => {
+  it("makes the observe, map, measure loop explicit", () => {
     render(<OnboardingPage />);
     expect(screen.getByText("Observe")).toBeInTheDocument();
-    expect(screen.getByText("Propose")).toBeInTheDocument();
-    expect(screen.getByText("Supervise")).toBeInTheDocument();
+    expect(screen.getByText("Map")).toBeInTheDocument();
+    expect(screen.getByText("Measure")).toBeInTheDocument();
   });
 
   it("advances into the privacy contract", () => {
     render(<OnboardingPage />);
-    fireEvent.click(screen.getByRole("button", { name: /set up private learning/i }));
-    expect(screen.getByText("It learns without taking control.")).toBeInTheDocument();
-    expect(screen.getByText("Pause at consequences")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /map my work privately/i }));
+    expect(screen.getByText("Understand your work without changing it.")).toBeInTheDocument();
+    expect(screen.getByText("Stay read-only")).toBeInTheDocument();
   });
 });

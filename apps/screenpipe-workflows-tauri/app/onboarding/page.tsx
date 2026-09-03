@@ -8,23 +8,22 @@ import {
   ArrowRight,
   Check,
   Eye,
+  ListTree,
   LockKeyhole,
   Mic,
   Monitor,
   MousePointer2,
-  ShieldCheck,
-  Sparkles,
+  Timer,
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import PermissionsStep from "@/components/onboarding/permissions-step";
-import { LunaModelCard } from "@/components/workflows/luna-model-card";
 import { RecorderSourceCard } from "@/components/workflows/recorder-source-card";
 import { useOnboarding } from "@/lib/hooks/use-onboarding";
 import { commands } from "@/lib/utils/tauri";
 import styles from "./onboarding.module.css";
 
-const phases = ["welcome", "privacy", "permissions", "engine", "model", "ready"] as const;
+const phases = ["welcome", "privacy", "permissions", "history", "ready"] as const;
 type Phase = (typeof phases)[number];
 
 function Mark() {
@@ -84,22 +83,27 @@ function OnboardingContent() {
     }
   }, [completeOnboarding, isPreview]);
 
-  const title = useMemo(() => ({ welcome: "Turn the work you repeat into agents.", privacy: "It learns without taking control.", permissions: "Let Screenpipe understand your work.", engine: "Starting your private work memory.", model: "Choose the model that drafts your workflows.", ready: "Ready to find your first workflow." })[phase], [phase]);
+  const title = useMemo(() => ({
+    welcome: "See how your work actually happens.",
+    privacy: "Understand your work without changing it.",
+    permissions: "Let Screenpipe recognize your workflow.",
+    history: "Connecting your private work history.",
+    ready: "Ready to build your first work map.",
+  })[phase], [phase]);
 
   return (
     <main className={styles.page}>
-      <header><div className={styles.brand}><Mark /><div><strong>Screenpipe</strong><span>Workflows</span></div></div><span className={styles.step}>0{phaseIndex + 1} / 06</span></header>
+      <header><div className={styles.brand}><Mark /><div><strong>Screenpipe</strong><span>Workflows</span></div></div><span className={styles.step}>0{phaseIndex + 1} / 05</span></header>
       <div className={styles.progress}>{phases.map((item, index) => <i className={index <= phaseIndex ? styles.progressActive : ""} key={item} />)}</div>
       <section className={styles.content}>
-        <div className={styles.heading}><span>{phase === "welcome" ? "Private work intelligence" : phase === "privacy" ? "Your rules, always" : phase === "permissions" ? "Three permissions" : phase === "engine" ? "Local setup" : phase === "model" ? "Confidential inference" : "Setup complete"}</span><h1>{title}</h1>{phase !== "engine" && phase !== "model" && <p>{phase === "welcome" ? "Screenpipe notices the sequences you perform again and again, proves them with local evidence, and helps you build agents you can inspect and supervise." : phase === "privacy" ? "Observation is read-only. Drafts stay drafts. Sending, publishing, deleting, or spending always pauses for your approval." : phase === "permissions" ? "These let Screenpipe recognize repeated steps across apps. Raw recordings remain on this device by default." : "Screenpipe will learn quietly in the background and surface a workflow only when the pattern is clear enough to review."}</p>}</div>
-        {phase === "welcome" && <div className={styles.welcomeBody}><div className={styles.flow}><span><Eye size={16} /><small>Observe</small></span><b /><span><Sparkles size={16} /><small>Propose</small></span><b /><span><ShieldCheck size={16} /><small>Supervise</small></span></div><div className={styles.promise}><i /><div><strong>Nothing runs yet.</strong><p>Your first experience is learning and review—not a blank chat or a settings screen.</p></div></div><button className={styles.primary} onClick={next}>Set up private learning <ArrowRight size={15} /></button></div>}
-        {phase === "privacy" && <div className={styles.privacyBody}><div className={styles.rules}>{[[<Eye key="eye" />, "Observe locally", "Screen and audio memory stay on this device by default."], [<ShieldCheck key="shield" />, "Propose, never assume", "Every workflow shows the evidence and steps behind it."], [<LockKeyhole key="lock" />, "Pause at consequences", "External actions require explicit approval."]].map(([icon, name, detail]) => <div key={String(name)}><span>{icon}</span><div><strong>{name}</strong><p>{detail}</p></div></div>)}</div><button className={styles.primary} onClick={next}>I understand <ArrowRight size={15} /></button></div>}
+        <div className={styles.heading}><span>{phase === "welcome" ? "Your work, made visible" : phase === "privacy" ? "Read-only by design" : phase === "permissions" ? "Three permissions" : phase === "history" ? "Work history" : "Setup complete"}</span><h1>{title}</h1>{phase !== "history" && <p>{phase === "welcome" ? "Screenpipe reconstructs the workflows hidden across your day: each stage, how long it takes, where you wait, and where work gets stuck." : phase === "privacy" ? "This app maps and measures. It does not send messages, edit records, publish, or run your work for you." : phase === "permissions" ? "These let Screenpipe follow a workflow across apps while raw recordings remain on this device by default." : "Start with the last seven days, then inspect every estimate against the work behind it."}</p>}</div>
+        {phase === "welcome" && <div className={styles.welcomeBody}><div className={styles.flow}><span><Eye size={16} /><small>Observe</small></span><b /><span><ListTree size={16} /><small>Map</small></span><b /><span><Timer size={16} /><small>Measure</small></span></div><div className={styles.promise}><i /><div><strong>Analysis only.</strong><p>See the real shape of your work before deciding what, if anything, should change.</p></div></div><button className={styles.primary} onClick={next}>Map my work privately <ArrowRight size={15} /></button></div>}
+        {phase === "privacy" && <div className={styles.privacyBody}><div className={styles.rules}>{[[<Eye key="eye" />, "Observe the sequence", "Follow work across apps from its starting point to its outcome."], [<Timer key="timer" />, "Measure the time", "Separate active work from waiting, switching, and rework."], [<LockKeyhole key="lock" />, "Stay read-only", "Screenpipe maps your work. It does not perform it."]].map(([icon, name, detail]) => <div key={String(name)}><span>{icon}</span><div><strong>{name}</strong><p>{detail}</p></div></div>)}</div><button className={styles.primary} onClick={next}>I understand <ArrowRight size={15} /></button></div>}
         {phase === "permissions" && (isPreview ? <PreviewPermissions next={next} /> : <div className={styles.nativeStep}><PermissionsStep handleNextSlide={next} /></div>)}
-        {phase === "engine" && <div className={styles.modelStep}><RecorderSourceCard onContinue={next} /></div>}
-        {phase === "model" && <div className={styles.modelStep}><LunaModelCard onContinue={next} /></div>}
-        {phase === "ready" && <div className={styles.readyBody}><div className={styles.readyVisual}><div><Mark /></div><span className={styles.pulseOne} /><span className={styles.pulseTwo} /></div><div className={styles.readyPoints}><span><Check size={12} />Raw recordings stay local</span><span><Check size={12} />Every proposal includes evidence</span><span><Check size={12} />Consequential actions require approval</span></div><button className={styles.primary} onClick={finish} disabled={finishing}>{finishing ? "Opening workspace…" : "Open Screenpipe Workflows"}<ArrowRight size={15} /></button></div>}
+        {phase === "history" && <div className={styles.sourceStep}><RecorderSourceCard onContinue={next} /></div>}
+        {phase === "ready" && <div className={styles.readyBody}><div className={styles.readyVisual}><div><Mark /></div><span className={styles.pulseOne} /><span className={styles.pulseTwo} /></div><div className={styles.readyPoints}><span><Check size={12} />Workflow stages mapped in order</span><span><Check size={12} />Active and waiting time separated</span><span><Check size={12} />Every bottleneck linked to evidence</span></div><button className={styles.primary} onClick={finish} disabled={finishing}>{finishing ? "Opening work map…" : "Open my work map"}<ArrowRight size={15} /></button></div>}
       </section>
-      <footer><LockKeyhole size={11} />Local-first by default · Change exclusions any time</footer>
+      <footer><LockKeyhole size={11} />Private by default · Change exclusions any time</footer>
     </main>
   );
 }

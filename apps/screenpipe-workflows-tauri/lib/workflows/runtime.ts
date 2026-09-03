@@ -11,8 +11,6 @@ export type WorkflowRuntime = {
   authenticatedLocalApi: boolean;
   cloudAuthAvailable: boolean;
   processingAvailable: boolean;
-  modelRequested: string;
-  gateway?: string | null;
   reason: string;
 };
 
@@ -22,28 +20,53 @@ export type WorkflowEvidence = {
   detail: string;
 };
 
-export type WorkflowOpportunity = {
+export type WorkflowStage = {
+  name: string;
+  description: string;
+  activeMinutes: number;
+  waitingMinutes: number;
+  apps: string[];
+};
+
+export type WorkflowBottleneck = {
+  label: string;
+  stage: string;
+  type: "waiting" | "switching" | "rework" | "handoff" | "unclear";
+  detail: string;
+  estimatedMinutesPerRun: number;
+  confidence: number;
+  evidence: string;
+};
+
+export type WorkflowMap = {
   rank: number;
   analysisDays: number;
   title: string;
   description: string;
   repetitions: number;
-  estimatedMinutes: number;
+  frequency: string;
+  trigger: string;
+  outcome: string;
+  totalMinutes: number;
+  activeMinutes: number;
+  waitingMinutes: number;
+  appSwitches: number;
   confidence: number;
   apps: string[];
-  steps: string[];
+  handoffs: string[];
+  variations: string[];
+  stages: WorkflowStage[];
+  bottlenecks: WorkflowBottleneck[];
   evidence: WorkflowEvidence[];
 };
 
 export type WorkflowAnalysis = {
-  analysis: { opportunities: WorkflowOpportunity[] };
+  analysis: { workflows: WorkflowMap[] };
   analyzedAt: string;
   days: number;
   source: "screenpipe" | "workflows";
-  modelRequested: string;
-  modelServed: string;
-  gateway: string;
   bundleCount: number;
+  observedActiveMinutes: number;
 };
 
 export const getWorkflowRuntime = () => invoke<WorkflowRuntime>("get_workflows_runtime");
