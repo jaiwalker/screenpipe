@@ -470,6 +470,55 @@ function handleWindowCommand(command: string): unknown {
   return null;
 }
 
+function workflowPreviewImage(label: string, hue: number) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360"><rect width="640" height="360" fill="#171815"/><rect x="28" y="28" width="584" height="304" rx="14" fill="#f4f5ef"/><rect x="52" y="56" width="132" height="248" rx="8" fill="#e1e4d8"/><rect x="208" y="56" width="376" height="42" rx="7" fill="hsl(${hue} 55% 72%)"/><rect x="208" y="118" width="230" height="18" rx="5" fill="#c7cabf"/><rect x="208" y="150" width="336" height="96" rx="8" fill="#ffffff" stroke="#d9dbd3"/><rect x="228" y="171" width="188" height="10" rx="5" fill="#aeb2a7"/><rect x="228" y="195" width="278" height="8" rx="4" fill="#d1d3cc"/><rect x="228" y="216" width="238" height="8" rx="4" fill="#d1d3cc"/><text x="208" y="282" fill="#555a50" font-family="system-ui" font-size="15">${label}</text><text x="52" y="322" fill="#777c72" font-family="system-ui" font-size="11">fictional preview data</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+function createBrowserDevWorkflowAnalysis() {
+  const evidence = (timestamp: string, app: string, detail: string) => ({ timestamp, app, detail });
+  const releaseStages = [
+    ["Review the change set", "Read the release diff and note risk areas.", 14, 0, "GitHub", "2026-08-31T16:20:00Z", 91],
+    ["Run release checks", "Start the checks and inspect any failures.", 9, 11, "Terminal", "2026-09-01T17:05:00Z", 86],
+    ["Prepare release notes", "Turn the final changes into a concise public summary.", 12, 0, "Docs", "2026-09-02T18:10:00Z", 88],
+  ].map(([name, description, activeMinutes, waitingMinutes, app, timestamp, confidence], index) => ({
+    name, description, activeMinutes, waitingMinutes, apps: [app], confidence,
+    observedOccurrences: 2,
+    evidence: [evidence(timestamp as string, app as string, `${description} Observed in this fictional preview.`)],
+    screenshot: { frameId: 100 + index, timestamp, app, dataUrl: workflowPreviewImage(name as string, 72 + index * 31) },
+  }));
+  const supportStages = [
+    ["Read the report", "Understand the reported behavior and affected surface.", 6, 0, "Intercom", "2026-08-31T20:10:00Z", 84],
+    ["Reproduce the issue", "Follow the same path and record the point of failure.", 13, 0, "Screenpipe", "2026-09-01T20:32:00Z", 82],
+    ["Trace the cause", "Compare logs and code around the failing path.", 18, 4, "Cursor", "2026-09-02T21:15:00Z", 79],
+    ["Write the response", "Explain the finding and the next concrete step.", 7, 0, "Intercom", "2026-09-02T21:49:00Z", 85],
+  ].map(([name, description, activeMinutes, waitingMinutes, app, timestamp, confidence], index) => ({
+    name, description, activeMinutes, waitingMinutes, apps: [app], confidence,
+    observedOccurrences: 2,
+    evidence: [evidence(timestamp as string, app as string, `${description} Observed in this fictional preview.`)],
+    screenshot: { frameId: 200 + index, timestamp, app, dataUrl: workflowPreviewImage(name as string, 145 + index * 24) },
+  }));
+  const workflow = (rank: number, title: string, description: string, trigger: string, outcome: string, stages: typeof releaseStages, apps: string[], bottlenecks: unknown[]) => {
+    const activeMinutes = stages.reduce((sum, stage) => sum + Number(stage.activeMinutes), 0);
+    const waitingMinutes = stages.reduce((sum, stage) => sum + Number(stage.waitingMinutes), 0);
+    const workflowEvidence = stages.flatMap((stage) => stage.evidence);
+    return { rank, analysisDays: 7, title, description, repetitions: 3, frequency: "A few times a week", trigger, outcome, totalMinutes: activeMinutes + waitingMinutes, activeMinutes, waitingMinutes, appSwitches: apps.length + 1, confidence: 86, apps, handoffs: [], variations: ["The depth of review changes with the size of the work."], stages, bottlenecks, evidence: workflowEvidence, quality: { grade: "strong", evidenceCount: workflowEvidence.length, distinctDays: 3, stageEvidenceCoverage: 100, reasons: [`${workflowEvidence.length} captured observations support this map`, "Evidence spans 3 separate days", `${stages.length} of ${stages.length} stages have direct captured evidence`] } };
+  };
+  return {
+    schemaVersion: 2,
+    analyzedAt: "2026-09-03T18:00:00Z",
+    days: 7,
+    source: "screenpipe",
+    bundleCount: 7,
+    observedActiveMinutes: 1264,
+    quality: { grade: "strong", usableDays: 7, requestedDays: 7, capturedMinutes: 1264, totalFrames: 18420, appAttributionCoverage: 96, parsedContextCount: 911, warnings: [] },
+    analysis: { workflows: [
+      workflow(1, "Publish a product release", "Review the candidate, wait for checks, and turn the final change set into release notes.", "A release candidate is ready", "The release is approved with notes", releaseStages, ["GitHub", "Terminal", "Docs"], [{ label: "Checks create a pause", stage: "Run release checks", type: "waiting", detail: "Hands-on work pauses while the suite completes.", estimatedMinutesPerRun: 11, confidence: 82, evidence: "A repeated gap follows the start of release checks." }]),
+      workflow(2, "Investigate a support report", "Move from the initial report through reproduction, diagnosis, and a clear response.", "A detailed support report arrives", "The customer receives a concrete answer", supportStages as typeof releaseStages, ["Intercom", "Screenpipe", "Cursor"], [{ label: "Context is rebuilt across tools", stage: "Trace the cause", type: "switching", detail: "The investigation moves between the report, captured evidence, and code.", estimatedMinutesPerRun: 4, confidence: 76, evidence: "The same investigation sequence spans three apps." }]),
+    ] },
+  };
+}
+
 export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
   const stores = new Map<number, Map<string, unknown>>();
   const storePaths = new Map<string, number>();
@@ -748,6 +797,19 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
           port: options.apiPort,
           auth_enabled: options.mode === "live" && Boolean(options.apiKey),
         };
+      case "get_workflows_runtime":
+      case "ensure_workflows_runtime":
+        return {
+          source: "screenpipe",
+          recording: true,
+          apiBaseUrl: `http://127.0.0.1:${options.apiPort}`,
+          authenticatedLocalApi: true,
+          cloudAuthAvailable: true,
+          processingAvailable: true,
+          reason: "ready",
+        };
+      case "analyze_workflows":
+        return createBrowserDevWorkflowAnalysis();
       case "get_screenpipe_base_dir":
         return "/Users/screenpipe/.screenpipe";
       case "get_chats_dir":

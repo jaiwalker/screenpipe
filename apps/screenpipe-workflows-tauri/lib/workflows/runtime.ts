@@ -20,12 +20,33 @@ export type WorkflowEvidence = {
   detail: string;
 };
 
+export type WorkflowScreenshot = {
+  frameId: number;
+  timestamp: string;
+  app: string;
+  dataUrl: string;
+};
+
 export type WorkflowStage = {
   name: string;
   description: string;
   activeMinutes: number;
   waitingMinutes: number;
   apps: string[];
+  confidence: number;
+  observedOccurrences: number;
+  evidence: WorkflowEvidence[];
+  screenshot?: WorkflowScreenshot | null;
+};
+
+export type WorkflowQualityGrade = "strong" | "good" | "limited";
+
+export type WorkflowQuality = {
+  grade: WorkflowQualityGrade;
+  evidenceCount: number;
+  distinctDays: number;
+  stageEvidenceCoverage: number;
+  reasons: string[];
 };
 
 export type WorkflowBottleneck = {
@@ -58,15 +79,29 @@ export type WorkflowMap = {
   stages: WorkflowStage[];
   bottlenecks: WorkflowBottleneck[];
   evidence: WorkflowEvidence[];
+  quality: WorkflowQuality;
+};
+
+export type AnalysisQuality = {
+  grade: WorkflowQualityGrade;
+  usableDays: number;
+  requestedDays: number;
+  capturedMinutes: number;
+  totalFrames: number;
+  appAttributionCoverage: number;
+  parsedContextCount: number;
+  warnings: string[];
 };
 
 export type WorkflowAnalysis = {
+  schemaVersion: 2;
   analysis: { workflows: WorkflowMap[] };
   analyzedAt: string;
   days: number;
   source: "screenpipe" | "workflows";
   bundleCount: number;
   observedActiveMinutes: number;
+  quality: AnalysisQuality;
 };
 
 export const getWorkflowRuntime = () => invoke<WorkflowRuntime>("get_workflows_runtime");
