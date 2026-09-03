@@ -49,17 +49,17 @@ use std::sync::OnceLock;
 /// and Spotlight exclusion never see dev data.
 // Read only by the debug-only `apply_inner` (and the tests below).
 #[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
-pub const DEV_DATA_DIR_NAME: &str = ".screenpipe-dev";
+pub const DEV_DATA_DIR_NAME: &str = ".screenpipe-workflows-dev";
 
 /// Local API port. Production defaults to 3030.
 // Read only by the debug-only `apply_inner` (and the tests below).
 #[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
-pub const DEV_API_PORT: &str = "3130";
+pub const DEV_API_PORT: &str = "3230";
 
 /// Focus / notification server port. Production defaults to 11435.
 // Read only by the debug-only `apply_inner` (and the tests below).
 #[cfg_attr(not(any(debug_assertions, test)), allow(dead_code))]
-pub const DEV_FOCUS_PORT: &str = "11535";
+pub const DEV_FOCUS_PORT: &str = "11635";
 
 /// Fake `$HOME` for agent-config detection, so the background MCP setup finds
 /// no installed agents and leaves the developer's real `~/.claude` alone.

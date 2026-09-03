@@ -9,8 +9,31 @@ import "@xyflow/react/dist/style.css";
 import "./globals.css";
 import { Providers } from "./providers";
 import { Toaster } from "@/components/ui/toaster";
+import { useEffect } from "react";
+import { commands } from "@/lib/utils/tauri";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let heartbeatInFlight = false;
+    const sendRendererHeartbeat = () => {
+      if (heartbeatInFlight) return;
+      heartbeatInFlight = true;
+      void commands.webviewRendererHeartbeat().finally(() => {
+        heartbeatInFlight = false;
+      });
+    };
+
+    const rendererHeartbeatTimer = window.setInterval(
+      sendRendererHeartbeat,
+      1_000,
+    );
+    sendRendererHeartbeat();
+
+    return () => window.clearInterval(rendererHeartbeatTimer);
+  }, []);
+
   return (
     <html lang="en" className="light" suppressHydrationWarning>
       <head>

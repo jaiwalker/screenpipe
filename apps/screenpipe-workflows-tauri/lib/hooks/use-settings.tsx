@@ -618,49 +618,21 @@ const DEFAULT_IGNORED_WINDOWS_PER_OS: Record<string, string[]> = {
 	linux: ["Info center", "Discover", "Parted"],
 };
 
-// Default screenpipe-cloud presets on first install — every seed runs on
-// "auto": the ai-gateway routes to the best model the user's tier allows, so
-// nobody starts pinned to a specific (possibly tier-gated) Claude model.
-// - "Chat":  default preset, used by interactive chat.
-// - "Pipes": same routing, separate id so recurring pipe runs can be
-//           customized independently; users can override per-pipe.
-const CHAT_PRESET_ID = "chat";
-const PIPES_PRESET_ID = "pipes";
+// Workflows is intentionally pinned to one explicit confidential model. The
+// setup card verifies and stores the user's inference key before any request;
+// it never silently falls back through Screenpipe Cloud's Auto routing.
+const SCREENPIPE_PRESET_ID = "screenpipe"; // Legacy migration sentinel.
 
-// Non-pro users get a single "screenpipe" preset on auto — auto handles
-// model routing without needing the user to know what to pick.
-const SCREENPIPE_PRESET_ID = "screenpipe";
-
-export function makeDefaultPresets(isPro: boolean): AIPreset[] {
-	if (isPro) {
-		return [
-			{
-				id: CHAT_PRESET_ID,
-				provider: "screenpipe-cloud",
-				url: "",
-				model: "auto",
-				maxContextChars: 200000,
-				defaultPreset: true,
-				prompt: "",
-			},
-			{
-				id: PIPES_PRESET_ID,
-				provider: "screenpipe-cloud",
-				url: "",
-				model: "auto",
-				maxContextChars: 200000,
-				defaultPreset: false,
-				prompt: "",
-			},
-		];
-	}
+export function makeDefaultPresets(_isPro: boolean): AIPreset[] {
 	return [
 		{
-			id: SCREENPIPE_PRESET_ID,
-			provider: "screenpipe-cloud",
-			url: "",
-			model: "auto",
-			maxContextChars: 200000,
+			id: "tinfoil-glm-5.3",
+			provider: "custom",
+			url: "https://inference.tinfoil.sh/v1",
+			model: "glm-5-3",
+			apiKey: "",
+			maxContextChars: 4_194_304,
+			maxTokens: 8_192,
 			defaultPreset: true,
 			prompt: "",
 		},

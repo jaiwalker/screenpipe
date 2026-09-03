@@ -9,6 +9,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { useEffect, useState } from "react";
 import { SettingsProvider } from "@/lib/hooks/use-settings";
+import { ManagedPolicyProvider } from "@/lib/hooks/use-managed-policy";
 import { ThemeProvider } from "@/components/theme-provider";
 import { queryClient } from "@/lib/query-client";
 
@@ -21,9 +22,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
       <NuqsAdapter>
         <QueryClientProvider client={queryClient}>
           <SettingsProvider>
-            <ThemeProvider defaultTheme="light" storageKey="screenpipe-workflows-theme">
-              {mounted ? children : null}
-            </ThemeProvider>
+            <ManagedPolicyProvider>
+              <ThemeProvider defaultTheme="light" storageKey="screenpipe-workflows-theme">
+                {mounted ? children : null}
+              </ThemeProvider>
+            </ManagedPolicyProvider>
           </SettingsProvider>
         </QueryClientProvider>
       </NuqsAdapter>

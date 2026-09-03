@@ -40,6 +40,7 @@ import {
   previousWorkflowView,
   workflowViews,
 } from "@/lib/workflows/navigation";
+import { TinfoilModelCard } from "@/components/workflows/tinfoil-model-card";
 import styles from "./workflows-app.module.css";
 
 const opportunities = [
@@ -122,6 +123,7 @@ function AppShell({ view, navigate, children }: { view: AppView; navigate: (view
         <header className={styles.topbar}>
           <div className={styles.dragRegion} />
           <div className={styles.search}><Search size={15} /><span>Search workflows and evidence</span><kbd>⌘ K</kbd></div>
+          <button className={styles.modelButton} onClick={() => navigate("controls")}><ShieldCheck size={13} />GLM 5.3 · Tinfoil</button>
           <Pill tone="green"><span className={styles.liveDot} />Capturing</Pill>
           <button className={styles.iconButton} aria-label="Inbox"><Inbox size={17} /><i /></button>
         </header>
@@ -289,7 +291,7 @@ function MemoryView() {
 }
 
 function ControlsView() {
-  return <><div className={styles.simpleHeader}><Pill><ShieldCheck size={12} />Global policy</Pill><h1>Control what agents can learn and do</h1><p>These defaults apply before individual workflow rules. Private sources are excluded at capture, not filtered later.</p></div><div className={styles.controlsGrid}><section className={styles.panel}><h2>Always require approval</h2>{["Send email or messages", "Publish externally", "Edit or delete records", "Spend money"].map(x => <div className={styles.controlRow} key={x}><span><Check size={11} /></span><strong>{x}</strong><small>Enforced</small></div>)}</section><section className={styles.panel}><h2>Never learn from</h2>{["1Password", "Private browsing windows", "Banking and payroll", "Excluded people and domains"].map(x => <div className={styles.controlRow} key={x}><span><X size={11} /></span><strong>{x}</strong><small>Excluded</small></div>)}</section><section className={styles.panel}><h2>Data boundary</h2><div className={styles.dataBoundary}><LockKeyhole size={22} /><strong>Local by default</strong><p>Raw screen and audio memory remain on this device. A workflow can only share approved fields with an approved model or tool.</p></div></section></div></>;
+  return <><div className={styles.simpleHeader}><Pill><ShieldCheck size={12} />Global policy</Pill><h1>Control what agents can learn and do</h1><p>These defaults apply before individual workflow rules. Private sources are excluded at capture, not filtered later.</p></div><div className={styles.modelSetup}><TinfoilModelCard /></div><div className={styles.controlsGrid}><section className={styles.panel}><h2>Always require approval</h2>{["Send email or messages", "Publish externally", "Edit or delete records", "Spend money"].map(x => <div className={styles.controlRow} key={x}><span><Check size={11} /></span><strong>{x}</strong><small>Enforced</small></div>)}</section><section className={styles.panel}><h2>Never learn from</h2>{["1Password", "Private browsing windows", "Banking and payroll", "Excluded people and domains"].map(x => <div className={styles.controlRow} key={x}><span><X size={11} /></span><strong>{x}</strong><small>Excluded</small></div>)}</section><section className={styles.panel}><h2>Data boundary</h2><div className={styles.dataBoundary}><LockKeyhole size={22} /><strong>Local by default</strong><p>Raw screen and audio memory remain on this device. A workflow can only share approved fields with an approved model or tool.</p></div></section></div></>;
 }
 
 export function WorkflowsApp() {
