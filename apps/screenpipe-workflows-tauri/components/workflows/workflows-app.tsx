@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { type AppView, isAppView } from "@/lib/workflows/navigation";
 import {
   activeFilterCount,
@@ -62,6 +63,12 @@ function formatMinutes(value: number) {
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
   return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function startWindowDrag(event: React.MouseEvent<HTMLElement>) {
+  if (event.button !== 0 || typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+  event.preventDefault();
+  void getCurrentWindow().startDragging();
 }
 
 function qualityLabel(grade: "strong" | "good" | "limited") {
@@ -178,7 +185,7 @@ function AppShell({
   return (
     <div className={styles.app}>
       <aside className={styles.sidebar}>
-        <div className={styles.brand} data-tauri-drag-region>
+        <div className={styles.brand} data-tauri-drag-region onMouseDown={startWindowDrag}>
           <BrandMark />
           <div><strong>Screenpipe</strong><span>Workflows</span></div>
         </div>
@@ -197,7 +204,7 @@ function AppShell({
       </aside>
       <section className={styles.workspace}>
         <header className={styles.topbar} data-tauri-drag-region>
-          <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" />
+          <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" onMouseDown={startWindowDrag} />
           <label className={styles.search}><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => navigate("workflows")} placeholder="Search workflows, steps, and evidence" aria-label="Search workflows, steps, and evidence" />{query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={12} /></button> : <kbd>⌘ K</kbd>}</label>
           <label className={styles.periodControl}>
             <CalendarRange size={13} />
