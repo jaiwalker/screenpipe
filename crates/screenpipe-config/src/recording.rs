@@ -378,7 +378,11 @@ pub struct RecordingSettings {
 
     /// Custom vocabulary for transcription biasing and word replacement.
     /// Previously stored in SettingsStore.extra["vocabularyWords"].
-    #[serde(rename = "vocabularyWords", default, deserialize_with = "deserialize_null_as_default")]
+    #[serde(
+        rename = "vocabularyWords",
+        default,
+        deserialize_with = "deserialize_null_as_default"
+    )]
     pub vocabulary: Vec<VocabEntry>,
 
     // ── Vision ─────────────────────────────────────────────────────────
@@ -818,7 +822,11 @@ pub struct RecordingSettings {
     pub schedule_enabled: bool,
 
     /// Per-day schedule rules (only used when schedule_enabled is true)
-    #[serde(rename = "scheduleRules", default, deserialize_with = "deserialize_null_as_default")]
+    #[serde(
+        rename = "scheduleRules",
+        default,
+        deserialize_with = "deserialize_null_as_default"
+    )]
     pub schedule_rules: Vec<ScheduleRule>,
 
     /// Require authentication for remote (non-localhost) API access.
