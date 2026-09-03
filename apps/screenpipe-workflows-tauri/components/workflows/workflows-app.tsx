@@ -116,6 +116,7 @@ function withoutScreenshotCopies(analysis: WorkflowAnalysis): WorkflowAnalysis {
     ...analysis,
     quality: {
       ...analysis.quality,
+      grade: analysis.quality.grade === "strong" ? "good" : analysis.quality.grade,
       screenshotCount: 0,
       screenshotCoverage: 0,
       warnings: [
@@ -128,6 +129,7 @@ function withoutScreenshotCopies(analysis: WorkflowAnalysis): WorkflowAnalysis {
         ...workflow,
         quality: {
           ...workflow.quality,
+          grade: workflow.quality.grade === "strong" ? "good" : workflow.quality.grade,
           screenshotCount: 0,
           stageScreenshotCoverage: 0,
           reasons: [
@@ -567,7 +569,7 @@ export function WorkflowsApp() {
     if (saved) {
       try {
         const parsed = JSON.parse(saved) as WorkflowAnalysis;
-        if (parsed?.schemaVersion === 4 && Array.isArray(parsed?.analysis?.workflows)) {
+        if (parsed?.schemaVersion === 5 && Array.isArray(parsed?.analysis?.workflows)) {
           setAnalysis(parsed);
           setAnalysisDays(parsed.days);
         }

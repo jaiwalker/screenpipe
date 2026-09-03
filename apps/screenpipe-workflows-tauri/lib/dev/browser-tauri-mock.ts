@@ -517,7 +517,7 @@ function createBrowserDevWorkflowAnalysis(days = 7) {
     workflow(2, "Publish a product release", "Review the candidate, wait for checks, and turn the final change set into release notes.", "A release candidate is ready", "The release is approved with notes", releaseStages, ["GitHub", "Terminal", "Docs"], [{ label: "Checks create a pause", stage: "Run release checks", type: "waiting", detail: "Hands-on work pauses while the suite completes.", estimatedMinutesPerRun: 11, confidence: 82, evidence: "2026-08-30T17:05:00Z · Terminal: Start the checks and inspect any failures." }]),
   ];
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     analyzedAt: "2026-09-03T18:00:00Z",
     days,
     source: "screenpipe",

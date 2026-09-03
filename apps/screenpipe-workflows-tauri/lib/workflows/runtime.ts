@@ -102,7 +102,7 @@ export type AnalysisQuality = {
 };
 
 export type WorkflowAnalysis = {
-  schemaVersion: 4;
+  schemaVersion: 5;
   analysis: { workflows: WorkflowMap[] };
   analyzedAt: string;
   days: number;

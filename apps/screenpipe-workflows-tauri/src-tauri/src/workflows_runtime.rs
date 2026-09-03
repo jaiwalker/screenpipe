@@ -785,7 +785,11 @@ fn normalize_analysis(
             && repeated_stage_coverage >= 75
         {
             "strong"
-        } else if confidence >= 55 && evidence_count >= 2 && stage_coverage >= 50 {
+        } else if confidence >= 55
+            && evidence_count >= 2
+            && stage_coverage >= 50
+            && repeated_stage_coverage >= 50
+        {
             "good"
         } else {
             "limited"
@@ -1051,6 +1055,18 @@ fn attach_screenshot_quality(analysis: &mut Value) {
                 "stageScreenshotCoverage".to_string(),
                 json!(screenshot_coverage),
             );
+            let current_grade = quality
+                .get("grade")
+                .and_then(Value::as_str)
+                .unwrap_or("limited");
+            let screenshot_adjusted_grade = if screenshot_coverage < 50 {
+                "limited"
+            } else if screenshot_coverage < 100 && current_grade == "strong" {
+                "good"
+            } else {
+                current_grade
+            };
+            quality.insert("grade".to_string(), json!(screenshot_adjusted_grade));
             if let Some(reasons) = quality.get_mut("reasons").and_then(Value::as_array_mut) {
                 reasons.push(json!(format!(
                     "{screenshot_count} of {} stages have a closely matched local screenshot",
@@ -1122,12 +1138,25 @@ fn analysis_quality(daily: &[Value], requested_days: u16, analysis: &Value) -> V
                 .and_then(Value::as_u64)
         })
         .sum::<u64>();
-    let grade = if daily.len() >= usize::from(requested_days.min(4))
+    let capture_is_strong = daily.len() >= usize::from(requested_days.min(4))
         && app_coverage >= 90
-        && total_frames >= 100
-    {
+        && total_frames >= 100;
+    let capture_is_good = daily.len() >= 2 && app_coverage >= 70 && total_frames > 0;
+    let has_workflows = !workflows.is_empty();
+    let all_workflows_are_strong = has_workflows
+        && workflows.iter().all(|workflow| {
+            workflow.pointer("/quality/grade").and_then(Value::as_str) == Some("strong")
+        });
+    let all_workflows_are_supported = has_workflows
+        && workflows.iter().all(|workflow| {
+            matches!(
+                workflow.pointer("/quality/grade").and_then(Value::as_str),
+                Some("strong" | "good")
+            )
+        });
+    let grade = if capture_is_strong && all_workflows_are_strong && screenshot_coverage == 100 {
         "strong"
-    } else if daily.len() >= 2 && app_coverage >= 70 && total_frames > 0 {
+    } else if capture_is_good && all_workflows_are_supported && screenshot_coverage >= 50 {
         "good"
     } else {
         "limited"
@@ -1154,6 +1183,11 @@ fn analysis_quality(daily: &[Value], requested_days: u16, analysis: &Value) -> V
         warnings.push(format!(
             "Closely matched screenshots were available for {screenshot_count} of {stage_count} mapped stages"
         ));
+    }
+    if workflows.iter().any(|workflow| {
+        workflow.pointer("/quality/grade").and_then(Value::as_str) == Some("limited")
+    }) {
+        warnings.push("At least one workflow has limited repeated-stage support".to_string());
     }
     json!({
         "grade": grade,
@@ -1315,7 +1349,7 @@ pub async fn analyze_workflows(app: AppHandle, days: Option<u16>) -> Result<Valu
     let quality = analysis_quality(&daily, days, &analysis);
 
     Ok(json!({
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "analysis": analysis,
         "analyzedAt": Utc::now().to_rfc3339(),
         "days": days,
@@ -1468,7 +1502,7 @@ mod tests {
                 {"screenshot": null},
                 {"screenshot": {"frameId": 3}}
             ],
-            "quality": {"reasons": []}
+            "quality": {"grade": "strong", "reasons": []}
         }]});
 
         attach_screenshot_quality(&mut analysis);
@@ -1478,10 +1512,41 @@ mod tests {
             analysis["workflows"][0]["quality"]["stageScreenshotCoverage"],
             66
         );
+        assert_eq!(analysis["workflows"][0]["quality"]["grade"], "good");
         assert_eq!(
             analysis["workflows"][0]["quality"]["reasons"][0],
             "2 of 3 stages have a closely matched local screenshot"
         );
+    }
+
+    #[test]
+    fn analysis_quality_never_outscores_a_limited_workflow() {
+        let daily = vec![
+            json!({
+                "total_frames": 100,
+                "total_active_minutes": 30,
+                "parsed_context_count": 20,
+                "app_attribution": {"native_frames": 100, "recovered_frames": 0}
+            });
+            4
+        ];
+        let analysis = json!({"workflows": [{
+            "stages": [
+                {"screenshot": {"frameId": 1}},
+                {"screenshot": {"frameId": 2}}
+            ],
+            "quality": {"grade": "limited", "evidenceCount": 2}
+        }]});
+
+        let quality = analysis_quality(&daily, 7, &analysis);
+
+        assert_eq!(quality["grade"], "limited");
+        assert_eq!(quality["screenshotCoverage"], 100);
+        assert!(quality["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|warning| warning == "At least one workflow has limited repeated-stage support"));
     }
 
     #[test]
