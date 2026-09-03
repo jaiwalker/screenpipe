@@ -77,7 +77,7 @@ function AppShell({ view, navigate, runtime, workflowCount, children }: { view: 
   return (
     <div className={styles.app}>
       <aside className={styles.sidebar}>
-        <div className={styles.brand}>
+        <div className={styles.brand} data-tauri-drag-region>
           <BrandMark />
           <div><strong>Screenpipe</strong><span>Workflows</span></div>
         </div>
@@ -93,8 +93,8 @@ function AppShell({ view, navigate, runtime, workflowCount, children }: { view: 
         </div>
       </aside>
       <section className={styles.workspace}>
-        <header className={styles.topbar}>
-          <div className={styles.dragRegion} />
+        <header className={styles.topbar} data-tauri-drag-region>
+          <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" />
           <div className={styles.search}><Search size={15} /><span>Search workflows and evidence</span><kbd>⌘ K</kbd></div>
           <button className={styles.modelButton} onClick={() => navigate("controls")}><ShieldCheck size={13} />Luna 5.6 · Gateway</button>
           <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{runtime?.recording ? "Recording" : "Starting"}</Pill>
