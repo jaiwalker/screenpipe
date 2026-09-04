@@ -219,14 +219,15 @@ function AppShell({
   children: React.ReactNode;
 }) {
   const activeView = view === "workflow" ? "workflows" : view;
+  const workspaceView = Boolean(runtime?.workspace);
   const cloudProcessing = runtime?.processingLocation === "cloud" || runtime?.processingLocation === "confidential-cloud";
-  const recorderLabel = runtime?.recording ? "Work history active" : "Preparing work history";
+  const recorderLabel = workspaceView ? (runtime?.recording ? "Approved reports ready" : "Loading approved reports") : runtime?.recording ? "Work history active" : "Preparing work history";
   const nav = [
     ["overview", LayoutDashboard, "Overview"],
     ["time", ChartPie, "Time"],
     ["workflows", ListTree, "Workflows"],
     ["bottlenecks", AlertTriangle, "Friction"],
-    ["evidence", FileCheck2, "Evidence"],
+    ...(runtime?.dataBoundary?.workspaceVisibility === "aggregate-only" ? [] : [["evidence", FileCheck2, "Evidence"] as const]),
     ["privacy", ShieldCheck, "Data controls"],
   ] as const;
 
@@ -246,7 +247,7 @@ function AppShell({
           ))}
         </nav>
         <div className={styles.sidebarBottom}>
-          <div className={styles.learningStatus}><i /><div><strong>{recorderLabel}</strong><span>{cloudProcessing ? "Protected workspace history" : "Private on this device"}</span></div></div>
+          <div className={styles.learningStatus}><i /><div><strong>{recorderLabel}</strong><span>{workspaceView ? "Aggregate workspace view" : cloudProcessing ? "Private processing" : "Private on this device"}</span></div></div>
           <div className={styles.readOnlyNote}><Eye size={14} /><span><strong>Analysis only</strong>Maps your work. Never performs it.</span></div>
         </div>
       </aside>
@@ -271,7 +272,7 @@ function AppShell({
                 <option value={90}>Active in 90 days</option>
               </select>
             </label>}
-          <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{runtime?.recording ? "Recording" : "Starting"}</Pill>
+          <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{workspaceView ? (runtime?.recording ? "Reports ready" : "Loading") : runtime?.recording ? "Recording" : "Starting"}</Pill>
         </header>
         <div className={styles.purposeBanner}><Eye size={13} />This app only maps and measures {activeScope?.kind === "personal" ? "your work" : "work patterns"}. It does not run anything.</div>
         {embedded && <nav className={styles.embeddedNav} aria-label="Workflows sections">
@@ -697,7 +698,7 @@ function PrivacyView({ runtime }: { runtime: WorkflowRuntime | null }) {
       <article><ShieldCheck size={21} /><h2>{archiveOn ? "Encrypted private archive" : "Cloud archive is off"}</h2><p>{archiveOn ? "Archived history is end-to-end encrypted. Recovery stays with the employee, not a manager or workspace admin." : "No archive is connected. When enabled, it must be end-to-end encrypted with employee-controlled recovery."}</p><Pill>{archiveOn ? "Employee recovery" : "Not connected"}</Pill></article>
       <article><Eye size={21} /><h2>{workspaceView ? "Approved outputs only" : "Sharing starts private"}</h2><p>{workspaceView ? "The workspace can use aggregate patterns and employee-approved summaries. Named raw observations stay out of this dashboard." : "Your organization sees nothing from this app by default. You choose whether to share a summary or contribute to an anonymous aggregate."}</p><Pill>{workspaceView ? "Aggregate only" : "Nothing shared"}</Pill></article>
     </section>
-    <section className={styles.statusPanel}><div><span className={runtime?.recording ? styles.statusLive : ""} /><div><strong>{runtime?.recording ? "Work history is active" : "Work history is starting"}</strong><p>{runtime?.source === "screenpipe" ? "Using the history already captured by Screenpipe without recording twice." : workspaceView ? "Showing the latest reports employees have approved for workspace use." : "Screenpipe Workflows is preparing its private work history."}</p></div></div><Pill tone={runtime?.recording ? "green" : "plain"}>{runtime?.recording ? "Ready" : "Checking"}</Pill></section>
+    <section className={styles.statusPanel}><div><span className={runtime?.recording ? styles.statusLive : ""} /><div><strong>{workspaceView ? (runtime?.recording ? "Approved reports are ready" : "Loading approved reports") : runtime?.recording ? "Work history is active" : "Work history is starting"}</strong><p>{workspaceView ? "Showing the latest reports employees have approved for workspace use." : runtime?.source === "screenpipe" ? "Using the history already captured by Screenpipe without recording twice." : "Screenpipe Workflows is preparing its private work history."}</p></div></div><Pill tone={runtime?.recording ? "green" : "plain"}>{runtime?.recording ? "Ready" : "Checking"}</Pill></section>
   </>;
 }
 
