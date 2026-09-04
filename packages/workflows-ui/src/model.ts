@@ -47,6 +47,30 @@ export type WorkflowScope = {
   detail?: string;
 };
 
+export type WorkProfileKpi = {
+  name: string;
+  definition: string;
+  target: string;
+  cadence: string;
+  owner: string;
+};
+
+export type WorkProfile = {
+  scope: "personal" | "workspace";
+  summary: string;
+  priorities: string;
+  kpis: WorkProfileKpi[];
+  hourlyValue: {
+    amount: number;
+    currency: string;
+    basis: "personal-estimate" | "blended-cost";
+  } | null;
+  vocabulary: string;
+  guidance: string;
+  visibility: "device-only" | "aggregate-workspace";
+  updatedAt?: string;
+};
+
 export type WorkflowEvidence = {
   timestamp: string;
   app: string;

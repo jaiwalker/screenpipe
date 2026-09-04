@@ -8,6 +8,7 @@ export const appViews = [
   "workflows",
   "workflow",
   "bottlenecks",
+  "profile",
   "evidence",
   "privacy",
 ] as const;

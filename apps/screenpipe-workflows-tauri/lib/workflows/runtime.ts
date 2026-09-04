@@ -2,7 +2,7 @@
 // https://screenpipe.com
 
 import { invoke } from "@tauri-apps/api/core";
-import type { WorkflowAnalysis, WorkflowRuntime } from "@screenpipe/workflows-ui";
+import type { WorkProfile, WorkflowAnalysis, WorkflowRuntime } from "@screenpipe/workflows-ui";
 
 export type {
   AnalysisQuality,
@@ -22,4 +22,4 @@ export type {
 
 export const getWorkflowRuntime = () => invoke<WorkflowRuntime>("get_workflows_runtime");
 export const ensureWorkflowRuntime = () => invoke<WorkflowRuntime>("ensure_workflows_runtime");
-export const analyzeCapturedWork = (days = 7) => invoke<WorkflowAnalysis>("analyze_workflows", { days });
+export const analyzeCapturedWork = (days = 7, workProfile?: WorkProfile | null) => invoke<WorkflowAnalysis>("analyze_workflows", { days, profile: workProfile ?? null });

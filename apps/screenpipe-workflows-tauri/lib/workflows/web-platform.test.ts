@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWebWorkflowsPlatform } from "@screenpipe/workflows-ui/web";
-import { fixtureWorkflowAnalysis, fixtureWorkflowRuntime } from "@screenpipe/workflows-ui/fixture";
+import { fixturePersonalWorkProfile, fixtureWorkflowAnalysis, fixtureWorkflowRuntime } from "@screenpipe/workflows-ui/fixture";
 
 describe("web workflows platform", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -63,5 +63,24 @@ describe("web workflows platform", () => {
       body: JSON.stringify({ days: 90, scope: "organization" }),
     }));
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/workflows/analysis-jobs/job-1", expect.objectContaining({ method: "GET" }));
+  });
+
+  it("loads and saves the shared work profile without putting it in recorder credentials", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(fixturePersonalWorkProfile), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(fixturePersonalWorkProfile), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", { location: { origin: "https://screenpipe.com" } });
+    const platform = createWebWorkflowsPlatform({ workProfileEndpoint: "/api/workflows/profile" });
+    const scope = { id: "personal", kind: "personal" as const, label: "My work" };
+
+    await expect(platform.loadWorkProfile?.(scope)).resolves.toEqual(fixturePersonalWorkProfile);
+    await expect(platform.saveWorkProfile?.(fixturePersonalWorkProfile, scope)).resolves.toEqual(fixturePersonalWorkProfile);
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/workflows/profile?scope=personal", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/workflows/profile", expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ profile: fixturePersonalWorkProfile, scope: "personal" }),
+    }));
   });
 });

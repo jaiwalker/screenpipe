@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  BadgeDollarSign,
   Building2,
   CalendarRange,
   Camera,
@@ -24,10 +25,15 @@ import {
   ListTree,
   LogIn,
   LockKeyhole,
+  Plus,
   RefreshCw,
+  Save,
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Target,
+  Trash2,
+  UserRoundCog,
   Users,
   X,
   Workflow,
@@ -54,6 +60,8 @@ import {
 } from "./controllability";
 import {
   type AnalysisQuality,
+  type WorkProfile,
+  type WorkProfileKpi,
   type WorkflowAnalysis,
   type WorkflowBottleneck,
   type WorkflowMap,
@@ -92,6 +100,36 @@ function formatMinutes(value: number) {
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
   return remainder ? `${hours}h ${remainder}m` : `${hours}h`;
+}
+
+function formatCurrency(value: number, currency: string) {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: currency || "USD",
+      maximumFractionDigits: value >= 100 ? 0 : 2,
+    }).format(value);
+  } catch {
+    return `${currency || "USD"} ${Math.round(value)}`;
+  }
+}
+
+function emptyWorkProfile(workspace: boolean): WorkProfile {
+  return {
+    scope: workspace ? "workspace" : "personal",
+    summary: "",
+    priorities: "",
+    kpis: [],
+    hourlyValue: null,
+    vocabulary: "",
+    guidance: "",
+    visibility: workspace ? "aggregate-workspace" : "device-only",
+  };
+}
+
+function profileCompletion(profile: WorkProfile | null) {
+  if (!profile) return 0;
+  return [profile.summary.trim(), profile.priorities.trim()].filter(Boolean).length;
 }
 
 function handleWindowDrag(event: React.MouseEvent<HTMLElement>, startWindowDrag?: () => Promise<void> | void) {
@@ -227,6 +265,7 @@ function AppShell({
     ["time", ChartPie, "Time"],
     ["workflows", ListTree, "Workflows"],
     ["bottlenecks", AlertTriangle, "Friction"],
+    ["profile", UserRoundCog, "Work profile"],
     ...(runtime?.dataBoundary?.workspaceVisibility === "aggregate-only" ? [] : [["evidence", FileCheck2, "Evidence"] as const]),
     ["privacy", ShieldCheck, "Data controls"],
   ] as const;
@@ -274,7 +313,7 @@ function AppShell({
             </label>}
           <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{workspaceView ? (runtime?.recording ? "Reports ready" : "Loading") : runtime?.recording ? "Recording" : "Starting"}</Pill>
         </header>
-        <div className={styles.purposeBanner}><Eye size={13} />This app only maps and measures {activeScope?.kind === "personal" ? "your work" : "work patterns"}. It does not run anything.</div>
+        <div className={styles.purposeBanner}><Eye size={13} />This app only maps and measures {workspaceView ? "work patterns" : "your work"}. It does not run anything.</div>
         {embedded && <nav className={styles.embeddedNav} aria-label="Workflows sections">
           {nav.map(([target, Icon, label]) => (
             <button key={target} className={activeView === target ? styles.embeddedNavActive : ""} onClick={() => navigate(target)}><Icon size={14} />{label}</button>
@@ -387,6 +426,7 @@ function OverviewView({
   knownWorkflowCount,
   activityPeriod,
   runtime,
+  workProfile,
   refreshRuntime,
   openAccount,
 }: {
@@ -399,6 +439,7 @@ function OverviewView({
   knownWorkflowCount: number;
   activityPeriod: WorkflowActivityPeriod;
   runtime: WorkflowRuntime | null;
+  workProfile: WorkProfile | null;
   refreshRuntime: () => void;
   openAccount?: () => Promise<void>;
 }) {
@@ -428,6 +469,11 @@ function OverviewView({
       </section>
       <RuntimeNotice runtime={runtime} refresh={refreshRuntime} openAccount={openAccount} />
       {error && <ErrorNotice message={error} retry={analyze} />}
+      {workProfile && profileCompletion(workProfile) < 2 && <section className={styles.profilePrompt}>
+        <Target size={17} />
+        <div><strong>Make the maps relevant to your goals</strong><p>Add your role and current outcomes. Measures and the value of time stay optional.</p></div>
+        <button type="button" onClick={() => navigate("profile")}>Complete work profile <ArrowRight size={12} /></button>
+      </section>}
       {analysis?.quality && <AnalysisQualityPanel quality={analysis.quality} />}
       {!knownWorkflowCount ? <EmptyWorkMap analyzing={analyzing} analyze={analyze} /> : !workflows.length ? (
         <section className={styles.emptyState}>
@@ -623,7 +669,7 @@ function TimeAllocationList({ dimension, lens }: { dimension: TimeProfileDimensi
   </section>;
 }
 
-function TimeView({ analysis, analyze, analyzing }: { analysis: WorkflowAnalysis | null; analyze: () => void; analyzing: boolean }) {
+function TimeView({ analysis, analyze, analyzing, workProfile }: { analysis: WorkflowAnalysis | null; analyze: () => void; analyzing: boolean; workProfile: WorkProfile | null }) {
   const [lens, setLens] = useState<TimeLens>("categories");
   const profile = analysis?.timeProfile;
   if (!profile) {
@@ -646,6 +692,10 @@ function TimeView({ analysis, analyze, analyzing }: { analysis: WorkflowAnalysis
       <div><span>{lens} coverage</span><strong>{dimension.coveragePercent}%</strong><small>of captured time attributed</small></div>
       <div><span>Still unattributed</span><strong>{formatMinutes(dimension.unattributedMinutes)}</strong><small>visible instead of guessed</small></div>
     </section>
+    {workProfile?.hourlyValue && workProfile.hourlyValue.amount > 0 && <section className={styles.timeValueNotice}>
+      <BadgeDollarSign size={17} />
+      <div><strong>{formatCurrency((profile.totalMinutes / 60) * workProfile.hourlyValue.amount, workProfile.hourlyValue.currency)} estimated time value</strong><p>Captured active time multiplied by your work-profile estimate. This is directional, not payroll or billing data.</p></div>
+    </section>}
     <div className={styles.timeLensHeader}><div><span>Choose a lens</span><h2>Understand time without mixing dimensions</h2></div><Pill>{profile.days}-day profile</Pill></div>
     <div className={styles.timeLensTabs} role="tablist" aria-label="Time profile lens">
       {timeLensOptions.map(([target, Icon, label]) => <button key={target} role="tab" aria-selected={lens === target} className={lens === target ? styles.timeLensActive : ""} onClick={() => setLens(target)}><Icon size={15} /><span>{label}</span><strong>{profile[target].items.length}</strong></button>)}
@@ -683,6 +733,99 @@ function EvidenceView({ workflows, openWorkflow, runtime }: { workflows: Workflo
   return <><div className={styles.pageHeader}><div><span>Verified observations</span><h1>Evidence behind the maps</h1><p>Every row matches an exact captured timestamp. Use it to challenge workflow stages, time estimates, and friction classifications.</p></div><Pill><LockKeyhole size={12} />{evidenceBoundary}</Pill></div>{items.length ? <section className={styles.evidenceList}>{items.map((item, index) => <button key={`${item.timestamp}-${index}`} onClick={() => openWorkflow(item.workflowIndex)}><span className={styles.evidenceIndex}>{String(index + 1).padStart(2, "0")}</span><div><span>{formatEvidenceTimestamp(item.timestamp)} · {item.app}</span><strong>{item.workflowTitle}</strong><p>{item.detail}</p></div><ChevronRight size={16} /></button>)}</section> : <section className={styles.emptyState}><FileCheck2 size={23} /><h2>No analyzed evidence yet</h2><p>Build your first work map to see the observations behind it.</p></section>}</>;
 }
 
+const EMPTY_PROFILE_KPI: WorkProfileKpi = {
+  name: "",
+  definition: "",
+  target: "",
+  cadence: "",
+  owner: "",
+};
+
+function ProfileView({
+  profile,
+  workspaceView,
+  saving,
+  saved,
+  error,
+  update,
+  save,
+}: {
+  profile: WorkProfile;
+  workspaceView: boolean;
+  saving: boolean;
+  saved: boolean;
+  error: string;
+  update: (profile: WorkProfile) => void;
+  save: () => void;
+}) {
+  const completed = profileCompletion(profile);
+  const updateKpi = (index: number, changes: Partial<WorkProfileKpi>) => update({
+    ...profile,
+    kpis: profile.kpis.map((kpi, kpiIndex) => kpiIndex === index ? { ...kpi, ...changes } : kpi),
+  });
+  const hourlyLabel = workspaceView ? "Blended cost of one work hour" : "Value of one work hour";
+  const estimatedPeriodValue = profile.hourlyValue
+    ? formatCurrency(profile.hourlyValue.amount * 40, profile.hourlyValue.currency)
+    : null;
+
+  return <>
+    <div className={styles.pageHeader}>
+      <div><span>Work profile</span><h1>Teach Screenpipe what matters</h1><p>{workspaceView ? "Set the outcomes, measures, and cost assumptions used to interpret approved aggregate work patterns." : "Add just enough context to make your workflow maps more relevant to your role and goals."}</p></div>
+      <Pill>{completed} of 2 essentials</Pill>
+    </div>
+    <section className={styles.profileBoundary}>
+      <ShieldCheck size={18} />
+      <div><strong>{workspaceView ? "Used for aggregate reports" : "Private on this device"}</strong><p>{workspaceView ? "This context guides organization-level analysis. It does not give managers access to raw employee history." : "Your profile is sent only with the bounded context you choose to analyze. It is not shared with a workspace."}</p></div>
+    </section>
+    <section className={styles.profileSteps}>
+      <article className={styles.profileCard}>
+        <div className={styles.profileCardHead}><span>01</span><div><h2>{workspaceView ? "Describe the organization" : "Describe your work"}</h2><p>{workspaceView ? "What the company does and who it serves." : "Your role, responsibilities, and the work you own."}</p></div></div>
+        <textarea value={profile.summary} onChange={(event) => update({ ...profile, summary: event.target.value })} maxLength={2_000} placeholder={workspaceView ? "We help operations teams understand and improve how work gets done." : "I lead product and customer development. I own prioritization, enterprise pilots, and fundraising."} aria-label={workspaceView ? "Organization overview" : "Role and responsibilities"} />
+      </article>
+      <article className={styles.profileCard}>
+        <div className={styles.profileCardHead}><span>02</span><div><h2>Choose the outcomes that matter now</h2><p>Keep this short. Priorities guide relevance; captured work remains the evidence.</p></div></div>
+        <textarea value={profile.priorities} onChange={(event) => update({ ...profile, priorities: event.target.value })} maxLength={1_000} placeholder="Reduce customer response time. Shorten enterprise onboarding. Increase successful weekly workflow reviews." aria-label="Current outcomes" />
+      </article>
+      <article className={styles.profileCard}>
+        <div className={styles.profileCardHead}><span>03</span><div><h2>Define success and the value of time</h2><p>Measures and cost are optional. Add only what helps a real decision.</p></div></div>
+        <div className={styles.profileKpiHeader}><div><Target size={15} /><strong>Success measures</strong></div><button type="button" onClick={() => update({ ...profile, kpis: [...profile.kpis, { ...EMPTY_PROFILE_KPI }] })} disabled={profile.kpis.length >= 6}><Plus size={13} />Add measure</button></div>
+        {profile.kpis.length ? <div className={styles.profileKpis}>{profile.kpis.map((kpi, index) => <fieldset key={index}>
+          <legend>Measure {index + 1}</legend>
+          <div className={styles.profileKpiRow}>
+            <label><span>Measure</span><input value={kpi.name} onChange={(event) => updateKpi(index, { name: event.target.value })} maxLength={100} placeholder="Enterprise onboarding time" /></label>
+            <label><span>Target</span><input value={kpi.target} onChange={(event) => updateKpi(index, { target: event.target.value })} maxLength={120} placeholder="Under 7 days" /></label>
+            <button type="button" onClick={() => update({ ...profile, kpis: profile.kpis.filter((_, kpiIndex) => kpiIndex !== index) })} aria-label={`Remove measure ${index + 1}`}><Trash2 size={14} /></button>
+          </div>
+          <details><summary>Optional definition and ownership <ChevronDown size={12} /></summary><div className={styles.profileKpiDetails}>
+            <label><span>How it is measured</span><input value={kpi.definition} onChange={(event) => updateKpi(index, { definition: event.target.value })} maxLength={300} placeholder="From signed pilot to first approved workflow report" /></label>
+            <label><span>Cadence</span><input value={kpi.cadence} onChange={(event) => updateKpi(index, { cadence: event.target.value })} maxLength={80} placeholder="Weekly" /></label>
+            <label><span>Owner</span><input value={kpi.owner} onChange={(event) => updateKpi(index, { owner: event.target.value })} maxLength={120} placeholder={workspaceView ? "Customer success" : "Me"} /></label>
+          </div></details>
+        </fieldset>)}</div> : <div className={styles.profileEmptyMeasure}>No success measures yet. Workflow mapping still works without them.</div>}
+        <div className={styles.profileValue}>
+          <div><BadgeDollarSign size={17} /><div><strong>{hourlyLabel}</strong><p>{workspaceView ? "Use a blended loaded cost, never an employee's salary." : "Use your own decision-making estimate, not a payroll number."}</p></div></div>
+          <div className={styles.profileValueInputs}>
+            <select value={profile.hourlyValue?.currency ?? "USD"} onChange={(event) => update({ ...profile, hourlyValue: { amount: profile.hourlyValue?.amount ?? 0, currency: event.target.value, basis: workspaceView ? "blended-cost" : "personal-estimate" } })} aria-label="Currency"><option>USD</option><option>EUR</option><option>GBP</option><option>CAD</option><option>AUD</option></select>
+            <input type="number" min="0" max="10000" step="1" value={profile.hourlyValue?.amount || ""} onChange={(event) => update({ ...profile, hourlyValue: event.target.value ? { amount: Math.min(10_000, Math.max(0, Number(event.target.value))), currency: profile.hourlyValue?.currency ?? "USD", basis: workspaceView ? "blended-cost" : "personal-estimate" } : null })} placeholder="Optional" aria-label={hourlyLabel} />
+          </div>
+          {estimatedPeriodValue && <small>At 40 hours, this is {estimatedPeriodValue}. Screenpipe will label all derived values as estimates.</small>}
+        </div>
+      </article>
+    </section>
+    <details className={styles.profileAdvanced}>
+      <summary><SlidersHorizontal size={15} /><div><strong>More context</strong><span>Vocabulary, ownership, and analysis guidance</span></div><ChevronDown size={14} /></summary>
+      <div className={styles.profileAdvancedGrid}>
+        <label><span>Terms and responsibilities</span><textarea value={profile.vocabulary} onChange={(event) => update({ ...profile, vocabulary: event.target.value })} maxLength={1_000} placeholder="Support owns incident triage. Finance approves refunds over $500." /></label>
+        <label><span>Analysis guidance</span><textarea value={profile.guidance} onChange={(event) => update({ ...profile, guidance: event.target.value })} maxLength={1_000} placeholder="Separate required approvals from avoidable waiting. Keep uncertain project names unattributed." /></label>
+      </div>
+    </details>
+    <section className={styles.profileSaveBar}>
+      <div>{error ? <strong className={styles.profileError}>{error}</strong> : <><strong>{saved ? "Profile saved" : "Ready when you are"}</strong><span>{workspaceView ? "Changes guide the next approved workspace report." : "Changes guide the next workflow refresh."}</span></>}</div>
+      <button className={styles.primaryButton} type="button" onClick={save} disabled={saving}>{saving ? <><span className={styles.spinnerSmall} />Saving…</> : <><Save size={14} />Save profile</>}</button>
+    </section>
+  </>;
+}
+
 function PrivacyView({ runtime }: { runtime: WorkflowRuntime | null }) {
   const boundary = runtime?.dataBoundary;
   const workspaceView = Boolean(runtime?.workspace);
@@ -712,8 +855,13 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
   const [activityPeriod, setActivityPeriod] = useState<WorkflowActivityPeriod>(0);
   const [filters, setFilters] = useState<WorkflowFilters>(defaultWorkflowFilters);
   const [view, setView] = useState<AppView>("overview");
+  const [workProfile, setWorkProfile] = useState<WorkProfile | null>(null);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [profileError, setProfileError] = useState("");
   const scopes = runtime?.availableScopes ?? (analysis?.scope ? [analysis.scope] : []);
   const activeScope = scopes.find((scope) => scope.id === scopeId) ?? scopes[0] ?? analysis?.scope ?? null;
+  const workspaceProfile = Boolean(runtime?.workspace) || (activeScope ? activeScope.kind !== "personal" : false);
   const navigate = useCallback((target: AppView) => {
     setView(target);
     if (typeof window === "undefined") return;
@@ -783,6 +931,47 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     return () => { cancelled = true; };
   }, [activeScope?.id, platform, runtime]);
 
+  useEffect(() => {
+    if (!runtime) return;
+    let cancelled = false;
+    setProfileSaved(false);
+    setProfileError("");
+    if (!platform.loadWorkProfile) {
+      setWorkProfile(emptyWorkProfile(workspaceProfile));
+      return;
+    }
+    void platform.loadWorkProfile(activeScope ?? undefined)
+      .then((profile) => {
+        if (!cancelled) setWorkProfile(profile ?? emptyWorkProfile(workspaceProfile));
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setWorkProfile(emptyWorkProfile(workspaceProfile));
+          setProfileError(error instanceof Error ? error.message : "Could not load the work profile.");
+        }
+      });
+    return () => { cancelled = true; };
+  }, [activeScope?.id, platform, runtime, workspaceProfile]);
+
+  const saveWorkProfile = useCallback(async () => {
+    const draft = workProfile ?? emptyWorkProfile(workspaceProfile);
+    const nextProfile = { ...draft, updatedAt: new Date().toISOString() };
+    setProfileSaving(true);
+    setProfileSaved(false);
+    setProfileError("");
+    try {
+      const savedProfile = platform.saveWorkProfile
+        ? await platform.saveWorkProfile(nextProfile, activeScope ?? undefined)
+        : nextProfile;
+      setWorkProfile(savedProfile);
+      setProfileSaved(true);
+    } catch (error) {
+      setProfileError(error instanceof Error ? error.message : "Could not save the work profile.");
+    } finally {
+      setProfileSaving(false);
+    }
+  }, [activeScope, platform, workProfile, workspaceProfile]);
+
   const analyze = useCallback(async () => {
     setAnalyzing(true);
     setAnalysisError("");
@@ -794,8 +983,8 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
       }
       const requestedScope = activeScope ?? undefined;
       const nextAnalysis = platform.startAnalysisJob
-        ? await completedJobResult(platform, await platform.startAnalysisJob(WORKFLOW_CATALOG_DAYS, { scope: requestedScope }))
-        : await platform.analyzeCapturedWork(WORKFLOW_CATALOG_DAYS, { scope: requestedScope });
+        ? await completedJobResult(platform, await platform.startAnalysisJob(WORKFLOW_CATALOG_DAYS, { scope: requestedScope, workProfile }))
+        : await platform.analyzeCapturedWork(WORKFLOW_CATALOG_DAYS, { scope: requestedScope, workProfile });
       const mergedAnalysis = requestedScope?.kind === "personal"
         ? mergeWorkflowCatalog(analysis, nextAnalysis)
         : nextAnalysis;
@@ -811,15 +1000,16 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     } finally {
       setAnalyzing(false);
     }
-  }, [activeScope, analysis, platform, storageKey]);
+  }, [activeScope, analysis, platform, storageKey, workProfile]);
 
   let content: React.ReactNode;
   switch (view) {
-    case "overview": content = <OverviewView analysis={analysis ? { ...analysis, analysis: { workflows } } : null} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} runtime={runtime} refreshRuntime={refreshRuntime} openAccount={platform.openAccount} />; break;
-    case "time": content = <TimeView analysis={analysis} analyze={() => void analyze()} analyzing={analyzing} />; break;
+    case "overview": content = <OverviewView analysis={analysis ? { ...analysis, analysis: { workflows } } : null} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} runtime={runtime} workProfile={workProfile} refreshRuntime={refreshRuntime} openAccount={platform.openAccount} />; break;
+    case "time": content = <TimeView analysis={analysis} analyze={() => void analyze()} analyzing={analyzing} workProfile={workProfile} />; break;
     case "workflows": content = <WorkflowsView workflows={workflows} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} filters={filters} setFilters={setFilters} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} />; break;
     case "workflow": content = <WorkflowDetail workflow={activeWorkflow} navigate={navigate} />; break;
     case "bottlenecks": content = <BottlenecksView workflows={workflows} openWorkflow={openWorkflow} />; break;
+    case "profile": content = <ProfileView profile={workProfile ?? emptyWorkProfile(workspaceProfile)} workspaceView={workspaceProfile} saving={profileSaving} saved={profileSaved} error={profileError} update={(profile) => { setWorkProfile(profile); setProfileSaved(false); setProfileError(""); }} save={() => void saveWorkProfile()} />; break;
     case "evidence": content = <EvidenceView workflows={workflows} openWorkflow={openWorkflow} runtime={runtime} />; break;
     case "privacy": content = <PrivacyView runtime={runtime} />; break;
   }

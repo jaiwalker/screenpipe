@@ -4,6 +4,7 @@
 import type {
   TimeAllocationItem,
   TimeProfileDimension,
+  WorkProfile,
   WorkflowAnalysis,
   WorkflowEvidence,
   WorkflowMap,
@@ -238,14 +239,45 @@ export const fixtureEnterpriseRuntime: WorkflowRuntime = {
   ],
 };
 
+export const fixturePersonalWorkProfile: WorkProfile = {
+  scope: "personal",
+  summary: "I lead product and customer development across enterprise pilots, product direction, and fundraising.",
+  priorities: "Shorten enterprise onboarding. Turn repeated work into clear, reviewable workflow maps.",
+  kpis: [{
+    name: "Enterprise onboarding time",
+    definition: "Time from signed pilot to first approved workflow report",
+    target: "Under 7 days",
+    cadence: "Weekly",
+    owner: "Me",
+  }],
+  hourlyValue: { amount: 150, currency: "USD", basis: "personal-estimate" },
+  vocabulary: "A workflow is a repeated sequence with a clear trigger and outcome.",
+  guidance: "Separate external constraints from friction I can change. Leave weak project labels unattributed.",
+  visibility: "device-only",
+};
+
+export const fixtureEnterpriseWorkProfile: WorkProfile = {
+  ...fixturePersonalWorkProfile,
+  scope: "workspace",
+  summary: "Northstar Studios helps operations teams understand and improve how work gets done.",
+  priorities: "Reduce customer response time. Shorten onboarding. Make required approvals easier to plan around.",
+  hourlyValue: { amount: 95, currency: "USD", basis: "blended-cost" },
+  vocabulary: "Customer success owns onboarding. Security owns required access reviews.",
+  visibility: "aggregate-workspace",
+};
+
 export function createFixtureWorkflowsPlatform(analysis: WorkflowAnalysis = fixtureWorkflowAnalysis): WorkflowsPlatform {
+  let profile = fixturePersonalWorkProfile;
   return {
     ensureRuntime: async () => fixtureWorkflowRuntime,
     analyzeCapturedWork: async () => analysis,
+    loadWorkProfile: async () => profile,
+    saveWorkProfile: async (nextProfile) => (profile = nextProfile),
   };
 }
 
 export function createFixtureEnterpriseWorkflowsPlatform(analysis: WorkflowAnalysis = fixtureWorkflowAnalysis): WorkflowsPlatform {
+  let profile = fixtureEnterpriseWorkProfile;
   const approvedAnalysis: WorkflowAnalysis = {
     ...analysis,
     analysis: {
@@ -302,5 +334,7 @@ export function createFixtureEnterpriseWorkflowsPlatform(analysis: WorkflowAnaly
       result: scopedAnalysis(options?.scope),
     }),
     getAnalysisJob: async () => ({ id: "fixture-enterprise-job", status: "complete", result: scopedAnalysis() }),
+    loadWorkProfile: async () => profile,
+    saveWorkProfile: async (nextProfile) => (profile = nextProfile),
   };
 }

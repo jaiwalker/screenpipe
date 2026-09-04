@@ -1,7 +1,7 @@
 // screenpipe — AI that knows everything you've seen, said, or heard
 // https://screenpipe.com
 
-import type { WorkflowAnalysis, WorkflowRuntime } from "./model";
+import type { WorkProfile, WorkflowAnalysis, WorkflowRuntime } from "./model";
 import type { WorkflowAnalysisJob, WorkflowAnalysisOptions, WorkflowsPlatform } from "./platform";
 
 export type WebWorkflowsPlatformOptions = {
@@ -9,6 +9,7 @@ export type WebWorkflowsPlatformOptions = {
   analysisEndpoint?: string;
   cachedAnalysisEndpoint?: string;
   analysisJobsEndpoint?: string;
+  workProfileEndpoint?: string;
   accountUrl?: string;
   headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
 };
@@ -42,6 +43,7 @@ export function createWebWorkflowsPlatform(options: WebWorkflowsPlatformOptions 
   const requestOptions = (days: number, analysisOptions?: WorkflowAnalysisOptions) => ({
     days,
     scope: analysisOptions?.scope?.id,
+    ...(analysisOptions?.workProfile ? { workProfile: analysisOptions.workProfile } : {}),
   });
   const platform: WorkflowsPlatform = {
     ensureRuntime: () => requestJson<WorkflowRuntime>(runtimeEndpoint, { method: "POST", body: "{}" }, options.headers),
@@ -71,6 +73,17 @@ export function createWebWorkflowsPlatform(options: WebWorkflowsPlatformOptions 
       { method: "GET" },
       options.headers,
     );
+  }
+  if (options.workProfileEndpoint) {
+    platform.loadWorkProfile = (scope) => {
+      const url = new URL(options.workProfileEndpoint!, typeof window === "undefined" ? "http://localhost" : window.location.origin);
+      if (scope?.id) url.searchParams.set("scope", scope.id);
+      return requestJson<WorkProfile | null>(`${url.pathname}${url.search}`, { method: "GET" }, options.headers);
+    };
+    platform.saveWorkProfile = (profile, scope) => requestJson<WorkProfile>(options.workProfileEndpoint!, {
+      method: "PUT",
+      body: JSON.stringify({ profile, scope: scope?.id }),
+    }, options.headers);
   }
   return platform;
 }

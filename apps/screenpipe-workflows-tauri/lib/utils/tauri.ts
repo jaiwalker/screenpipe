@@ -15,9 +15,9 @@ export const commands = {
 async activateAppAfterOauth() : Promise<void> {
     await TAURI_INVOKE("activate_app_after_oauth");
 },
-async analyzeWorkflows(days: number | null) : Promise<Result<JsonValue, string>> {
+async analyzeWorkflows(days: number | null, profile: JsonValue | null) : Promise<Result<JsonValue, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("analyze_workflows", { days }) };
+    return { status: "ok", data: await TAURI_INVOKE("analyze_workflows", { days, profile }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

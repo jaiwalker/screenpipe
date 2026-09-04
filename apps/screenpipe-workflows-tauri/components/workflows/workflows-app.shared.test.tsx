@@ -1,8 +1,8 @@
 // screenpipe — AI that knows everything you've seen, said, or heard
 // https://screenpipe.com
 
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkflowsApp } from "@screenpipe/workflows-ui";
 import { createFixtureEnterpriseWorkflowsPlatform, createFixtureWorkflowsPlatform, fixtureWorkflowAnalysis } from "@screenpipe/workflows-ui/fixture";
 
@@ -53,5 +53,31 @@ describe("shared workflows experience", () => {
     expect(screen.getByText("Showing the latest reports employees have approved for workspace use.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^evidence$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create automation|new automation/i })).not.toBeInTheDocument();
+  });
+
+  it("keeps a simple personal work profile private and saves explicit context", async () => {
+    const platform = createFixtureWorkflowsPlatform();
+    const saveWorkProfile = vi.fn(platform.saveWorkProfile!);
+    platform.saveWorkProfile = saveWorkProfile;
+    render(
+      <WorkflowsApp
+        platform={platform}
+        initialAnalysis={fixtureWorkflowAnalysis}
+        storageKey={null}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^work profile$/i }));
+    expect(screen.getByRole("heading", { name: "Teach Screenpipe what matters" })).toBeInTheDocument();
+    expect(screen.getAllByText("Private on this device")).toHaveLength(2);
+    expect((screen.getByLabelText("Role and responsibilities") as HTMLTextAreaElement).value).toContain("product");
+
+    fireEvent.change(screen.getByLabelText("Current outcomes"), { target: { value: "Shorten pilot onboarding" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+    await waitFor(() => expect(saveWorkProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ priorities: "Shorten pilot onboarding", visibility: "device-only" }),
+      undefined,
+    ));
+    expect(screen.getByText("Profile saved")).toBeInTheDocument();
   });
 });
