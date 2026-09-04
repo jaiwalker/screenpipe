@@ -198,6 +198,19 @@ export const fixtureWorkflowRuntime: WorkflowRuntime = {
   captureLocation: "device",
   processingLocation: "device",
   syncState: "local-only",
+  dataBoundary: {
+    owner: "employee",
+    rawHistory: "device-only",
+    screenshots: "device-only",
+    workspaceVisibility: "none",
+    managerRawAccess: false,
+    retention: {
+      controlledBy: "employee",
+      recommendedMinimumDays: 30,
+      recommendedMaximumDays: 90,
+    },
+    archive: { status: "off", recoveryControlledBy: "employee" },
+  },
 };
 
 export const fixtureEnterpriseRuntime: WorkflowRuntime = {
@@ -206,10 +219,22 @@ export const fixtureEnterpriseRuntime: WorkflowRuntime = {
   syncState: "synced",
   reason: "Fictional enterprise workspace preview",
   workspace: { id: "northstar", name: "Northstar Studios", role: "admin" },
+  dataBoundary: {
+    owner: "employee",
+    rawHistory: "device-only",
+    screenshots: "device-only",
+    workspaceVisibility: "aggregate-only",
+    managerRawAccess: false,
+    retention: {
+      controlledBy: "employee",
+      recommendedMinimumDays: 30,
+      recommendedMaximumDays: 90,
+    },
+    archive: { status: "end-to-end-encrypted", recoveryControlledBy: "employee" },
+  },
   availableScopes: [
     { id: "organization", kind: "organization", label: "Organization", detail: "All approved workspace data" },
     { id: "team:product", kind: "team", label: "Product team" },
-    { id: "personal", kind: "personal", label: "My work" },
   ],
 };
 
@@ -221,8 +246,49 @@ export function createFixtureWorkflowsPlatform(analysis: WorkflowAnalysis = fixt
 }
 
 export function createFixtureEnterpriseWorkflowsPlatform(analysis: WorkflowAnalysis = fixtureWorkflowAnalysis): WorkflowsPlatform {
-  const scopedAnalysis = (scope = fixtureEnterpriseRuntime.availableScopes?.[0]) => ({
+  const approvedAnalysis: WorkflowAnalysis = {
     ...analysis,
+    analysis: {
+      workflows: analysis.analysis.workflows.map((workflow) => ({
+        ...workflow,
+        people: [],
+        evidence: [],
+        stages: workflow.stages.map((stage) => ({ ...stage, evidence: [], screenshot: null })),
+        quality: {
+          ...workflow.quality,
+          evidenceCount: 0,
+          screenshotCount: 0,
+          stageEvidenceCoverage: 0,
+          stageScreenshotCoverage: 0,
+          reasons: ["Built from an approved aggregate workflow report", "Raw observations and screenshots remain on employee devices"],
+        },
+      })),
+    },
+    timeProfile: analysis.timeProfile ? {
+      ...analysis.timeProfile,
+      people: dimension([
+        {
+          label: "Contributing seats",
+          description: "Employees contributing approved aggregate work patterns",
+          minutes: analysis.timeProfile.totalMinutes,
+          percentage: 100,
+          confidence: 86,
+          distinctDays: analysis.days,
+          apps: [],
+          evidence: [],
+        },
+      ], analysis.timeProfile.totalMinutes),
+    } : analysis.timeProfile,
+    quality: {
+      ...analysis.quality,
+      verifiedEvidenceCount: 0,
+      screenshotCount: 0,
+      screenshotCoverage: 0,
+      warnings: ["Raw observations and screenshots remain on employee devices."],
+    },
+  };
+  const scopedAnalysis = (scope = fixtureEnterpriseRuntime.availableScopes?.[0]) => ({
+    ...approvedAnalysis,
     scope,
     processing: { location: "confidential-cloud" as const, label: "Confidential cloud" },
   });

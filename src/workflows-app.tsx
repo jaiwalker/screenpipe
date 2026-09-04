@@ -227,7 +227,7 @@ function AppShell({
     ["workflows", ListTree, "Workflows"],
     ["bottlenecks", AlertTriangle, "Friction"],
     ["evidence", FileCheck2, "Evidence"],
-    ["privacy", ShieldCheck, "Privacy"],
+    ["privacy", ShieldCheck, "Data controls"],
   ] as const;
 
   return (
@@ -683,9 +683,22 @@ function EvidenceView({ workflows, openWorkflow, runtime }: { workflows: Workflo
 }
 
 function PrivacyView({ runtime }: { runtime: WorkflowRuntime | null }) {
-  const cloudProcessing = runtime?.processingLocation === "cloud" || runtime?.processingLocation === "confidential-cloud";
-  const confidentialProcessing = runtime?.processingLocation === "confidential-cloud";
-  return <><div className={styles.pageHeader}><div><span>Privacy</span><h1>{confidentialProcessing ? "Verified confidential processing" : cloudProcessing ? "Private workspace processing" : "Your work stays yours"}</h1><p>{cloudProcessing ? "Capture begins on each enrolled device and is sent over an encrypted connection to the workspace's cloud boundary. This app cannot take actions for anyone." : "Raw recordings remain on this device, and this app only analyzes your work. It cannot take actions for you."}</p></div></div><section className={styles.privacyGrid}><article><LockKeyhole size={21} /><h2>{cloudProcessing ? "Protected in transit and storage" : "Raw history stays local"}</h2><p>{cloudProcessing ? "Captured work is queued on the device, sent over an encrypted connection, and retained under workspace policy." : "Screen and audio recordings are kept on this device by default."}</p><Pill tone="green">{cloudProcessing ? "Workspace protected" : "On this device"}</Pill></article><article><Eye size={21} /><h2>{confidentialProcessing ? "Attested processing" : cloudProcessing ? "Private cloud processing" : "Only when you ask"}</h2><p>{confidentialProcessing ? "Only a verified processing build can receive the key needed to read workspace data." : cloudProcessing ? "Workspace reports are built by isolated cloud workers. Access and retention follow workspace policy." : "A bounded summary is processed when you choose to refresh your work map."}</p><Pill>Read-only analysis</Pill></article><article><ShieldCheck size={21} /><h2>No actions</h2><p>Screenpipe Workflows does not send, publish, edit, delete, or run anyone's work.</p><Pill>Mapping only</Pill></article></section><section className={styles.statusPanel}><div><span className={runtime?.recording ? styles.statusLive : ""} /><div><strong>{runtime?.recording ? "Work history is active" : "Work history is starting"}</strong><p>{cloudProcessing ? "Using protected workspace uploads and completed cloud reports." : runtime?.source === "screenpipe" ? "Using the history already captured by Screenpipe without recording twice." : "Screenpipe Workflows is preparing its private work history."}</p></div></div><Pill tone={runtime?.recording ? "green" : "plain"}>{runtime?.recording ? "Ready" : "Checking"}</Pill></section></>;
+  const boundary = runtime?.dataBoundary;
+  const workspaceView = Boolean(runtime?.workspace);
+  const archiveOn = boundary?.archive.status === "end-to-end-encrypted";
+  const minimumDays = boundary?.retention.recommendedMinimumDays ?? 30;
+  const maximumDays = boundary?.retention.recommendedMaximumDays ?? 90;
+  return <>
+    <div className={styles.pageHeader}><div><span>Data controls</span><h1>{workspaceView ? "What this workspace can see" : "Your work stays yours"}</h1><p>{workspaceView ? "The workspace receives approved reports and aggregate patterns. Raw recordings, screenshots, and personal timelines remain under each employee's control." : "Raw recordings, screenshots, and the detailed workflow map remain on this device. Nothing is shared with a workspace unless you explicitly approve it."}</p></div></div>
+    <section className={styles.boundaryStatement}><ShieldCheck size={18} /><div><strong>{boundary?.managerRawAccess ? "Workspace raw access is enabled" : "Managers cannot open raw employee history"}</strong><p>{workspaceView ? "This dashboard is a control plane for approved reports, enrollment health, and aggregate patterns—not a hidden activity viewer." : "The app keeps raw media and granular evidence local. When you refresh a map, it sends bounded work context for processing; it does not upload the underlying video or audio."}</p></div><Pill tone="green">Employee controlled</Pill></section>
+    <section className={styles.privacyGrid}>
+      <article><LockKeyhole size={21} /><h2>Raw history stays local</h2><p>Screen and audio history plus stage screenshots remain on the employee's device. The workspace does not receive them.</p><Pill tone="green">Device only</Pill></article>
+      <article><Clock3 size={21} /><h2>{minimumDays}–{maximumDays} day local window</h2><p>Retention is controlled by the employee. The local window can stay bounded while preserving a longer private archive.</p><Pill>Employee retention</Pill></article>
+      <article><ShieldCheck size={21} /><h2>{archiveOn ? "Encrypted private archive" : "Cloud archive is off"}</h2><p>{archiveOn ? "Archived history is end-to-end encrypted. Recovery stays with the employee, not a manager or workspace admin." : "No archive is connected. When enabled, it must be end-to-end encrypted with employee-controlled recovery."}</p><Pill>{archiveOn ? "Employee recovery" : "Not connected"}</Pill></article>
+      <article><Eye size={21} /><h2>{workspaceView ? "Approved outputs only" : "Sharing starts private"}</h2><p>{workspaceView ? "The workspace can use aggregate patterns and employee-approved summaries. Named raw observations stay out of this dashboard." : "Your organization sees nothing from this app by default. You choose whether to share a summary or contribute to an anonymous aggregate."}</p><Pill>{workspaceView ? "Aggregate only" : "Nothing shared"}</Pill></article>
+    </section>
+    <section className={styles.statusPanel}><div><span className={runtime?.recording ? styles.statusLive : ""} /><div><strong>{runtime?.recording ? "Work history is active" : "Work history is starting"}</strong><p>{runtime?.source === "screenpipe" ? "Using the history already captured by Screenpipe without recording twice." : workspaceView ? "Showing the latest reports employees have approved for workspace use." : "Screenpipe Workflows is preparing its private work history."}</p></div></div><Pill tone={runtime?.recording ? "green" : "plain"}>{runtime?.recording ? "Ready" : "Checking"}</Pill></section>
+  </>;
 }
 
 export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "screenpipe-workflows:last-analysis", initialScopeId, embedded = false }: WorkflowsAppProps) {

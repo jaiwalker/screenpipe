@@ -18,6 +18,24 @@ export type WorkflowRuntime = {
     role: "member" | "manager" | "admin";
   } | null;
   availableScopes?: WorkflowScope[];
+  dataBoundary?: WorkflowDataBoundary;
+};
+
+export type WorkflowDataBoundary = {
+  owner: "employee" | "workspace";
+  rawHistory: "device-only" | "workspace-cloud";
+  screenshots: "device-only" | "workspace-approved";
+  workspaceVisibility: "none" | "employee-approved" | "aggregate-only";
+  managerRawAccess: boolean;
+  retention: {
+    controlledBy: "employee" | "workspace";
+    recommendedMinimumDays?: number;
+    recommendedMaximumDays?: number;
+  };
+  archive: {
+    status: "off" | "end-to-end-encrypted";
+    recoveryControlledBy: "employee" | "workspace";
+  };
 };
 
 export type WorkflowScopeKind = "personal" | "team" | "organization" | "project";
