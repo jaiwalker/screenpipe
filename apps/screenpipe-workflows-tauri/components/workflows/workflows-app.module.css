@@ -292,7 +292,7 @@
 .filterButtonActive { border-color: #b8c58f; background: #f2f7e4; color: #455526; }
 .filterButton svg:last-child, .filterButtonActive svg:last-child { margin-left: 2px; }
 .clearButton { border: 0; color: #81857c; }
-.filterPanel { display: grid; grid-template-columns: repeat(5,minmax(112px,1fr)) auto; gap: 10px; align-items: end; margin: 0 0 13px; padding: 14px; border: 1px solid #dfe1d9; border-radius: 9px; background: #f4f5f0; }
+.filterPanel { display: grid; grid-template-columns: repeat(6,minmax(100px,1fr)) auto; gap: 10px; align-items: end; margin: 0 0 13px; padding: 14px; border: 1px solid #dfe1d9; border-radius: 9px; background: #f4f5f0; }
 .filterPanel label { display: flex; flex-direction: column; gap: 6px; }
 .filterPanel label > span { color: #7e8277; font-size: 7px; font-weight: 720; letter-spacing: .08em; text-transform: uppercase; }
 .filterPanel select { width: 100%; height: 32px; padding: 0 26px 0 9px; border: 1px solid #d7d9d1; border-radius: 6px; outline: 0; background: #fff; color: #484c44; font-size: 9px; }
@@ -349,6 +349,7 @@
 .stageList article { position: relative; z-index: 1; overflow: hidden; border: 1px solid #dddeda; border-radius: 8px; background: #fff; }
 .stageList article + article { margin-top: 8px; }
 .stageList .stageBottleneck { border-color: #dfca89; box-shadow: inset 3px 0 0 #efc64d; }
+.stageList .stageConstraint { border-color: #d6d9d1; box-shadow: inset 3px 0 0 #b8bdb2; }
 .stageList .stageOpen { border-color: #bfc3b6; box-shadow: 0 8px 22px rgba(35,38,28,.06); }
 .stageSummary { width: 100%; min-height: 91px; display: grid; grid-template-columns: 34px minmax(0,1fr) 115px 18px; gap: 13px; align-items: center; padding: 13px 15px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .stageSummary:hover { background: #fbfcf8; }
@@ -405,10 +406,11 @@
 .bottleneckList article { min-height: 126px; display: grid; grid-template-columns: 36px minmax(0,1fr) 150px 28px; gap: 15px; align-items: center; padding: 18px; border-bottom: 1px solid #e6e7e1; }
 .bottleneckList article:last-child { border-bottom: 0; }
 .bottleneckRank { align-self: start; color: #9a9d94; font-size: 9px; }
-.bottleneckMain > div { display: flex; align-items: center; gap: 8px; }
+.bottleneckMain > div { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .bottleneckMain > div > span { color: #92958c; font-size: 8px; }
 .bottleneckMain h3 { margin: 10px 0 5px; font-size: 12px; }
 .bottleneckMain p { margin: 0; color: #74786e; font-size: 9px; line-height: 1.5; }
+.bottleneckMain .controlReason { margin-top: 6px; color: #5f6559; font-weight: 650; }
 .bottleneckMain small { display: flex; align-items: flex-start; gap: 5px; margin-top: 9px; color: #92958c; font-size: 8px; line-height: 1.4; }
 .bottleneckMain small svg { flex: 0 0 auto; margin-top: 1px; }
 .bottleneckTime { padding-left: 17px; border-left: 1px solid #e5e6e0; }

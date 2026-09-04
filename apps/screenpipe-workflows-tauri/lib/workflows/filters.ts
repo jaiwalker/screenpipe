@@ -7,10 +7,12 @@ import type {
   WorkflowMap,
   WorkflowQualityGrade,
 } from "./runtime";
+import { bottleneckControl, type WorkflowControlLevel } from "./controllability";
 
 export type WorkflowDurationFilter = "all" | "short" | "medium" | "long";
 export type WorkflowQualityFilter = "all" | "good" | "strong";
 export type WorkflowFrictionFilter = "all" | WorkflowBottleneck["type"];
+export type WorkflowControlFilter = "all" | WorkflowControlLevel;
 export type WorkflowScreenshotFilter = "all" | "complete" | "partial" | "none";
 
 export type WorkflowFilters = {
@@ -18,6 +20,7 @@ export type WorkflowFilters = {
   quality: WorkflowQualityFilter;
   duration: WorkflowDurationFilter;
   friction: WorkflowFrictionFilter;
+  control: WorkflowControlFilter;
   app: string;
   screenshots: WorkflowScreenshotFilter;
 };
@@ -27,6 +30,7 @@ export const defaultWorkflowFilters: WorkflowFilters = {
   quality: "all",
   duration: "all",
   friction: "all",
+  control: "all",
   app: "all",
   screenshots: "all",
 };
@@ -59,7 +63,7 @@ function searchableWorkflowText(workflow: WorkflowMap) {
       ...stage.apps,
       ...stage.evidence.map((item) => item.detail),
     ]),
-    ...workflow.bottlenecks.flatMap((item) => [item.label, item.detail]),
+    ...workflow.bottlenecks.flatMap((item) => [item.label, item.detail, item.controlReason ?? ""]),
   ]
     .join(" ")
     .toLocaleLowerCase();
@@ -79,6 +83,12 @@ export function filterWorkflows(
     if (
       filters.friction !== "all" &&
       !workflow.bottlenecks.some((item) => item.type === filters.friction)
+    ) {
+      return false;
+    }
+    if (
+      filters.control !== "all" &&
+      !workflow.bottlenecks.some((item) => bottleneckControl(item) === filters.control)
     ) {
       return false;
     }
@@ -115,6 +125,7 @@ export function activeFilterCount(filters: WorkflowFilters) {
     filters.quality !== "all",
     filters.duration !== "all",
     filters.friction !== "all",
+    filters.control !== "all",
     filters.app !== "all",
     filters.screenshots !== "all",
   ].filter(Boolean).length;

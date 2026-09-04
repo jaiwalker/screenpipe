@@ -46,6 +46,11 @@ import {
   type WorkflowActivityPeriod,
 } from "@/lib/workflows/catalog";
 import {
+  controlExplanation,
+  controlLabel,
+  isActionableBottleneck,
+} from "@/lib/workflows/controllability";
+import {
   analyzeCapturedWork,
   type AnalysisQuality,
   ensureWorkflowRuntime,
@@ -61,7 +66,7 @@ const processingSteps = [
   ["Gathering the selected period", "Preparing a bounded view of your recent work"],
   ["Finding repeated sequences", "Connecting actions that belong to the same workflow"],
   ["Measuring each stage", "Separating hands-on work from waiting and switching"],
-  ["Locating bottlenecks", "Checking each friction point against captured evidence"],
+  ["Classifying friction", "Separating what you can change from external constraints"],
 ] as const;
 
 function formatMinutes(value: number) {
@@ -184,7 +189,7 @@ function AppShell({
   const nav = [
     ["overview", LayoutDashboard, "Overview"],
     ["workflows", ListTree, "Workflows"],
-    ["bottlenecks", AlertTriangle, "Bottlenecks"],
+    ["bottlenecks", AlertTriangle, "Friction"],
     ["evidence", FileCheck2, "Evidence"],
     ["privacy", ShieldCheck, "Privacy"],
   ] as const;
@@ -345,7 +350,9 @@ function OverviewView({
   const workflows = analysis?.analysis.workflows ?? [];
   const mappedMinutes = workflows.reduce((sum, item) => sum + item.totalMinutes, 0);
   const waitingMinutes = workflows.reduce((sum, item) => sum + item.waitingMinutes, 0);
-  const bottleneckCount = workflows.reduce((sum, item) => sum + item.bottlenecks.length, 0);
+  const friction = workflows.flatMap((workflow) => workflow.bottlenecks);
+  const actionableCount = friction.filter(isActionableBottleneck).length;
+  const constraintCount = friction.length - actionableCount;
 
   return (
     <>
@@ -378,7 +385,7 @@ function OverviewView({
           <section className={styles.statGrid} aria-label="Work map summary">
             <div><span>Combined mapped duration</span><strong>{formatMinutes(mappedMinutes)}</strong><small>one conservative estimate per workflow</small></div>
             <div><span>Combined waiting estimate</span><strong>{formatMinutes(waitingMinutes)}</strong><small>one estimated occurrence per workflow</small></div>
-            <div><span>Bottlenecks found</span><strong>{bottleneckCount}</strong><small>linked to specific workflow stages</small></div>
+            <div><span>Friction you can affect</span><strong>{actionableCount}</strong><small>{constraintCount} external or required constraint{constraintCount === 1 ? "" : "s"} separated</small></div>
             <div><span>Workflows shown</span><strong>{workflows.length}</strong><small>{activityPeriodLabel(activityPeriod).toLocaleLowerCase()}</small></div>
           </section>
           <div className={styles.sectionHeading}><div><span>Where time goes</span><h2>Your workflows, active time vs. waiting</h2></div><button className={styles.textButton} onClick={() => navigate("workflows")}>View all workflows <ArrowRight size={14} /></button></div>
@@ -425,15 +432,18 @@ function WorkflowsView({ workflows, knownWorkflowCount, activityPeriod, filters,
           <label><span>Evidence quality</span><select value={filters.quality} onChange={(event) => updateFilter("quality", event.target.value as WorkflowFilters["quality"])}><option value="all">Any support level</option><option value="good">Good or stronger</option><option value="strong">Strong only</option></select></label>
           <label><span>Time per run</span><select value={filters.duration} onChange={(event) => updateFilter("duration", event.target.value as WorkflowFilters["duration"])}><option value="all">Any duration</option><option value="short">15 minutes or less</option><option value="medium">16–45 minutes</option><option value="long">More than 45 minutes</option></select></label>
           <label><span>Friction type</span><select value={filters.friction} onChange={(event) => updateFilter("friction", event.target.value as WorkflowFilters["friction"])}><option value="all">Any friction</option><option value="waiting">Waiting</option><option value="switching">Switching</option><option value="rework">Rework</option><option value="handoff">Handoff</option><option value="unclear">Unclear</option></select></label>
+          <label><span>Who can affect it</span><select value={filters.control} onChange={(event) => updateFilter("control", event.target.value as WorkflowFilters["control"])}><option value="all">Any control level</option><option value="direct">Within your control</option><option value="influence">You can influence</option><option value="external">External dependency</option><option value="required">Required safeguard</option></select></label>
           <label><span>App involved</span><select value={filters.app} onChange={(event) => updateFilter("app", event.target.value)}><option value="all">Any app</option>{availableApps.map((app) => <option key={app} value={app}>{app}</option>)}</select></label>
           <label><span>Stage screenshots</span><select value={filters.screenshots} onChange={(event) => updateFilter("screenshots", event.target.value as WorkflowFilters["screenshots"])}><option value="all">Any coverage</option><option value="complete">Every stage matched</option><option value="partial">Some stages matched</option><option value="none">No screenshots matched</option></select></label>
           <button onClick={clearFilters} disabled={!filterCount}>Reset filters</button>
         </section>}
         {visible.length ? <div className={styles.workflowGrid}>{visible.map((workflow) => {
           const originalIndex = workflows.indexOf(workflow);
+          const actionableCount = workflow.bottlenecks.filter(isActionableBottleneck).length;
+          const constraintCount = workflow.bottlenecks.length - actionableCount;
           return (
             <button key={workflow.title} className={styles.workflowCard} onClick={() => openWorkflow(originalIndex)}>
-              <div className={styles.workflowCardTop}><span>{String(workflow.rank).padStart(2, "0")}</span><div><Pill tone={qualityTone(workflow.quality.grade)}>{qualityLabel(workflow.quality.grade)}</Pill>{workflow.bottlenecks.length > 0 && <Pill tone="warm">{workflow.bottlenecks.length} bottleneck{workflow.bottlenecks.length === 1 ? "" : "s"}</Pill>}</div></div>
+              <div className={styles.workflowCardTop}><span>{String(workflow.rank).padStart(2, "0")}</span><div><Pill tone={qualityTone(workflow.quality.grade)}>{qualityLabel(workflow.quality.grade)}</Pill>{actionableCount > 0 && <Pill tone="warm">{actionableCount} actionable</Pill>}{constraintCount > 0 && <Pill>{constraintCount} constraint{constraintCount === 1 ? "" : "s"}</Pill>}</div></div>
               <h2>{workflow.title}</h2><p>{workflow.description}</p>
               <div className={styles.cardPath}><span>{workflow.trigger}</span><ArrowRight size={12} /><span>{workflow.outcome}</span></div>
               <div className={styles.cardMetrics}><div><span>Per run</span><strong>{formatMinutes(workflow.totalMinutes)}</strong></div><div><span>Stages</span><strong>{workflow.stages.length}</strong></div><div><span>Verified observations</span><strong>{workflow.quality.evidenceCount}</strong></div><div><span>Screenshots</span><strong>{workflow.quality.screenshotCount}/{workflow.stages.length}</strong></div></div>
@@ -453,6 +463,8 @@ function WorkflowDetail({ workflow, navigate }: { workflow: WorkflowMap | null; 
   const total = Math.max(1, workflow.totalMinutes);
   const activeWidth = Math.round((workflow.activeMinutes / total) * 100);
   const allStagesOpen = expandedStages.size === workflow.stages.length;
+  const actionableFriction = workflow.bottlenecks.filter(isActionableBottleneck);
+  const constraints = workflow.bottlenecks.filter((item) => !isActionableBottleneck(item));
   const toggleStage = (index: number) => setExpandedStages((current) => {
     const next = new Set(current);
     if (next.has(index)) next.delete(index);
@@ -487,12 +499,14 @@ function WorkflowDetail({ workflow, navigate }: { workflow: WorkflowMap | null; 
               .reduce((sum, item) => sum + item.estimatedMinutesPerRun, 0);
             const stageWaiting = Math.max(stage.waitingMinutes, inferredWait);
             const stageTotal = stage.activeMinutes + stageWaiting;
-            const hasBottleneck = workflow.bottlenecks.some((item) => item.stage.toLowerCase() === stage.name.toLowerCase());
+            const stageFriction = workflow.bottlenecks.filter((item) => item.stage.toLowerCase() === stage.name.toLowerCase());
+            const actionableStageFriction = stageFriction.some(isActionableBottleneck);
+            const constraint = stageFriction.find((item) => !isActionableBottleneck(item));
             const open = expandedStages.has(index);
-            return <article key={`${stage.name}-${index}`} className={`${hasBottleneck ? styles.stageBottleneck : ""} ${open ? styles.stageOpen : ""}`}>
+            return <article key={`${stage.name}-${index}`} className={`${actionableStageFriction ? styles.stageBottleneck : ""} ${constraint ? styles.stageConstraint : ""} ${open ? styles.stageOpen : ""}`}>
               <button className={styles.stageSummary} onClick={() => toggleStage(index)} aria-expanded={open}>
                 <div className={styles.stageNumber}>{index + 1}</div>
-                <div className={styles.stageBody}><div><h3>{stage.name}</h3>{hasBottleneck && <Pill tone="warm"><AlertTriangle size={11} />Bottleneck</Pill>}</div><p>{stage.description}</p><span>{stage.apps.join(" · ") || "App not clear"} · {stage.observedOccurrences} observation{stage.observedOccurrences === 1 ? "" : "s"} across {stage.observedDays} day{stage.observedDays === 1 ? "" : "s"}</span></div>
+                <div className={styles.stageBody}><div><h3>{stage.name}</h3>{actionableStageFriction && <Pill tone="warm"><AlertTriangle size={11} />Actionable friction</Pill>}{!actionableStageFriction && constraint && <Pill><ShieldCheck size={11} />{controlLabel(constraint)}</Pill>}</div><p>{stage.description}</p><span>{stage.apps.join(" · ") || "App not clear"} · {stage.observedOccurrences} observation{stage.observedOccurrences === 1 ? "" : "s"} across {stage.observedDays} day{stage.observedDays === 1 ? "" : "s"}</span></div>
                 <div className={styles.stageTime}><strong>{formatMinutes(stageTotal)}</strong><span>{formatMinutes(stage.activeMinutes)} active</span><span>{formatMinutes(stageWaiting)} waiting</span></div>
                 <ChevronDown className={styles.stageChevron} size={15} />
               </button>
@@ -514,18 +528,19 @@ function WorkflowDetail({ workflow, navigate }: { workflow: WorkflowMap | null; 
         <div className={styles.panel}><div className={styles.panelTitle}><div><span>Time split</span><h2>Hands-on work vs. waiting</h2></div><Clock3 size={18} /></div><div className={styles.bigTimeBar}><i style={{ width: `${activeWidth}%` }} /><b style={{ width: `${100 - activeWidth}%` }} /></div><div className={styles.splitLegend}><div><i /><span>Active work</span><strong>{formatMinutes(workflow.activeMinutes)}</strong></div><div><i /><span>Waiting</span><strong>{formatMinutes(workflow.waitingMinutes)}</strong></div></div></div>
         <div className={styles.panel}><div className={styles.panelTitle}><div><span>Workflow variations</span><h2>What changes between runs</h2></div><GitBranch size={18} /></div>{workflow.variations.length ? <ul className={styles.plainList}>{workflow.variations.map((item) => <li key={item}>{item}</li>)}</ul> : <p className={styles.panelEmpty}>No clear variations were supported in this period.</p>}{!!workflow.handoffs.length && <div className={styles.handoffs}><strong>Handoffs observed</strong>{workflow.handoffs.map((item) => <span key={item}><ArrowRight size={11} />{item}</span>)}</div>}</div>
       </section>
-      {!!workflow.bottlenecks.length && <><div className={styles.sectionHeading}><div><span>Friction</span><h2>Bottlenecks in this workflow</h2></div><button className={styles.textButton} onClick={() => navigate("bottlenecks")}>View all bottlenecks <ArrowRight size={14} /></button></div><BottleneckList items={workflow.bottlenecks.map((item) => ({ ...item, workflowTitle: workflow.title, repetitions: workflow.repetitions }))} /></>}
+      {!!actionableFriction.length && <><div className={styles.sectionHeading}><div><span>Within reach</span><h2>Friction you can affect</h2></div><button className={styles.textButton} onClick={() => navigate("bottlenecks")}>View all friction <ArrowRight size={14} /></button></div><BottleneckList items={actionableFriction.map((item) => ({ ...item, workflowTitle: workflow.title, repetitions: workflow.repetitions }))} /></>}
+      {!!constraints.length && <><div className={styles.sectionHeading}><div><span>Plan around</span><h2>External and required constraints</h2></div></div><BottleneckList items={constraints.map((item) => ({ ...item, workflowTitle: workflow.title, repetitions: workflow.repetitions }))} numbered={false} /></>}
     </>
   );
 }
 
 type RankedBottleneck = WorkflowBottleneck & { workflowTitle: string; repetitions: number };
 
-function BottleneckList({ items, openWorkflow }: { items: RankedBottleneck[]; openWorkflow?: (title: string) => void }) {
+function BottleneckList({ items, openWorkflow, numbered = true }: { items: RankedBottleneck[]; openWorkflow?: (title: string) => void; numbered?: boolean }) {
   return <div className={styles.bottleneckList}>{items.map((item, index) => (
     <article key={`${item.workflowTitle}-${item.label}-${index}`}>
-      <div className={styles.bottleneckRank}>0{index + 1}</div>
-      <div className={styles.bottleneckMain}><div><Pill tone="warm">{item.type}</Pill><span>{item.workflowTitle} · {item.stage}</span></div><h3>{item.label}</h3><p>{item.detail}</p><small><FileCheck2 size={11} />{item.evidence}</small></div>
+      <div className={styles.bottleneckRank}>{numbered ? String(index + 1).padStart(2, "0") : "—"}</div>
+      <div className={styles.bottleneckMain}><div><Pill tone={isActionableBottleneck(item) ? "warm" : "plain"}>{controlLabel(item)}</Pill><Pill>{item.type}</Pill><span>{item.workflowTitle} · {item.stage}</span></div><h3>{item.label}</h3><p>{item.detail}</p><p className={styles.controlReason}>{controlExplanation(item)}</p><small><FileCheck2 size={11} />{item.evidence}</small></div>
       <div className={styles.bottleneckTime}><span>Estimated delay</span><strong>{item.estimatedMinutesPerRun ? formatMinutes(item.estimatedMinutesPerRun) : "Unclear"}</strong><small>per occurrence · {item.confidence}% confidence</small></div>
       {openWorkflow && <button className={styles.iconLink} onClick={() => openWorkflow(item.workflowTitle)} aria-label={`Open ${item.workflowTitle}`}><ChevronRight size={16} /></button>}
     </article>
@@ -533,15 +548,17 @@ function BottleneckList({ items, openWorkflow }: { items: RankedBottleneck[]; op
 }
 
 function BottlenecksView({ workflows, openWorkflow }: { workflows: WorkflowMap[]; openWorkflow: (index: number) => void }) {
-  const items = workflows.flatMap((workflow) => workflow.bottlenecks.map((item) => ({ ...item, workflowTitle: workflow.title, repetitions: workflow.repetitions }))).sort((a, b) => b.estimatedMinutesPerRun - a.estimatedMinutesPerRun);
-  const largestDelay = items.reduce((largest, item) => Math.max(largest, item.estimatedMinutesPerRun), 0);
+  const items = workflows.flatMap((workflow) => workflow.bottlenecks.map((item) => ({ ...item, workflowTitle: workflow.title, repetitions: workflow.repetitions })));
+  const actionable = items.filter(isActionableBottleneck).sort((a, b) => b.estimatedMinutesPerRun - a.estimatedMinutesPerRun);
+  const constraints = items.filter((item) => !isActionableBottleneck(item)).sort((a, b) => b.estimatedMinutesPerRun - a.estimatedMinutesPerRun);
+  const largestDelay = actionable.reduce((largest, item) => Math.max(largest, item.estimatedMinutesPerRun), 0);
   const openByTitle = (title: string) => openWorkflow(workflows.findIndex((workflow) => workflow.title === title));
-  return <><div className={styles.pageHeader}><div><span>Friction map</span><h1>Where work gets stuck</h1><p>Ranked delays, switching, rework, and handoffs from the workflows in this captured period.</p></div>{!!items.length && <div className={styles.headerMetric}><span>Largest estimated delay</span><strong>{formatMinutes(largestDelay)}</strong></div>}</div>{items.length ? <BottleneckList items={items} openWorkflow={openByTitle} /> : <section className={styles.emptyState}><AlertTriangle size={23} /><h2>No supported bottlenecks yet</h2><p>Build a work map first. Weak or unclear friction points are omitted.</p></section>}</>;
+  return <><div className={styles.pageHeader}><div><span>Friction map</span><h1>What you can change</h1><p>Actionable friction is ranked first. Delays owned by other people, systems, or required controls are separated below.</p></div>{!!actionable.length && <div className={styles.headerMetric}><span>Largest addressable delay</span><strong>{formatMinutes(largestDelay)}</strong></div>}</div>{actionable.length ? <><div className={styles.sectionHeading}><div><span>Within reach</span><h2>Friction you can affect</h2></div></div><BottleneckList items={actionable} openWorkflow={openByTitle} /></> : <section className={styles.emptyState}><CheckCircle2 size={23} /><h2>No actionable friction identified</h2><p>The observed delays are outside your control or are deliberate safeguards.</p></section>}{!!constraints.length && <><div className={styles.sectionHeading}><div><span>Plan around</span><h2>External and required constraints</h2></div><Pill>{constraints.length} separated</Pill></div><BottleneckList items={constraints} openWorkflow={openByTitle} numbered={false} /></>}</>;
 }
 
 function EvidenceView({ workflows, openWorkflow }: { workflows: WorkflowMap[]; openWorkflow: (index: number) => void }) {
   const items = workflows.flatMap((workflow, workflowIndex) => workflow.evidence.map((evidence) => ({ ...evidence, workflowTitle: workflow.title, workflowIndex })));
-  return <><div className={styles.pageHeader}><div><span>Verified observations</span><h1>Evidence behind the maps</h1><p>Every row matches an exact captured timestamp. Use it to challenge workflow stages, time estimates, and bottlenecks.</p></div><Pill><LockKeyhole size={12} />Raw recording stays local</Pill></div>{items.length ? <section className={styles.evidenceList}>{items.map((item, index) => <button key={`${item.timestamp}-${index}`} onClick={() => openWorkflow(item.workflowIndex)}><span className={styles.evidenceIndex}>{String(index + 1).padStart(2, "0")}</span><div><span>{formatEvidenceTimestamp(item.timestamp)} · {item.app}</span><strong>{item.workflowTitle}</strong><p>{item.detail}</p></div><ChevronRight size={16} /></button>)}</section> : <section className={styles.emptyState}><FileCheck2 size={23} /><h2>No analyzed evidence yet</h2><p>Build your first work map to see the observations behind it.</p></section>}</>;
+  return <><div className={styles.pageHeader}><div><span>Verified observations</span><h1>Evidence behind the maps</h1><p>Every row matches an exact captured timestamp. Use it to challenge workflow stages, time estimates, and friction classifications.</p></div><Pill><LockKeyhole size={12} />Raw recording stays local</Pill></div>{items.length ? <section className={styles.evidenceList}>{items.map((item, index) => <button key={`${item.timestamp}-${index}`} onClick={() => openWorkflow(item.workflowIndex)}><span className={styles.evidenceIndex}>{String(index + 1).padStart(2, "0")}</span><div><span>{formatEvidenceTimestamp(item.timestamp)} · {item.app}</span><strong>{item.workflowTitle}</strong><p>{item.detail}</p></div><ChevronRight size={16} /></button>)}</section> : <section className={styles.emptyState}><FileCheck2 size={23} /><h2>No analyzed evidence yet</h2><p>Build your first work map to see the observations behind it.</p></section>}</>;
 }
 
 function PrivacyView({ runtime }: { runtime: WorkflowRuntime | null }) {

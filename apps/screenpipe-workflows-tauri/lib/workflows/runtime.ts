@@ -58,6 +58,8 @@ export type WorkflowBottleneck = {
   label: string;
   stage: string;
   type: "waiting" | "switching" | "rework" | "handoff" | "unclear";
+  control?: "direct" | "influence" | "external" | "required";
+  controlReason?: string;
   detail: string;
   estimatedMinutesPerRun: number;
   confidence: number;

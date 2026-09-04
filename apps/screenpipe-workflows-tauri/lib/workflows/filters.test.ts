@@ -63,6 +63,8 @@ function workflow(overrides: Partial<WorkflowMap> = {}): WorkflowMap {
         label: "Wait for checks",
         stage: "Run checks",
         type: "waiting",
+        control: "external",
+        controlReason: "The check runner controls completion time.",
         detail: "Checks take time to finish.",
         estimatedMinutesPerRun: 7,
         confidence: 78,
@@ -124,5 +126,22 @@ describe("workflow filters", () => {
       ...defaultWorkflowFilters,
       screenshots: "complete",
     }).map((item) => item.title)).toEqual(["Complete screenshots"]);
+  });
+
+  it("filters workflows by what the user can control", () => {
+    const direct = workflow({
+      bottlenecks: [{
+        ...workflow().bottlenecks[0],
+        control: "direct",
+      }],
+    });
+    expect(filterWorkflows([workflow(), direct], {
+      ...defaultWorkflowFilters,
+      control: "direct",
+    })).toEqual([direct]);
+    expect(activeFilterCount({
+      ...defaultWorkflowFilters,
+      control: "external",
+    })).toBe(1);
   });
 });
