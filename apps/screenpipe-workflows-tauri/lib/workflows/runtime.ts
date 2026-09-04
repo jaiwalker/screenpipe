@@ -89,6 +89,33 @@ export type WorkflowMap = {
   quality: WorkflowQuality;
 };
 
+export type TimeAllocationItem = {
+  label: string;
+  description: string;
+  minutes: number;
+  percentage: number;
+  confidence: number;
+  distinctDays: number;
+  apps: string[];
+  evidence: WorkflowEvidence[];
+};
+
+export type TimeProfileDimension = {
+  items: TimeAllocationItem[];
+  attributedMinutes: number;
+  unattributedMinutes: number;
+  coveragePercent: number;
+};
+
+export type TimeProfile = {
+  days: number;
+  totalMinutes: number;
+  categories: TimeProfileDimension;
+  projects: TimeProfileDimension;
+  people: TimeProfileDimension;
+  companies: TimeProfileDimension;
+};
+
 export type AnalysisQuality = {
   grade: WorkflowQualityGrade;
   usableDays: number;
@@ -111,6 +138,7 @@ export type WorkflowAnalysis = {
   source: "screenpipe" | "workflows";
   bundleCount: number;
   observedActiveMinutes: number;
+  timeProfile?: TimeProfile | null;
   quality: AnalysisQuality;
 };
 

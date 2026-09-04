@@ -103,6 +103,7 @@ export function mergeWorkflowCatalog(
 
   return {
     ...next,
+    timeProfile: next.timeProfile ?? previous.timeProfile,
     analysis: {
       workflows: rankedWorkflows,
     },

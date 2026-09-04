@@ -117,4 +117,19 @@ describe("workflow catalog", () => {
     expect(workflowsForActivityPeriod(known, 7, "2026-09-03T18:00:00Z")).toHaveLength(1);
     expect(workflowsForActivityPeriod(known, 0, "2026-09-03T18:00:00Z")).toHaveLength(2);
   });
+
+  it("keeps the last time profile when a partial refresh omits it", () => {
+    const previous = analysis([workflow("Run customer interviews", "2026-08-01T10:00:00Z")]);
+    previous.timeProfile = {
+      days: 90,
+      totalMinutes: 120,
+      categories: { items: [], attributedMinutes: 0, unattributedMinutes: 120, coveragePercent: 0 },
+      projects: { items: [], attributedMinutes: 0, unattributedMinutes: 120, coveragePercent: 0 },
+      people: { items: [], attributedMinutes: 0, unattributedMinutes: 120, coveragePercent: 0 },
+      companies: { items: [], attributedMinutes: 0, unattributedMinutes: 120, coveragePercent: 0 },
+    };
+    const next = analysis([workflow("Run customer interviews", "2026-09-02T10:00:00Z")]);
+
+    expect(mergeWorkflowCatalog(previous, next).timeProfile).toEqual(previous.timeProfile);
+  });
 });

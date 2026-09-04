@@ -516,6 +516,42 @@ function createBrowserDevWorkflowAnalysis(days = 7) {
     workflow(1, "Investigate a support report", "Move from the initial report through reproduction, diagnosis, and a clear response.", "A detailed support report arrives", "The customer receives a concrete answer", supportStages as typeof releaseStages, ["Intercom", "Screenpipe", "Cursor"], [{ label: "Context is rebuilt across tools", stage: "Trace the cause", type: "switching", control: "direct", controlReason: "The investigation setup and working context are part of the user's own process.", detail: "The investigation moves between the report, captured evidence, and code.", estimatedMinutesPerRun: 4, confidence: 76, evidence: "2026-08-31T21:15:00Z · Cursor: Compare logs and code around the failing path." }]),
     workflow(2, "Publish a product release", "Review the candidate, wait for checks, and turn the final change set into release notes.", "A release candidate is ready", "The release is approved with notes", releaseStages, ["GitHub", "Terminal", "Docs"], [{ label: "Checks create a pause", stage: "Run release checks", type: "waiting", control: "required", controlReason: "Release checks are a deliberate quality safeguard.", detail: "Hands-on work pauses while the suite completes.", estimatedMinutesPerRun: 11, confidence: 82, evidence: "2026-08-30T17:05:00Z · Terminal: Start the checks and inspect any failures." }]),
   ];
+  const timeItem = (label: string, description: string, minutes: number, confidence: number, distinctDays: number, apps: string[], timestamp: string) => ({
+    label,
+    description,
+    minutes,
+    percentage: Math.round((minutes / 1264) * 100),
+    confidence,
+    distinctDays,
+    apps,
+    evidence: [evidence(timestamp, apps[0], `${description} Fictional observation for browser preview.`)],
+  });
+  const timeDimension = (items: ReturnType<typeof timeItem>[]) => {
+    const attributedMinutes = items.reduce((sum, item) => sum + item.minutes, 0);
+    return { items, attributedMinutes, unattributedMinutes: 1264 - attributedMinutes, coveragePercent: Math.round((attributedMinutes / 1264) * 100) };
+  };
+  const timeProfile = {
+    days,
+    totalMinutes: 1264,
+    categories: timeDimension([
+      timeItem("Product and engineering", "Building, reviewing, and improving the product.", 610, 91, 6, ["Cursor", "GitHub", "Terminal"], "2026-09-02T21:15:00Z"),
+      timeItem("Customer work", "Understanding customer needs and resolving reported issues.", 312, 87, 5, ["Intercom", "Screenpipe"], "2026-09-01T20:32:00Z"),
+      timeItem("Writing and launch", "Preparing product explanations, release notes, and launch material.", 196, 82, 4, ["Docs", "GitHub"], "2026-09-02T18:10:00Z"),
+    ]),
+    projects: timeDimension([
+      timeItem("Desktop reliability", "Tracing and fixing stability issues in the desktop product.", 402, 88, 5, ["Cursor", "Terminal"], "2026-09-02T21:15:00Z"),
+      timeItem("Product release", "Reviewing a release candidate and preparing it to ship.", 306, 86, 4, ["GitHub", "Terminal", "Docs"], "2026-09-01T17:05:00Z"),
+      timeItem("Onboarding quality", "Reviewing where new users need clearer setup guidance.", 174, 78, 3, ["Screenpipe", "Docs"], "2026-09-01T20:32:00Z"),
+    ]),
+    people: timeDimension([
+      timeItem("Maya Chen", "Meetings and follow-up work directly involving this person.", 142, 79, 3, ["Google Meet", "Docs"], "2026-09-02T18:10:00Z"),
+      timeItem("Jordan Lee", "Customer investigation and communication involving this person.", 104, 75, 2, ["Intercom", "Google Meet"], "2026-08-31T20:10:00Z"),
+    ]),
+    companies: timeDimension([
+      timeItem("Northstar Studios", "Customer conversations, investigation, and follow-up for this company.", 188, 84, 4, ["Intercom", "Google Meet"], "2026-08-31T20:10:00Z"),
+      timeItem("Acme Systems", "Product evaluation and follow-up work connected to this company.", 116, 73, 2, ["Google Meet", "Docs"], "2026-09-02T18:10:00Z"),
+    ]),
+  };
   return {
     schemaVersion: 5,
     analyzedAt: "2026-09-03T18:00:00Z",
@@ -523,6 +559,7 @@ function createBrowserDevWorkflowAnalysis(days = 7) {
     source: "screenpipe",
     bundleCount: days,
     observedActiveMinutes: 1264,
+    timeProfile,
     quality: { grade: "strong", usableDays: days, requestedDays: days, capturedMinutes: 1264, totalFrames: 18420, appAttributionCoverage: 96, parsedContextCount: 911, verifiedEvidenceCount: workflows.reduce((sum, item) => sum + item.quality.evidenceCount, 0), screenshotCount: 7, screenshotCoverage: 100, warnings: [] },
     analysis: { workflows },
   };

@@ -8,6 +8,7 @@ import { isAppView } from "./navigation";
 describe("workflow navigation", () => {
   it("accepts only work-mapping views", () => {
     expect(isAppView("overview")).toBe(true);
+    expect(isAppView("time")).toBe(true);
     expect(isAppView("workflows")).toBe(true);
     expect(isAppView("bottlenecks")).toBe(true);
     expect(isAppView("evidence")).toBe(true);

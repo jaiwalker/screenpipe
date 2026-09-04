@@ -4,6 +4,7 @@
 
 export const appViews = [
   "overview",
+  "time",
   "workflows",
   "workflow",
   "bottlenecks",

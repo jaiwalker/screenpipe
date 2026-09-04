@@ -153,6 +153,7 @@
 .periodControl select { border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
 .periodControl small { padding-left: 6px; border-left: 1px solid #e1e3dc; color: #917228; }
 .periodControl:focus-within { border-color: #8b9083; outline: 1px solid #8b9083; outline-offset: 1px; }
+.profilePeriod { height: 32px; display: flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #60655a; font-size: 8px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; white-space: nowrap; }
 .purposeBanner { height: 27px; display: flex; align-items: center; justify-content: center; gap: 6px; border-bottom: 1px solid #e0e8cb; background: #f3f8e6; color: #64743f; font-size: 9px; font-weight: 600; }
 .main { max-width: 1420px; min-height: calc(100vh - 86px); margin: 0 auto; padding: 38px clamp(28px, 4vw, 64px) 70px; }
 
@@ -282,6 +283,54 @@
 .pageHeader p { max-width: 700px; margin: 0; color: #6e7269; font-size: 12px; line-height: 1.6; }
 .headerMetric { flex: 0 0 auto; min-width: 185px; padding: 16px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
 .headerMetric strong { display: block; margin-top: 7px; font-size: 24px; }
+
+.timeSummary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin: -21px 0 34px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.timeSummary > div { min-width: 0; padding: 18px 19px; border-right: 1px solid #e7e8e2; }
+.timeSummary > div:last-child { border-right: 0; }
+.timeSummary span { display: block; color: #898d83; font-size: 8px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; }
+.timeSummary strong { display: block; margin: 7px 0 4px; font-size: 21px; letter-spacing: -.035em; }
+.timeSummary small { display: block; overflow: hidden; color: #8b8f85; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.timeLensHeader { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 13px; }
+.timeLensHeader > div > span { display: block; margin-bottom: 6px; color: #7b825d; font-size: 8px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+.timeLensHeader h2 { margin: 0; font-size: 17px; }
+.timeLensTabs { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin-bottom: 13px; }
+.timeLensTabs button { min-height: 43px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: #6d7167; font-size: 9px; font-weight: 670; cursor: pointer; }
+.timeLensTabs button:hover { background: #f4f5ef; color: var(--ink); }
+.timeLensTabs button > strong { margin-left: auto; min-width: 21px; height: 21px; display: grid; place-items: center; border-radius: 999px; background: #eff0eb; color: #777b70; font-size: 8px; }
+.timeLensTabs .timeLensActive { border-color: var(--ink); background: var(--ink); color: #fff; box-shadow: 0 5px 14px rgba(0,0,0,.08); }
+.timeLensTabs .timeLensActive > strong { background: var(--lime); color: #354800; }
+.timeAllocationList { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.timeAllocationItem { display: grid; grid-template-columns: 35px minmax(0,1fr); gap: 13px; padding: 20px 20px 16px; border-bottom: 1px solid #e6e8e0; }
+.timeAllocationItem:last-child { border-bottom: 0; }
+.timeAllocationRank { color: #999d92; font-size: 9px; }
+.timeAllocationBody { min-width: 0; }
+.timeAllocationHead { display: grid; grid-template-columns: minmax(0,1fr) 145px; gap: 25px; align-items: start; }
+.timeAllocationHead h2 { margin: 0 0 5px; font-size: 13px; }
+.timeAllocationHead p { max-width: 730px; margin: 0; color: #73786d; font-size: 9px; line-height: 1.5; }
+.timeAllocationHead > div:last-child { padding-left: 18px; border-left: 1px solid #e5e7df; text-align: right; }
+.timeAllocationHead strong { display: block; font-size: 19px; }
+.timeAllocationHead span { display: block; margin-top: 4px; color: #888c82; font-size: 8px; }
+.timeAllocationBar { height: 7px; margin: 14px 0 10px; overflow: hidden; border-radius: 999px; background: #eceee7; }
+.timeAllocationBar i { display: block; height: 100%; border-right: 2px solid #769b17; background: var(--lime); }
+.timeAllocationMeta { display: flex; flex-wrap: wrap; gap: 7px 16px; color: #81857b; font-size: 8px; }
+.timeAllocationMeta span + span { position: relative; }
+.timeAllocationMeta span + span::before { content: ""; position: absolute; top: 3px; left: -9px; width: 2px; height: 2px; border-radius: 50%; background: #aeb1a8; }
+.timeEvidence { margin-top: 13px; border-top: 1px solid #ecece7; }
+.timeEvidence summary { width: fit-content; display: flex; align-items: center; gap: 6px; padding: 10px 0 0; color: #62675d; font-size: 8px; font-weight: 680; list-style: none; cursor: pointer; }
+.timeEvidence summary::-webkit-details-marker { display: none; }
+.timeEvidence summary svg:last-child { transition: transform .15s ease; }
+.timeEvidence[open] summary svg:last-child { transform: rotate(180deg); }
+.timeEvidence ul { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; margin: 10px 0 0; padding: 0; list-style: none; }
+.timeEvidence li { padding: 10px; border: 1px solid #e3e5dd; border-radius: 7px; background: #fafbf7; }
+.timeEvidence li strong { color: #62675c; font-size: 8px; }
+.timeEvidence li p { margin: 4px 0 0; color: #777c71; font-size: 8px; line-height: 1.45; }
+.timeCoverageNote { display: flex; align-items: flex-start; gap: 10px; margin-top: 13px; padding: 14px 16px; border: 1px solid #dfe5d1; border-radius: 8px; background: #f7faef; color: #616b49; }
+.timeCoverageNote svg { flex: 0 0 auto; margin-top: 1px; }
+.timeCoverageNote strong { display: block; font-size: 9px; }
+.timeCoverageNote p { margin: 4px 0 0; color: #7a8169; font-size: 8px; line-height: 1.45; }
+.timeLensEmpty { min-height: 230px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 35px; border: 1px dashed #ccd0c4; border-radius: 10px; background: rgba(255,255,255,.6); color: #707b60; text-align: center; }
+.timeLensEmpty h2 { margin: 13px 0 6px; color: #363a32; font-size: 15px; }
+.timeLensEmpty p { max-width: 550px; margin: 0; color: #7b8076; font-size: 9px; line-height: 1.55; }
 
 .workflowGrid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 13px; }
 .filterBar { min-height: 53px; display: flex; align-items: center; gap: 10px; margin: -22px 0 13px; padding: 9px 10px 9px 15px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
@@ -475,6 +524,10 @@
   .stageDisclosure { grid-template-columns: 1fr; }
   .stageScreenshot { border-right: 0; border-bottom: 1px solid #e2e4dc; }
   .workflowQuality ul { grid-template-columns: 1fr; }
+  .timeSummary { grid-template-columns: repeat(2,1fr); }
+  .timeSummary > div:nth-child(2) { border-right: 0; }
+  .timeSummary > div:nth-child(-n+2) { border-bottom: 1px solid #e7e8e2; }
+  .timeLensTabs { grid-template-columns: repeat(2,1fr); }
 }
 
 @media (max-width: 680px) {
@@ -508,6 +561,13 @@
   .qualityDetails > div { border-right: 0; border-bottom: 1px solid #e7ebdf; }
   .qualityDetails > div:last-child { border-bottom: 0; }
   .runtimeNotice { align-items: flex-start; flex-direction: column; }
+  .profilePeriod { display: none; }
+  .timeSummary { grid-template-columns: 1fr; }
+  .timeSummary > div { border-right: 0; border-bottom: 1px solid #e7e8e2; }
+  .timeSummary > div:last-child { border-bottom: 0; }
+  .timeAllocationHead { grid-template-columns: 1fr; gap: 12px; }
+  .timeAllocationHead > div:last-child { padding: 0; border: 0; text-align: left; }
+  .timeEvidence ul { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -8,14 +8,17 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  Building2,
   CalendarRange,
   Camera,
+  ChartPie,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
   Clock3,
   Eye,
   FileCheck2,
+  FolderKanban,
   GitBranch,
   LayoutDashboard,
   ListTree,
@@ -25,6 +28,7 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Users,
   X,
   Workflow,
 } from "lucide-react";
@@ -58,6 +62,7 @@ import {
   type WorkflowBottleneck,
   type WorkflowMap,
   type WorkflowRuntime,
+  type TimeProfileDimension,
 } from "@/lib/workflows/runtime";
 import { commands } from "@/lib/utils/tauri";
 import styles from "./workflows-app.module.css";
@@ -188,6 +193,7 @@ function AppShell({
   const recorderLabel = runtime?.recording ? "Work history active" : "Preparing work history";
   const nav = [
     ["overview", LayoutDashboard, "Overview"],
+    ["time", ChartPie, "Time"],
     ["workflows", ListTree, "Workflows"],
     ["bottlenecks", AlertTriangle, "Friction"],
     ["evidence", FileCheck2, "Evidence"],
@@ -218,16 +224,17 @@ function AppShell({
         <header className={styles.topbar} data-tauri-drag-region>
           <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" onMouseDown={startWindowDrag} />
           <label className={styles.search}><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => navigate("workflows")} placeholder="Search workflows, steps, and evidence" aria-label="Search workflows, steps, and evidence" />{query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={12} /></button> : <kbd>⌘ K</kbd>}</label>
-          <label className={styles.periodControl}>
-            <CalendarRange size={13} />
-            <span>Show</span>
-            <select value={activityPeriod} onChange={(event) => setActivityPeriod(Number(event.target.value) as WorkflowActivityPeriod)} aria-label="Workflow activity period">
-              <option value={0}>All known</option>
-              <option value={7}>Active this week</option>
-              <option value={30}>Active in 30 days</option>
-              <option value={90}>Active in 90 days</option>
-            </select>
-          </label>
+          {view === "time" ? <div className={styles.profilePeriod}><CalendarRange size={13} /><span>{WORKFLOW_CATALOG_DAYS}-day profile</span></div> :
+            <label className={styles.periodControl}>
+              <CalendarRange size={13} />
+              <span>Show</span>
+              <select value={activityPeriod} onChange={(event) => setActivityPeriod(Number(event.target.value) as WorkflowActivityPeriod)} aria-label="Workflow activity period">
+                <option value={0}>All known</option>
+                <option value={7}>Active this week</option>
+                <option value={30}>Active in 30 days</option>
+                <option value={90}>Active in 90 days</option>
+              </select>
+            </label>}
           <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{runtime?.recording ? "Recording" : "Starting"}</Pill>
         </header>
         <div className={styles.purposeBanner}><Eye size={13} />This app only maps and measures your work. It does not run anything.</div>
@@ -534,6 +541,72 @@ function WorkflowDetail({ workflow, navigate }: { workflow: WorkflowMap | null; 
   );
 }
 
+type TimeLens = "categories" | "projects" | "people" | "companies";
+
+const timeLensOptions = [
+  ["categories", ChartPie, "Categories"],
+  ["projects", FolderKanban, "Projects"],
+  ["people", Users, "People"],
+  ["companies", Building2, "Companies"],
+] as const;
+
+function TimeAllocationList({ dimension, lens }: { dimension: TimeProfileDimension; lens: TimeLens }) {
+  if (!dimension.items.length) {
+    return <section className={styles.timeLensEmpty}>
+      <FileCheck2 size={21} />
+      <h2>No supported {lens} identified</h2>
+      <p>This captured history did not provide enough evidence to name any {lens}. The app leaves that time unattributed instead of guessing.</p>
+    </section>;
+  }
+
+  return <section className={styles.timeAllocationList}>
+    {dimension.items.map((item, index) => <article key={`${lens}-${item.label}`} className={styles.timeAllocationItem}>
+      <div className={styles.timeAllocationRank}>{String(index + 1).padStart(2, "0")}</div>
+      <div className={styles.timeAllocationBody}>
+        <div className={styles.timeAllocationHead}><div><h2>{item.label}</h2><p>{item.description}</p></div><div><strong>{formatMinutes(item.minutes)}</strong><span>{item.percentage}% of captured time</span></div></div>
+        <div className={styles.timeAllocationBar} aria-label={`${item.percentage}% of captured time`}><i style={{ width: `${Math.max(1, Math.min(100, item.percentage))}%` }} /></div>
+        <div className={styles.timeAllocationMeta}><span>{item.distinctDays} evidence day{item.distinctDays === 1 ? "" : "s"}</span><span>{item.confidence}% confidence</span><span>{item.apps.length ? item.apps.join(" · ") : "Apps not clear"}</span></div>
+        <details className={styles.timeEvidence}>
+          <summary><FileCheck2 size={12} />Why this time was attributed here <ChevronDown size={12} /></summary>
+          <ul>{item.evidence.map((evidence, evidenceIndex) => <li key={`${evidence.timestamp}-${evidenceIndex}`}><strong>{formatEvidenceTimestamp(evidence.timestamp)} · {evidence.app}</strong><p>{evidence.detail}</p></li>)}</ul>
+        </details>
+      </div>
+    </article>)}
+  </section>;
+}
+
+function TimeView({ analysis, analyze, analyzing }: { analysis: WorkflowAnalysis | null; analyze: () => void; analyzing: boolean }) {
+  const [lens, setLens] = useState<TimeLens>("categories");
+  const profile = analysis?.timeProfile;
+  if (!profile) {
+    return <>
+      <div className={styles.pageHeader}><div><span>Time portfolio</span><h1>Where your time goes</h1><p>See captured time by category, project, person, and company—with traceable observations and explicit gaps.</p></div></div>
+      {analyzing ? <ProcessingView /> : <section className={styles.emptyState}><ChartPie size={23} /><h2>Build your time profile</h2><p>Refresh once to organize the same bounded {WORKFLOW_CATALOG_DAYS}-day work history into four independent views. Unsupported time stays unattributed.</p><button className={styles.primaryButton} onClick={analyze}><RefreshCw size={14} />Map where my time goes</button></section>}
+    </>;
+  }
+  const dimension = profile[lens];
+  const usableDays = analysis?.quality.usableDays ?? 0;
+
+  return <>
+    <div className={styles.pageHeader}>
+      <div><span>Time portfolio</span><h1>Where your time goes</h1><p>Captured active time organized four ways. Each lens stands alone, so category, project, person, and company totals are never added together.</p></div>
+      <button className={styles.primaryButton} onClick={analyze} disabled={analyzing}>{analyzing ? <><span className={styles.spinnerSmall} />Refreshing…</> : <><RefreshCw size={14} />Refresh profile</>}</button>
+    </div>
+    <section className={styles.timeSummary} aria-label="Time profile summary">
+      <div><span>Captured active time</span><strong>{formatMinutes(profile.totalMinutes)}</strong><small>measured across the profile window</small></div>
+      <div><span>Usable history</span><strong>{usableDays} days</strong><small>with captured activity</small></div>
+      <div><span>{lens} coverage</span><strong>{dimension.coveragePercent}%</strong><small>of captured time attributed</small></div>
+      <div><span>Still unattributed</span><strong>{formatMinutes(dimension.unattributedMinutes)}</strong><small>visible instead of guessed</small></div>
+    </section>
+    <div className={styles.timeLensHeader}><div><span>Choose a lens</span><h2>Understand time without mixing dimensions</h2></div><Pill>{profile.days}-day profile</Pill></div>
+    <div className={styles.timeLensTabs} role="tablist" aria-label="Time profile lens">
+      {timeLensOptions.map(([target, Icon, label]) => <button key={target} role="tab" aria-selected={lens === target} className={lens === target ? styles.timeLensActive : ""} onClick={() => setLens(target)}><Icon size={15} /><span>{label}</span><strong>{profile[target].items.length}</strong></button>)}
+    </div>
+    <TimeAllocationList dimension={dimension} lens={lens} />
+    <div className={styles.timeCoverageNote}><Eye size={14} /><div><strong>{formatMinutes(dimension.attributedMinutes)} attributed · {formatMinutes(dimension.unattributedMinutes)} left open</strong><p>Amounts are conservative estimates from exact captured observations. Low-evidence labels are omitted.</p></div></div>
+  </>;
+}
+
 type RankedBottleneck = WorkflowBottleneck & { workflowTitle: string; repetitions: number };
 
 function BottleneckList({ items, openWorkflow, numbered = true }: { items: RankedBottleneck[]; openWorkflow?: (title: string) => void; numbered?: boolean }) {
@@ -642,6 +715,7 @@ export function WorkflowsApp() {
   let content: React.ReactNode;
   switch (view) {
     case "overview": content = <OverviewView analysis={analysis ? { ...analysis, analysis: { workflows } } : null} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} runtime={runtime} refreshRuntime={refreshRuntime} />; break;
+    case "time": content = <TimeView analysis={analysis} analyze={() => void analyze()} analyzing={analyzing} />; break;
     case "workflows": content = <WorkflowsView workflows={workflows} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} filters={filters} setFilters={setFilters} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} />; break;
     case "workflow": content = <WorkflowDetail workflow={activeWorkflow} navigate={navigate} />; break;
     case "bottlenecks": content = <BottlenecksView workflows={workflows} openWorkflow={openWorkflow} />; break;
