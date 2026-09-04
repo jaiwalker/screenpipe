@@ -48,10 +48,10 @@ describe("shared workflows experience", () => {
     fireEvent.click(await screen.findByRole("button", { name: /^time$/i }));
     fireEvent.click(screen.getByRole("tab", { name: /people.*14/i }));
     expect(screen.getByText("14 people")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /show 24 more.*2 remaining/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /show 2 more.*2 remaining/i })).toBeInTheDocument();
     expect(screen.queryByText("Sofia Alvarez")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /show 24 more/i }));
+    fireEvent.click(screen.getByRole("button", { name: /show 2 more/i }));
     expect(screen.getByText("Sofia Alvarez")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Filter people"), { target: { value: "Sofia" } });
     expect(screen.getByText("1 person")).toBeInTheDocument();

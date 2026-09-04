@@ -730,7 +730,7 @@ function TimeView({ analysis, analyze, analyzing, workProfile, workspaceView }: 
       <strong>{matchingItems.length} {resultLabel}</strong>
     </div>
     <TimeAllocationList items={visibleItems} lens={lens} query={query} />
-    {hiddenCount > 0 && <button className={styles.timeShowMore} onClick={() => setVisibleCount((count) => count + 24)}>Show 24 more <span>{hiddenCount} remaining</span></button>}
+    {hiddenCount > 0 && <button className={styles.timeShowMore} onClick={() => setVisibleCount((count) => count + 24)}>Show {Math.min(hiddenCount, 24)} more <span>{hiddenCount} remaining</span></button>}
     <div className={styles.timeCoverageNote}><Eye size={14} /><div><strong>{formatMinutes(dimension.attributedMinutes)} attributed · {formatMinutes(dimension.unattributedMinutes)} left open</strong><p>Amounts are conservative estimates from exact captured observations. Low-evidence labels are omitted.</p></div></div>
   </>;
 }
