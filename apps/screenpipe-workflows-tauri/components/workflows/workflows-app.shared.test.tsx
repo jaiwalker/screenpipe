@@ -50,6 +50,8 @@ describe("shared workflows experience", () => {
     expect(screen.getByRole("heading", { name: "What this workspace can see" })).toBeInTheDocument();
     expect(screen.getByText("Managers cannot open raw employee history")).toBeInTheDocument();
     expect(screen.getByText("Approved outputs only")).toBeInTheDocument();
+    expect(screen.getByText("Showing the latest reports employees have approved for workspace use.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^evidence$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create automation|new automation/i })).not.toBeInTheDocument();
   });
 });
