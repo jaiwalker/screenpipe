@@ -9,6 +9,8 @@ import { createWebWorkflowsPlatform } from "@screenpipe/workflows-ui/web";
 const platform = createWebWorkflowsPlatform({
   runtimeEndpoint: "/api/workflows/runtime",
   analysisEndpoint: "/api/workflows/analyze",
+  cachedAnalysisEndpoint: "/api/workflows/analysis",
+  analysisJobsEndpoint: "/api/workflows/analysis-jobs",
   accountUrl: "/login?next=/workflows",
 });
 

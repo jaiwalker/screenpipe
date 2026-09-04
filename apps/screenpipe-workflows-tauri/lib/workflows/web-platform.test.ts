@@ -38,4 +38,30 @@ describe("web workflows platform", () => {
 
     await expect(platform.ensureRuntime()).rejects.toThrow("Sign in required");
   });
+
+  it("supports cached reports and asynchronous confidential-cloud jobs", async () => {
+    const job = { id: "job-1", status: "queued" as const };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(fixtureWorkflowAnalysis), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(job), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...job, status: "complete", result: fixtureWorkflowAnalysis }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("window", { location: { origin: "https://screenpipe.com" } });
+    const platform = createWebWorkflowsPlatform({
+      cachedAnalysisEndpoint: "/api/workflows/analysis",
+      analysisJobsEndpoint: "/api/workflows/analysis-jobs",
+    });
+    const scope = { id: "organization", kind: "organization" as const, label: "Organization" };
+
+    await expect(platform.loadCapturedWork?.(90, { scope })).resolves.toEqual(fixtureWorkflowAnalysis);
+    await expect(platform.startAnalysisJob?.(90, { scope })).resolves.toEqual(job);
+    await expect(platform.getAnalysisJob?.("job-1")).resolves.toMatchObject({ status: "complete" });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/workflows/analysis?days=90&scope=organization", expect.objectContaining({ method: "GET" }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/workflows/analysis-jobs", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ days: 90, scope: "organization" }),
+    }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/workflows/analysis-jobs/job-1", expect.objectContaining({ method: "GET" }));
+  });
 });

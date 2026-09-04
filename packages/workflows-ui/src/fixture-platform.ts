@@ -195,11 +195,46 @@ export const fixtureWorkflowRuntime: WorkflowRuntime = {
   cloudAuthAvailable: true,
   processingAvailable: true,
   reason: "Fictional website preview",
+  captureLocation: "device",
+  processingLocation: "device",
+  syncState: "local-only",
+};
+
+export const fixtureEnterpriseRuntime: WorkflowRuntime = {
+  ...fixtureWorkflowRuntime,
+  processingLocation: "confidential-cloud",
+  syncState: "synced",
+  reason: "Fictional enterprise workspace preview",
+  workspace: { id: "northstar", name: "Northstar Studios", role: "admin" },
+  availableScopes: [
+    { id: "organization", kind: "organization", label: "Organization", detail: "All approved workspace data" },
+    { id: "team:product", kind: "team", label: "Product team" },
+    { id: "personal", kind: "personal", label: "My work" },
+  ],
 };
 
 export function createFixtureWorkflowsPlatform(analysis: WorkflowAnalysis = fixtureWorkflowAnalysis): WorkflowsPlatform {
   return {
     ensureRuntime: async () => fixtureWorkflowRuntime,
     analyzeCapturedWork: async () => analysis,
+  };
+}
+
+export function createFixtureEnterpriseWorkflowsPlatform(analysis: WorkflowAnalysis = fixtureWorkflowAnalysis): WorkflowsPlatform {
+  const scopedAnalysis = (scope = fixtureEnterpriseRuntime.availableScopes?.[0]) => ({
+    ...analysis,
+    scope,
+    processing: { location: "confidential-cloud" as const, label: "Confidential cloud" },
+  });
+  return {
+    ensureRuntime: async () => fixtureEnterpriseRuntime,
+    loadCapturedWork: async (_days, options) => scopedAnalysis(options?.scope),
+    analyzeCapturedWork: async (_days, options) => scopedAnalysis(options?.scope),
+    startAnalysisJob: async (_days, options) => ({
+      id: "fixture-enterprise-job",
+      status: "complete",
+      result: scopedAnalysis(options?.scope),
+    }),
+    getAnalysisJob: async () => ({ id: "fixture-enterprise-job", status: "complete", result: scopedAnalysis() }),
   };
 }

@@ -58,9 +58,10 @@ import {
   type WorkflowBottleneck,
   type WorkflowMap,
   type WorkflowRuntime,
+  type WorkflowScope,
   type TimeProfileDimension,
 } from "./model";
-import type { WorkflowsAppProps } from "./platform";
+import type { WorkflowAnalysisJob, WorkflowsAppProps, WorkflowsPlatform } from "./platform";
 import styles from "./workflows-app.module.css";
 
 const processingSteps = [
@@ -69,6 +70,21 @@ const processingSteps = [
   ["Measuring each stage", "Separating hands-on work from waiting and switching"],
   ["Classifying friction", "Separating what you can change from external constraints"],
 ] as const;
+
+async function completedJobResult(platform: WorkflowsPlatform, initialJob: WorkflowAnalysisJob) {
+  let job = initialJob;
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    if (job.status === "complete") {
+      if (job.result) return job.result;
+      throw new Error("The workflow report finished without a readable result.");
+    }
+    if (job.status === "failed") throw new Error(job.message || "The workflow report failed.");
+    if (!platform.getAnalysisJob) throw new Error("The workflow report cannot be checked yet.");
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    job = await platform.getAnalysisJob(job.id);
+  }
+  throw new Error("The workflow report is still processing. You can leave this page and refresh later.");
+}
 
 function formatMinutes(value: number) {
   const minutes = Math.max(0, Math.round(value || 0));
@@ -180,6 +196,10 @@ function AppShell({
   setQuery,
   activityPeriod,
   setActivityPeriod,
+  activeScope,
+  scopes,
+  setScope,
+  embedded,
   startWindowDrag,
   children,
 }: {
@@ -191,10 +211,15 @@ function AppShell({
   setQuery: (value: string) => void;
   activityPeriod: WorkflowActivityPeriod;
   setActivityPeriod: (value: WorkflowActivityPeriod) => void;
+  activeScope: WorkflowScope | null;
+  scopes: WorkflowScope[];
+  setScope: (scopeId: string) => void;
+  embedded: boolean;
   startWindowDrag?: () => Promise<void> | void;
   children: React.ReactNode;
 }) {
   const activeView = view === "workflow" ? "workflows" : view;
+  const cloudProcessing = runtime?.processingLocation === "cloud" || runtime?.processingLocation === "confidential-cloud";
   const recorderLabel = runtime?.recording ? "Work history active" : "Preparing work history";
   const nav = [
     ["overview", LayoutDashboard, "Overview"],
@@ -206,7 +231,7 @@ function AppShell({
   ] as const;
 
   return (
-    <div className={styles.app}>
+    <div className={`${styles.app} ${embedded ? styles.appEmbedded : ""}`}>
       <aside className={styles.sidebar}>
         <div className={styles.brand} data-tauri-drag-region onMouseDown={(event) => handleWindowDrag(event, startWindowDrag)}>
           <BrandMark />
@@ -221,7 +246,7 @@ function AppShell({
           ))}
         </nav>
         <div className={styles.sidebarBottom}>
-          <div className={styles.learningStatus}><i /><div><strong>{recorderLabel}</strong><span>Private on this Mac</span></div></div>
+          <div className={styles.learningStatus}><i /><div><strong>{recorderLabel}</strong><span>{cloudProcessing ? "Protected workspace history" : "Private on this device"}</span></div></div>
           <div className={styles.readOnlyNote}><Eye size={14} /><span><strong>Analysis only</strong>Maps your work. Never performs it.</span></div>
         </div>
       </aside>
@@ -229,6 +254,12 @@ function AppShell({
         <header className={styles.topbar} data-tauri-drag-region>
           <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" onMouseDown={(event) => handleWindowDrag(event, startWindowDrag)} />
           <label className={styles.search}><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => navigate("workflows")} placeholder="Search workflows, steps, and evidence" aria-label="Search workflows, steps, and evidence" />{query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={12} /></button> : <kbd>⌘ K</kbd>}</label>
+          {scopes.length > 1 && <label className={styles.scopeControl}>
+            {activeScope?.kind === "organization" ? <Building2 size={13} /> : <Users size={13} />}
+            <select value={activeScope?.id ?? ""} onChange={(event) => setScope(event.target.value)} aria-label="Workflows scope">
+              {scopes.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}
+            </select>
+          </label>}
           {view === "time" ? <div className={styles.profilePeriod}><CalendarRange size={13} /><span>{WORKFLOW_CATALOG_DAYS}-day profile</span></div> :
             <label className={styles.periodControl}>
               <CalendarRange size={13} />
@@ -242,7 +273,12 @@ function AppShell({
             </label>}
           <Pill tone={runtime?.recording ? "green" : "plain"}><span className={styles.liveDot} />{runtime?.recording ? "Recording" : "Starting"}</Pill>
         </header>
-        <div className={styles.purposeBanner}><Eye size={13} />This app only maps and measures your work. It does not run anything.</div>
+        <div className={styles.purposeBanner}><Eye size={13} />This app only maps and measures {activeScope?.kind === "personal" ? "your work" : "work patterns"}. It does not run anything.</div>
+        {embedded && <nav className={styles.embeddedNav} aria-label="Workflows sections">
+          {nav.map(([target, Icon, label]) => (
+            <button key={target} className={activeView === target ? styles.embeddedNavActive : ""} onClick={() => navigate(target)}><Icon size={14} />{label}</button>
+          ))}
+        </nav>}
         <main className={styles.main}>{children}</main>
       </section>
     </div>
@@ -269,7 +305,7 @@ function ProcessingView() {
   }, []);
   return (
     <section className={styles.processing}>
-      <div className={styles.processingHead}><span className={styles.spinner} /><div><h2>Building your workflow catalog</h2><p>Reviewing {WORKFLOW_CATALOG_DAYS} days in smaller periods can take a few minutes. Your raw screen history stays on this Mac.</p></div></div>
+      <div className={styles.processingHead}><span className={styles.spinner} /><div><h2>Building your workflow catalog</h2><p>Reviewing {WORKFLOW_CATALOG_DAYS} days in smaller periods can take a few minutes. Processing follows the boundary shown in Privacy.</p></div></div>
       <div className={styles.processingSteps}>
         {processingSteps.map(([title, detail], index) => (
           <div key={title} className={index === active ? styles.processingActive : ""}>
@@ -640,24 +676,30 @@ function BottlenecksView({ workflows, openWorkflow }: { workflows: WorkflowMap[]
   return <><div className={styles.pageHeader}><div><span>Friction map</span><h1>What you can change</h1><p>Actionable friction is ranked first. Delays owned by other people, systems, or required controls are separated below.</p></div>{!!actionable.length && <div className={styles.headerMetric}><span>Largest addressable delay</span><strong>{formatMinutes(largestDelay)}</strong></div>}</div>{actionable.length ? <><div className={styles.sectionHeading}><div><span>Within reach</span><h2>Friction you can affect</h2></div></div><BottleneckList items={actionable} openWorkflow={openByTitle} /></> : <section className={styles.emptyState}><CheckCircle2 size={23} /><h2>No actionable friction identified</h2><p>The observed delays are outside your control or are deliberate safeguards.</p></section>}{!!constraints.length && <><div className={styles.sectionHeading}><div><span>Plan around</span><h2>External and required constraints</h2></div><Pill>{constraints.length} separated</Pill></div><BottleneckList items={constraints} openWorkflow={openByTitle} numbered={false} /></>}</>;
 }
 
-function EvidenceView({ workflows, openWorkflow }: { workflows: WorkflowMap[]; openWorkflow: (index: number) => void }) {
+function EvidenceView({ workflows, openWorkflow, runtime }: { workflows: WorkflowMap[]; openWorkflow: (index: number) => void; runtime: WorkflowRuntime | null }) {
   const items = workflows.flatMap((workflow, workflowIndex) => workflow.evidence.map((evidence) => ({ ...evidence, workflowTitle: workflow.title, workflowIndex })));
-  return <><div className={styles.pageHeader}><div><span>Verified observations</span><h1>Evidence behind the maps</h1><p>Every row matches an exact captured timestamp. Use it to challenge workflow stages, time estimates, and friction classifications.</p></div><Pill><LockKeyhole size={12} />Raw recording stays local</Pill></div>{items.length ? <section className={styles.evidenceList}>{items.map((item, index) => <button key={`${item.timestamp}-${index}`} onClick={() => openWorkflow(item.workflowIndex)}><span className={styles.evidenceIndex}>{String(index + 1).padStart(2, "0")}</span><div><span>{formatEvidenceTimestamp(item.timestamp)} · {item.app}</span><strong>{item.workflowTitle}</strong><p>{item.detail}</p></div><ChevronRight size={16} /></button>)}</section> : <section className={styles.emptyState}><FileCheck2 size={23} /><h2>No analyzed evidence yet</h2><p>Build your first work map to see the observations behind it.</p></section>}</>;
+  const evidenceBoundary = runtime?.processingLocation === "cloud" || runtime?.processingLocation === "confidential-cloud" ? "Workspace-controlled evidence" : "Raw recording stays local";
+  return <><div className={styles.pageHeader}><div><span>Verified observations</span><h1>Evidence behind the maps</h1><p>Every row matches an exact captured timestamp. Use it to challenge workflow stages, time estimates, and friction classifications.</p></div><Pill><LockKeyhole size={12} />{evidenceBoundary}</Pill></div>{items.length ? <section className={styles.evidenceList}>{items.map((item, index) => <button key={`${item.timestamp}-${index}`} onClick={() => openWorkflow(item.workflowIndex)}><span className={styles.evidenceIndex}>{String(index + 1).padStart(2, "0")}</span><div><span>{formatEvidenceTimestamp(item.timestamp)} · {item.app}</span><strong>{item.workflowTitle}</strong><p>{item.detail}</p></div><ChevronRight size={16} /></button>)}</section> : <section className={styles.emptyState}><FileCheck2 size={23} /><h2>No analyzed evidence yet</h2><p>Build your first work map to see the observations behind it.</p></section>}</>;
 }
 
 function PrivacyView({ runtime }: { runtime: WorkflowRuntime | null }) {
-  return <><div className={styles.pageHeader}><div><span>Privacy</span><h1>Your work stays yours</h1><p>A simple boundary: raw recordings remain on this Mac, and this app only analyzes your work. It cannot take actions for you.</p></div></div><section className={styles.privacyGrid}><article><LockKeyhole size={21} /><h2>Raw history stays local</h2><p>Screen and audio recordings are kept on this device by default.</p><Pill tone="green">On this Mac</Pill></article><article><Eye size={21} /><h2>Only when you ask</h2><p>A bounded summary is processed when you choose to refresh your work map.</p><Pill>Read-only analysis</Pill></article><article><ShieldCheck size={21} /><h2>No actions</h2><p>Screenpipe Workflows does not send, publish, edit, delete, or run your work.</p><Pill>Mapping only</Pill></article></section><section className={styles.statusPanel}><div><span className={runtime?.recording ? styles.statusLive : ""} /><div><strong>{runtime?.recording ? "Work history is active" : "Work history is starting"}</strong><p>{runtime?.source === "screenpipe" ? "Using the history already captured by Screenpipe without recording twice." : "Screenpipe Workflows is preparing its private work history."}</p></div></div><Pill tone={runtime?.recording ? "green" : "plain"}>{runtime?.recording ? "Ready" : "Checking"}</Pill></section></>;
+  const cloudProcessing = runtime?.processingLocation === "cloud" || runtime?.processingLocation === "confidential-cloud";
+  const confidentialProcessing = runtime?.processingLocation === "confidential-cloud";
+  return <><div className={styles.pageHeader}><div><span>Privacy</span><h1>{confidentialProcessing ? "Verified confidential processing" : cloudProcessing ? "Private workspace processing" : "Your work stays yours"}</h1><p>{cloudProcessing ? "Capture begins on each enrolled device and is sent over an encrypted connection to the workspace's cloud boundary. This app cannot take actions for anyone." : "Raw recordings remain on this device, and this app only analyzes your work. It cannot take actions for you."}</p></div></div><section className={styles.privacyGrid}><article><LockKeyhole size={21} /><h2>{cloudProcessing ? "Protected in transit and storage" : "Raw history stays local"}</h2><p>{cloudProcessing ? "Captured work is queued on the device, sent over an encrypted connection, and retained under workspace policy." : "Screen and audio recordings are kept on this device by default."}</p><Pill tone="green">{cloudProcessing ? "Workspace protected" : "On this device"}</Pill></article><article><Eye size={21} /><h2>{confidentialProcessing ? "Attested processing" : cloudProcessing ? "Private cloud processing" : "Only when you ask"}</h2><p>{confidentialProcessing ? "Only a verified processing build can receive the key needed to read workspace data." : cloudProcessing ? "Workspace reports are built by isolated cloud workers. Access and retention follow workspace policy." : "A bounded summary is processed when you choose to refresh your work map."}</p><Pill>Read-only analysis</Pill></article><article><ShieldCheck size={21} /><h2>No actions</h2><p>Screenpipe Workflows does not send, publish, edit, delete, or run anyone's work.</p><Pill>Mapping only</Pill></article></section><section className={styles.statusPanel}><div><span className={runtime?.recording ? styles.statusLive : ""} /><div><strong>{runtime?.recording ? "Work history is active" : "Work history is starting"}</strong><p>{cloudProcessing ? "Using protected workspace uploads and completed cloud reports." : runtime?.source === "screenpipe" ? "Using the history already captured by Screenpipe without recording twice." : "Screenpipe Workflows is preparing its private work history."}</p></div></div><Pill tone={runtime?.recording ? "green" : "plain"}>{runtime?.recording ? "Ready" : "Checking"}</Pill></section></>;
 }
 
-export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "screenpipe-workflows:last-analysis" }: WorkflowsAppProps) {
+export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "screenpipe-workflows:last-analysis", initialScopeId, embedded = false }: WorkflowsAppProps) {
   const [runtime, setRuntime] = useState<WorkflowRuntime | null>(null);
   const [analysis, setAnalysis] = useState<WorkflowAnalysis | null>(initialAnalysis);
+  const [scopeId, setScopeId] = useState(initialScopeId ?? initialAnalysis?.scope?.id ?? "");
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState("");
   const [selectedWorkflow, setSelectedWorkflow] = useState(0);
   const [activityPeriod, setActivityPeriod] = useState<WorkflowActivityPeriod>(0);
   const [filters, setFilters] = useState<WorkflowFilters>(defaultWorkflowFilters);
   const [view, setView] = useState<AppView>("overview");
+  const scopes = runtime?.availableScopes ?? (analysis?.scope ? [analysis.scope] : []);
+  const activeScope = scopes.find((scope) => scope.id === scopeId) ?? scopes[0] ?? analysis?.scope ?? null;
   const navigate = useCallback((target: AppView) => {
     setView(target);
     if (typeof window === "undefined") return;
@@ -682,7 +724,10 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
 
   const refreshRuntime = useCallback(() => {
     void platform.ensureRuntime()
-      .then(setRuntime)
+      .then((nextRuntime) => {
+        setRuntime(nextRuntime);
+        setScopeId((current) => current || nextRuntime.availableScopes?.[0]?.id || "");
+      })
       .catch((error) => setAnalysisError(error instanceof Error ? error.message : String(error || "Could not prepare your work history.")));
   }, [platform]);
 
@@ -708,6 +753,22 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     return () => window.removeEventListener("popstate", syncView);
   }, [initialAnalysis, refreshRuntime, storageKey]);
 
+  useEffect(() => {
+    if (!runtime || !activeScope || !platform.loadCapturedWork) return;
+    let cancelled = false;
+    void platform.loadCapturedWork(WORKFLOW_CATALOG_DAYS, { scope: activeScope })
+      .then((nextAnalysis) => {
+        if (!cancelled && nextAnalysis) {
+          setAnalysis(nextAnalysis);
+          setSelectedWorkflow(0);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) setAnalysisError(error instanceof Error ? error.message : "Could not load the workflow report.");
+      });
+    return () => { cancelled = true; };
+  }, [activeScope?.id, platform, runtime]);
+
   const analyze = useCallback(async () => {
     setAnalyzing(true);
     setAnalysisError("");
@@ -717,8 +778,13 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
       if (!nextRuntime.processingAvailable) {
         throw new Error(nextRuntime.cloudAuthAvailable ? "Work history is not ready yet. Check the setup above, then try again." : "Connect your account before building a work map.");
       }
-      const nextAnalysis = await platform.analyzeCapturedWork(WORKFLOW_CATALOG_DAYS);
-      const mergedAnalysis = mergeWorkflowCatalog(analysis, nextAnalysis);
+      const requestedScope = activeScope ?? undefined;
+      const nextAnalysis = platform.startAnalysisJob
+        ? await completedJobResult(platform, await platform.startAnalysisJob(WORKFLOW_CATALOG_DAYS, { scope: requestedScope }))
+        : await platform.analyzeCapturedWork(WORKFLOW_CATALOG_DAYS, { scope: requestedScope });
+      const mergedAnalysis = requestedScope?.kind === "personal"
+        ? mergeWorkflowCatalog(analysis, nextAnalysis)
+        : nextAnalysis;
       setAnalysis(mergedAnalysis);
       setSelectedWorkflow(0);
       try {
@@ -731,7 +797,7 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     } finally {
       setAnalyzing(false);
     }
-  }, [analysis, platform, storageKey]);
+  }, [activeScope, analysis, platform, storageKey]);
 
   let content: React.ReactNode;
   switch (view) {
@@ -740,9 +806,9 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     case "workflows": content = <WorkflowsView workflows={workflows} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} filters={filters} setFilters={setFilters} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} />; break;
     case "workflow": content = <WorkflowDetail workflow={activeWorkflow} navigate={navigate} />; break;
     case "bottlenecks": content = <BottlenecksView workflows={workflows} openWorkflow={openWorkflow} />; break;
-    case "evidence": content = <EvidenceView workflows={workflows} openWorkflow={openWorkflow} />; break;
+    case "evidence": content = <EvidenceView workflows={workflows} openWorkflow={openWorkflow} runtime={runtime} />; break;
     case "privacy": content = <PrivacyView runtime={runtime} />; break;
   }
 
-  return <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={knownWorkflows.length} query={filters.query} setQuery={(query) => setFilters((current) => ({ ...current, query }))} activityPeriod={activityPeriod} setActivityPeriod={(period) => { setActivityPeriod(period); setSelectedWorkflow(0); }} startWindowDrag={platform.startWindowDrag}>{content}</AppShell>;
+  return <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={knownWorkflows.length} query={filters.query} setQuery={(query) => setFilters((current) => ({ ...current, query }))} activityPeriod={activityPeriod} setActivityPeriod={(period) => { setActivityPeriod(period); setSelectedWorkflow(0); }} activeScope={activeScope} scopes={scopes} setScope={(nextScopeId) => { setScopeId(nextScopeId); setAnalysis(null); setAnalysisError(""); setSelectedWorkflow(0); }} embedded={embedded} startWindowDrag={platform.startWindowDrag}>{content}</AppShell>;
 }

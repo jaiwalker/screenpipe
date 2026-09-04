@@ -113,6 +113,14 @@
   scrollbar-gutter: stable;
 }
 
+.appEmbedded { grid-template-columns: minmax(0,1fr); min-height: calc(100svh - 56px); }
+.appEmbedded .sidebar { display: none; }
+.appEmbedded .workspace { height: auto; min-height: calc(100svh - 56px); }
+.embeddedNav { min-height: 43px; display: flex; align-items: center; gap: 3px; overflow-x: auto; padding: 5px 28px; border-bottom: 1px solid var(--line); background: #fff; }
+.embeddedNav button { height: 31px; display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: #686c63; font-size: 9px; font-weight: 650; cursor: pointer; }
+.embeddedNav button:hover { background: #f0f1ec; color: var(--ink); }
+.embeddedNav .embeddedNavActive { background: var(--ink); color: #fff; }
+
 .topbar {
   position: sticky;
   top: 0;
@@ -148,6 +156,9 @@
 .search > button { width: 20px; height: 20px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: #858980; cursor: pointer; }
 .search > button:hover { background: #eff0eb; color: var(--ink); }
 .search kbd { margin-left: auto; padding: 2px 5px; border: 1px solid #e2e3dd; border-radius: 4px; background: #f6f6f2; color: #777a72; font: inherit; }
+.scopeControl { height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #72766c; font-size: 8px; white-space: nowrap; }
+.scopeControl select { max-width: 150px; border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; text-overflow: ellipsis; }
+.scopeControl:focus-within { border-color: #8b9083; outline: 1px solid #8b9083; outline-offset: 1px; }
 .periodControl { height: 32px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: #72766c; font-size: 8px; white-space: nowrap; }
 .periodControl > span { font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
 .periodControl select { border: 0; outline: 0; background: transparent; color: var(--ink); font: inherit; font-weight: 700; cursor: pointer; }
@@ -538,6 +549,7 @@
   .search { width: auto; flex: 1; }
   .search kbd { display: none; }
   .periodControl > span, .periodControl small { display: none; }
+  .scopeControl select { max-width: 105px; }
   .main { padding: 28px 18px 55px; }
   .purposeBanner { padding: 0 10px; text-align: center; }
   .pageHeader { align-items: flex-start; flex-direction: column; }

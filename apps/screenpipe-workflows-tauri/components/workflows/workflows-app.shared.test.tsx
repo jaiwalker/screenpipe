@@ -4,7 +4,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { WorkflowsApp } from "@screenpipe/workflows-ui";
-import { createFixtureWorkflowsPlatform, fixtureWorkflowAnalysis } from "@screenpipe/workflows-ui/fixture";
+import { createFixtureEnterpriseWorkflowsPlatform, createFixtureWorkflowsPlatform, fixtureWorkflowAnalysis } from "@screenpipe/workflows-ui/fixture";
 
 describe("shared workflows experience", () => {
   beforeEach(() => window.history.replaceState(null, "", "/"));
@@ -33,5 +33,22 @@ describe("shared workflows experience", () => {
     expect(scrollRegion?.scrollTop).toBe(0);
     expect(screen.getByRole("heading", { name: "Your workflows" })).toBeInTheDocument();
     expect(screen.getByText("5 of 5 shown")).toBeInTheDocument();
+  });
+
+  it("renders the enterprise scope and confidential processing boundary without automation actions", async () => {
+    render(
+      <WorkflowsApp
+        platform={createFixtureEnterpriseWorkflowsPlatform()}
+        initialAnalysis={fixtureWorkflowAnalysis}
+        initialScopeId="organization"
+        storageKey={null}
+      />,
+    );
+
+    expect(await screen.findByRole("combobox", { name: "Workflows scope" })).toHaveValue("organization");
+    fireEvent.click(screen.getByRole("button", { name: /^privacy$/i }));
+    expect(screen.getByRole("heading", { name: "Verified confidential processing" })).toBeInTheDocument();
+    expect(screen.getByText("Attested processing")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /create automation|new automation/i })).not.toBeInTheDocument();
   });
 });

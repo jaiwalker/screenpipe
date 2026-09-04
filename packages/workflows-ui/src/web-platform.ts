@@ -2,11 +2,13 @@
 // https://screenpipe.com
 
 import type { WorkflowAnalysis, WorkflowRuntime } from "./model";
-import type { WorkflowsPlatform } from "./platform";
+import type { WorkflowAnalysisJob, WorkflowAnalysisOptions, WorkflowsPlatform } from "./platform";
 
 export type WebWorkflowsPlatformOptions = {
   runtimeEndpoint?: string;
   analysisEndpoint?: string;
+  cachedAnalysisEndpoint?: string;
+  analysisJobsEndpoint?: string;
   accountUrl?: string;
   headers?: HeadersInit | (() => HeadersInit | Promise<HeadersInit>);
 };
@@ -37,14 +39,38 @@ async function requestJson<T>(url: string, init: RequestInit, headers: WebWorkfl
 export function createWebWorkflowsPlatform(options: WebWorkflowsPlatformOptions = {}): WorkflowsPlatform {
   const runtimeEndpoint = options.runtimeEndpoint ?? "/api/workflows/runtime";
   const analysisEndpoint = options.analysisEndpoint ?? "/api/workflows/analyze";
-  return {
+  const requestOptions = (days: number, analysisOptions?: WorkflowAnalysisOptions) => ({
+    days,
+    scope: analysisOptions?.scope?.id,
+  });
+  const platform: WorkflowsPlatform = {
     ensureRuntime: () => requestJson<WorkflowRuntime>(runtimeEndpoint, { method: "POST", body: "{}" }, options.headers),
-    analyzeCapturedWork: (days) => requestJson<WorkflowAnalysis>(analysisEndpoint, {
+    analyzeCapturedWork: (days, analysisOptions) => requestJson<WorkflowAnalysis>(analysisEndpoint, {
       method: "POST",
-      body: JSON.stringify({ days }),
+      body: JSON.stringify(requestOptions(days, analysisOptions)),
     }, options.headers),
     openAccount: async () => {
       if (typeof window !== "undefined") window.location.assign(options.accountUrl ?? "/login?next=/workflows");
     },
   };
+  if (options.cachedAnalysisEndpoint) {
+    platform.loadCapturedWork = (days, analysisOptions) => {
+      const url = new URL(options.cachedAnalysisEndpoint!, typeof window === "undefined" ? "http://localhost" : window.location.origin);
+      url.searchParams.set("days", String(days));
+      if (analysisOptions?.scope?.id) url.searchParams.set("scope", analysisOptions.scope.id);
+      return requestJson<WorkflowAnalysis | null>(`${url.pathname}${url.search}`, { method: "GET" }, options.headers);
+    };
+  }
+  if (options.analysisJobsEndpoint) {
+    platform.startAnalysisJob = (days, analysisOptions) => requestJson<WorkflowAnalysisJob>(options.analysisJobsEndpoint!, {
+      method: "POST",
+      body: JSON.stringify(requestOptions(days, analysisOptions)),
+    }, options.headers);
+    platform.getAnalysisJob = (jobId) => requestJson<WorkflowAnalysisJob>(
+      `${options.analysisJobsEndpoint!.replace(/\/$/, "")}/${encodeURIComponent(jobId)}`,
+      { method: "GET" },
+      options.headers,
+    );
+  }
+  return platform;
 }

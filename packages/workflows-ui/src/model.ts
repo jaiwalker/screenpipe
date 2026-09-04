@@ -9,6 +9,24 @@ export type WorkflowRuntime = {
   cloudAuthAvailable: boolean;
   processingAvailable: boolean;
   reason: string;
+  captureLocation?: "device";
+  processingLocation?: "device" | "cloud" | "confidential-cloud";
+  syncState?: "local-only" | "uploading" | "synced" | "unavailable";
+  workspace?: {
+    id: string;
+    name: string;
+    role: "member" | "manager" | "admin";
+  } | null;
+  availableScopes?: WorkflowScope[];
+};
+
+export type WorkflowScopeKind = "personal" | "team" | "organization" | "project";
+
+export type WorkflowScope = {
+  id: string;
+  kind: WorkflowScopeKind;
+  label: string;
+  detail?: string;
 };
 
 export type WorkflowEvidence = {
@@ -78,6 +96,8 @@ export type WorkflowMap = {
   appSwitches: number;
   confidence: number;
   apps: string[];
+  people?: string[];
+  teams?: string[];
   handoffs: string[];
   variations: string[];
   stages: WorkflowStage[];
@@ -137,4 +157,9 @@ export type WorkflowAnalysis = {
   observedActiveMinutes: number;
   timeProfile?: TimeProfile | null;
   quality: AnalysisQuality;
+  scope?: WorkflowScope;
+  processing?: {
+    location: "device" | "cloud" | "confidential-cloud";
+    label: string;
+  };
 };
