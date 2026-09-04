@@ -58,6 +58,44 @@ describe("shared workflows experience", () => {
     expect(screen.getByText("Sofia Alvarez")).toBeInTheDocument();
   });
 
+  it("keeps command palette and navigation shortcuts inside the focused UI", async () => {
+    render(
+      <WorkflowsApp
+        platform={createFixtureWorkflowsPlatform()}
+        initialAnalysis={fixtureWorkflowAnalysis}
+        storageKey={null}
+      />,
+    );
+
+    await screen.findByRole("heading", { name: /see how your work/i });
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    expect(screen.getByText("Only while this app is focused")).toBeInTheDocument();
+
+    const commandSearch = screen.getByRole("textbox", { name: "Search commands and workflows" });
+    fireEvent.change(commandSearch, { target: { value: "People time profile" } });
+    fireEvent.keyDown(commandSearch, { key: "Enter" });
+    expect(screen.getByRole("heading", { name: "Where your time goes" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /people.*14/i })).toHaveAttribute("aria-selected", "true");
+
+    fireEvent.keyDown(window, { key: "1" });
+    expect(screen.getByRole("tab", { name: /categories/i })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(window, { key: "g" });
+    fireEvent.keyDown(window, { key: "w" });
+    expect(screen.getByRole("heading", { name: "Your workflows" })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "?" });
+    expect(screen.getByRole("dialog", { name: "Command palette" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Command palette" })).not.toBeInTheDocument();
+
+    const workflowSearch = screen.getByLabelText("Search workflows, steps, and evidence");
+    fireEvent.focus(workflowSearch);
+    fireEvent.keyDown(workflowSearch, { key: "g" });
+    fireEvent.keyDown(workflowSearch, { key: "t" });
+    expect(screen.getByRole("heading", { name: "Your workflows" })).toBeInTheDocument();
+  });
+
   it("renders the enterprise scope and confidential processing boundary without automation actions", async () => {
     render(
       <WorkflowsApp
@@ -68,6 +106,9 @@ describe("shared workflows experience", () => {
     );
 
     expect(await screen.findByRole("combobox", { name: "Workflows scope" })).toHaveValue("organization");
+    fireEvent.click(screen.getByRole("button", { name: "Open command palette" }));
+    expect(screen.queryByText("Go to Evidence")).not.toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: /^data controls$/i }));
     expect(screen.getByRole("heading", { name: "What this workspace can see" })).toBeInTheDocument();
     expect(screen.getByText("Managers cannot open raw employee history")).toBeInTheDocument();

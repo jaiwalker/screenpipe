@@ -17,10 +17,13 @@ import {
   ChevronDown,
   ChevronRight,
   Clock3,
+  Command as CommandIcon,
+  CornerDownLeft,
   Eye,
   FileCheck2,
   FolderKanban,
   GitBranch,
+  Keyboard,
   LayoutDashboard,
   ListTree,
   LogIn,
@@ -38,7 +41,7 @@ import {
   X,
   Workflow,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AppView, isAppView } from "./navigation";
 import {
   activeFilterCount,
@@ -79,6 +82,35 @@ const processingSteps = [
   ["Measuring each stage", "Separating hands-on work from waiting and switching"],
   ["Classifying friction", "Separating what you can change from external constraints"],
 ] as const;
+
+const primaryNavigation = [
+  ["overview", LayoutDashboard, "Overview", ["G", "O"]],
+  ["time", ChartPie, "Time", ["G", "T"]],
+  ["workflows", ListTree, "Workflows", ["G", "W"]],
+  ["bottlenecks", AlertTriangle, "Friction", ["G", "F"]],
+  ["profile", UserRoundCog, "Work profile", ["G", "P"]],
+  ["evidence", FileCheck2, "Evidence", ["G", "E"]],
+  ["privacy", ShieldCheck, "Data controls", ["G", "D"]],
+] as const;
+
+type TimeLens = "categories" | "projects" | "people" | "companies";
+
+type PaletteCommand = {
+  id: string;
+  label: string;
+  detail: string;
+  group: "Navigate" | "Time profile" | "Actions" | "Activity period" | "Workspace" | "Workflows";
+  icon: typeof Search;
+  keywords?: string;
+  shortcut?: readonly string[];
+  disabled?: boolean;
+  action: () => void;
+};
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+}
 
 async function completedJobResult(platform: WorkflowsPlatform, initialJob: WorkflowAnalysisJob) {
   let job = initialJob;
@@ -226,6 +258,82 @@ function Pill({ children, tone = "plain" }: { children: React.ReactNode; tone?: 
   return <span className={`${styles.pill} ${styles[`pill_${tone}`]}`}>{children}</span>;
 }
 
+function CommandPalette({ open, commands, close }: { open: boolean; commands: PaletteCommand[]; close: () => void }) {
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (!needle) return commands;
+    return commands.filter((command) => `${command.label} ${command.detail} ${command.group} ${command.keywords ?? ""}`.toLowerCase().includes(needle));
+  }, [commands, query]);
+
+  useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setActiveIndex(0);
+    window.requestAnimationFrame(() => inputRef.current?.focus());
+  }, [open]);
+
+  useEffect(() => {
+    setActiveIndex((current) => Math.min(current, Math.max(0, filtered.length - 1)));
+  }, [filtered.length]);
+
+  if (!open) return null;
+
+  const run = (command: PaletteCommand | undefined) => {
+    if (!command || command.disabled) return;
+    close();
+    command.action();
+  };
+  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((current) => filtered.length ? (current + 1) % filtered.length : 0);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((current) => filtered.length ? (current - 1 + filtered.length) % filtered.length : 0);
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      run(filtered[activeIndex]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    }
+  };
+  const groups = [...new Set(filtered.map((command) => command.group))];
+
+  return (
+    <div className={styles.commandBackdrop} onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+      <section className={styles.commandPalette} role="dialog" aria-modal="true" aria-label="Command palette">
+        <div className={styles.commandSearch}>
+          <CommandIcon size={17} />
+          <input ref={inputRef} value={query} onChange={(event) => { setQuery(event.target.value); setActiveIndex(0); }} onKeyDown={onKeyDown} placeholder="Search commands and workflows" aria-label="Search commands and workflows" />
+          <kbd>esc</kbd>
+        </div>
+        <div className={styles.commandResults} role="listbox" aria-label="Available commands">
+          {filtered.length ? groups.map((group) => (
+            <div className={styles.commandGroup} key={group}>
+              <span>{group}</span>
+              {filtered.map((command) => {
+                if (command.group !== group) return null;
+                const index = filtered.indexOf(command);
+                const Icon = command.icon;
+                return <button key={command.id} role="option" aria-selected={index === activeIndex} className={index === activeIndex ? styles.commandRowActive : styles.commandRow} disabled={command.disabled} onMouseEnter={() => setActiveIndex(index)} onClick={() => run(command)}>
+                  <Icon size={15} />
+                  <span><strong>{command.label}</strong><small>{command.detail}</small></span>
+                  {command.shortcut?.length ? <span className={styles.commandShortcut}>{command.shortcut.map((key) => <kbd key={key}>{key}</kbd>)}</span> : <CornerDownLeft size={13} />}
+                </button>;
+              })}
+            </div>
+          )) : <div className={styles.commandEmpty}><Search size={18} /><strong>No matching command</strong><span>Try a page, time lens, person, company, project, or workflow name.</span></div>}
+        </div>
+        <footer className={styles.commandFooter}><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>?</kbd> shortcuts</span><strong>Only while this app is focused</strong></footer>
+      </section>
+    </div>
+  );
+}
+
 function AppShell({
   view,
   navigate,
@@ -240,6 +348,7 @@ function AppShell({
   setScope,
   embedded,
   startWindowDrag,
+  openCommandPalette,
   children,
 }: {
   view: AppView;
@@ -255,21 +364,14 @@ function AppShell({
   setScope: (scopeId: string) => void;
   embedded: boolean;
   startWindowDrag?: () => Promise<void> | void;
+  openCommandPalette: () => void;
   children: React.ReactNode;
 }) {
   const activeView = view === "workflow" ? "workflows" : view;
   const workspaceView = Boolean(runtime?.workspace);
   const cloudProcessing = runtime?.processingLocation === "cloud" || runtime?.processingLocation === "confidential-cloud";
   const recorderLabel = workspaceView ? (runtime?.recording ? "Approved reports ready" : "Loading approved reports") : runtime?.recording ? "Work history active" : "Preparing work history";
-  const nav = [
-    ["overview", LayoutDashboard, "Overview"],
-    ["time", ChartPie, "Time"],
-    ["workflows", ListTree, "Workflows"],
-    ["bottlenecks", AlertTriangle, "Friction"],
-    ["profile", UserRoundCog, "Work profile"],
-    ...(runtime?.dataBoundary?.workspaceVisibility === "aggregate-only" ? [] : [["evidence", FileCheck2, "Evidence"] as const]),
-    ["privacy", ShieldCheck, "Data controls"],
-  ] as const;
+  const nav = primaryNavigation.filter(([target]) => target !== "evidence" || runtime?.dataBoundary?.workspaceVisibility !== "aggregate-only");
 
   return (
     <div className={`${styles.app} ${embedded ? styles.appEmbedded : ""}`}>
@@ -288,13 +390,14 @@ function AppShell({
         </nav>
         <div className={styles.sidebarBottom}>
           <div className={styles.learningStatus}><i /><div><strong>{recorderLabel}</strong><span>{workspaceView ? "Aggregate workspace view" : cloudProcessing ? "Private processing" : "Private on this device"}</span></div></div>
+          <button className={styles.shortcutsButton} onClick={openCommandPalette}><Keyboard size={14} /><span>Keyboard shortcuts</span><kbd>?</kbd></button>
           <div className={styles.readOnlyNote}><Eye size={14} /><span><strong>Analysis only</strong>Maps your work. Never performs it.</span></div>
         </div>
       </aside>
       <section className={styles.workspace} data-workflows-scroll-region>
         <header className={styles.topbar} data-tauri-drag-region>
           <div className={styles.dragRegion} data-tauri-drag-region aria-hidden="true" onMouseDown={(event) => handleWindowDrag(event, startWindowDrag)} />
-          <label className={styles.search}><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => navigate("workflows")} placeholder="Search workflows, steps, and evidence" aria-label="Search workflows, steps, and evidence" />{query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={12} /></button> : <kbd>⌘ K</kbd>}</label>
+          <div className={styles.search}><Search size={15} /><input data-workflows-search value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => navigate("workflows")} placeholder="Search workflows, steps, and evidence" aria-label="Search workflows, steps, and evidence" />{query ? <button type="button" onClick={() => setQuery("")} aria-label="Clear search"><X size={12} /></button> : <button type="button" className={styles.commandTrigger} onMouseDown={(event) => event.preventDefault()} onClick={openCommandPalette} aria-label="Open command palette"><CommandIcon size={12} /><kbd>⌘ K</kbd></button>}</div>
           {scopes.length > 1 && <label className={styles.scopeControl}>
             {activeScope?.kind === "organization" ? <Building2 size={13} /> : <Users size={13} />}
             <select value={activeScope?.id ?? ""} onChange={(event) => setScope(event.target.value)} aria-label="Workflows scope">
@@ -636,8 +739,6 @@ function WorkflowDetail({ workflow, navigate }: { workflow: WorkflowMap | null; 
   );
 }
 
-type TimeLens = "categories" | "projects" | "people" | "companies";
-
 const timeLensOptions = [
   ["categories", ChartPie, "Categories"],
   ["projects", FolderKanban, "Projects"],
@@ -670,8 +771,7 @@ function TimeAllocationList({ items, lens, query }: { items: TimeAllocationItem[
   </section>;
 }
 
-function TimeView({ analysis, analyze, analyzing, workProfile, workspaceView }: { analysis: WorkflowAnalysis | null; analyze: () => void; analyzing: boolean; workProfile: WorkProfile | null; workspaceView: boolean }) {
-  const [lens, setLens] = useState<TimeLens>("categories");
+function TimeView({ analysis, analyze, analyzing, workProfile, workspaceView, lens, setLens }: { analysis: WorkflowAnalysis | null; analyze: () => void; analyzing: boolean; workProfile: WorkProfile | null; workspaceView: boolean; lens: TimeLens; setLens: (lens: TimeLens) => void }) {
   const [query, setQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(12);
   const profile = analysis?.timeProfile;
@@ -885,10 +985,13 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
   const [activityPeriod, setActivityPeriod] = useState<WorkflowActivityPeriod>(0);
   const [filters, setFilters] = useState<WorkflowFilters>(defaultWorkflowFilters);
   const [view, setView] = useState<AppView>("overview");
+  const [timeLens, setTimeLens] = useState<TimeLens>("categories");
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [workProfile, setWorkProfile] = useState<WorkProfile | null>(null);
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileSaved, setProfileSaved] = useState(false);
   const [profileError, setProfileError] = useState("");
+  const shortcutPrefix = useRef<{ key: string; at: number } | null>(null);
   const scopes = runtime?.availableScopes ?? (analysis?.scope ? [analysis.scope] : []);
   const activeScope = scopes.find((scope) => scope.id === scopeId) ?? scopes[0] ?? analysis?.scope ?? null;
   const workspaceProfile = Boolean(runtime?.workspace) || (activeScope ? activeScope.kind !== "personal" : false);
@@ -913,6 +1016,20 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     setSelectedWorkflow(index);
     navigate("workflow");
   }, [navigate]);
+
+  const focusWorkflowSearch = useCallback(() => {
+    navigate("workflows");
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>("[data-workflows-search]")?.focus();
+    });
+  }, [navigate]);
+
+  const selectScope = useCallback((nextScopeId: string) => {
+    setScopeId(nextScopeId);
+    setAnalysis(null);
+    setAnalysisError("");
+    setSelectedWorkflow(0);
+  }, []);
 
   const refreshRuntime = useCallback(() => {
     void platform.ensureRuntime()
@@ -1032,10 +1149,155 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     }
   }, [activeScope, analysis, platform, storageKey, workProfile]);
 
+  const paletteCommands = useMemo<PaletteCommand[]>(() => {
+    const navigationCommands = primaryNavigation
+      .filter(([target]) => target !== "evidence" || runtime?.dataBoundary?.workspaceVisibility !== "aggregate-only")
+      .map(([target, icon, label, shortcut]) => ({
+        id: `navigate-${target}`,
+        label: `Go to ${label}`,
+        detail: target === "privacy" ? "Review storage, retention, and sharing boundaries" : `Open the ${label.toLowerCase()} view`,
+        group: "Navigate" as const,
+        icon,
+        keywords: target,
+        shortcut,
+        action: () => navigate(target),
+      }));
+    const timeCommands = timeLensOptions.map(([lens, icon, label], index) => ({
+      id: `time-${lens}`,
+      label: `${label} time profile`,
+      detail: `Open Time and compare captured work by ${label.toLowerCase()}`,
+      group: "Time profile" as const,
+      icon,
+      keywords: `time ${lens}`,
+      shortcut: [String(index + 1)],
+      action: () => {
+        setTimeLens(lens);
+        navigate("time");
+      },
+    }));
+    const activityCommands = ([
+      [0, "All captured activity"],
+      [7, "Active in 7 days"],
+      [30, "Active in 30 days"],
+      [90, "Active in 90 days"],
+    ] as const).map(([period, label]) => ({
+      id: `activity-${period}`,
+      label,
+      detail: period ? `Limit workflow views to activity observed in the last ${period} days` : "Use the complete bounded workflow catalog",
+      group: "Activity period" as const,
+      icon: CalendarRange,
+      keywords: `period recent ${period}`,
+      disabled: activityPeriod === period,
+      action: () => {
+        setActivityPeriod(period);
+        setSelectedWorkflow(0);
+      },
+    }));
+    const scopeCommands = scopes.length > 1 ? scopes.map((scope) => ({
+      id: `scope-${scope.id}`,
+      label: scope.label,
+      detail: scope.kind === "personal" ? "Switch to your private workflow map" : "Switch to this approved aggregate workspace",
+      group: "Workspace" as const,
+      icon: scope.kind === "personal" ? UserRoundCog : Building2,
+      keywords: `scope ${scope.kind}`,
+      disabled: activeScope?.id === scope.id,
+      action: () => selectScope(scope.id),
+    })) : [];
+    const workflowCommands = workflows.slice(0, 80).map((workflow, index) => ({
+      id: `workflow-${workflow.rank}-${index}`,
+      label: workflow.title,
+      detail: `${workflow.repetitions} observed run${workflow.repetitions === 1 ? "" : "s"} · ${formatMinutes(workflow.totalMinutes)} total`,
+      group: "Workflows" as const,
+      icon: Workflow,
+      keywords: `${workflow.apps.join(" ")} ${workflow.outcome}`,
+      action: () => openWorkflow(index),
+    }));
+    const filtersActive = activeFilterCount(filters) > 0;
+    return [
+      ...navigationCommands,
+      ...timeCommands,
+      {
+        id: "action-search",
+        label: "Search workflows",
+        detail: "Focus the workflow, step, and evidence search",
+        group: "Actions",
+        icon: Search,
+        shortcut: ["/"],
+        action: focusWorkflowSearch,
+      },
+      {
+        id: "action-refresh",
+        label: "Refresh workflow map",
+        detail: "Process the latest captured work and update the catalog",
+        group: "Actions",
+        icon: RefreshCw,
+        keywords: "analyze process catalog",
+        disabled: analyzing,
+        action: () => void analyze(),
+      },
+      {
+        id: "action-clear-filters",
+        label: "Clear workflow filters",
+        detail: "Reset search, app, duration, and confidence filters",
+        group: "Actions",
+        icon: X,
+        keywords: "reset search",
+        disabled: !filtersActive,
+        action: () => setFilters(defaultWorkflowFilters),
+      },
+      ...activityCommands,
+      ...scopeCommands,
+      ...workflowCommands,
+    ];
+  }, [activeScope?.id, activityPeriod, analyze, analyzing, filters, focusWorkflowSearch, navigate, openWorkflow, runtime?.dataBoundary?.workspaceVisibility, scopes, selectScope, workflows]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if ((event.metaKey || event.ctrlKey) && key === "k") {
+        event.preventDefault();
+        setCommandPaletteOpen((current) => !current);
+        return;
+      }
+      if (commandPaletteOpen) {
+        if (event.key === "Escape") setCommandPaletteOpen(false);
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat || isEditableTarget(event.target)) return;
+      if (key === "?") {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+        return;
+      }
+      if (key === "/") {
+        event.preventDefault();
+        focusWorkflowSearch();
+        return;
+      }
+      if (view === "time" && ["1", "2", "3", "4"].includes(key)) {
+        event.preventDefault();
+        setTimeLens(timeLensOptions[Number(key) - 1][0]);
+        return;
+      }
+      const pending = shortcutPrefix.current;
+      if (pending?.key === "g" && Date.now() - pending.at < 1_000) {
+        shortcutPrefix.current = null;
+        const target = ({ o: "overview", t: "time", w: "workflows", f: "bottlenecks", p: "profile", e: "evidence", d: "privacy" } as Record<string, AppView>)[key];
+        if (!target || (target === "evidence" && runtime?.dataBoundary?.workspaceVisibility === "aggregate-only")) return;
+        event.preventDefault();
+        navigate(target);
+        return;
+      }
+      shortcutPrefix.current = key === "g" ? { key, at: Date.now() } : null;
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [commandPaletteOpen, focusWorkflowSearch, navigate, runtime?.dataBoundary?.workspaceVisibility, view]);
+
   let content: React.ReactNode;
   switch (view) {
     case "overview": content = <OverviewView analysis={analysis ? { ...analysis, analysis: { workflows } } : null} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} runtime={runtime} workProfile={workProfile} refreshRuntime={refreshRuntime} openAccount={platform.openAccount} />; break;
-    case "time": content = <TimeView analysis={analysis} analyze={() => void analyze()} analyzing={analyzing} workProfile={workProfile} workspaceView={workspaceProfile} />; break;
+    case "time": content = <TimeView analysis={analysis} analyze={() => void analyze()} analyzing={analyzing} workProfile={workProfile} workspaceView={workspaceProfile} lens={timeLens} setLens={setTimeLens} />; break;
     case "workflows": content = <WorkflowsView workflows={workflows} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} filters={filters} setFilters={setFilters} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} />; break;
     case "workflow": content = <WorkflowDetail workflow={activeWorkflow} navigate={navigate} />; break;
     case "bottlenecks": content = <BottlenecksView workflows={workflows} openWorkflow={openWorkflow} />; break;
@@ -1044,5 +1306,8 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
     case "privacy": content = <PrivacyView runtime={runtime} />; break;
   }
 
-  return <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={knownWorkflows.length} query={filters.query} setQuery={(query) => setFilters((current) => ({ ...current, query }))} activityPeriod={activityPeriod} setActivityPeriod={(period) => { setActivityPeriod(period); setSelectedWorkflow(0); }} activeScope={activeScope} scopes={scopes} setScope={(nextScopeId) => { setScopeId(nextScopeId); setAnalysis(null); setAnalysisError(""); setSelectedWorkflow(0); }} embedded={embedded} startWindowDrag={platform.startWindowDrag}>{content}</AppShell>;
+  return <>
+    <AppShell view={view} navigate={navigate} runtime={runtime} workflowCount={knownWorkflows.length} query={filters.query} setQuery={(query) => setFilters((current) => ({ ...current, query }))} activityPeriod={activityPeriod} setActivityPeriod={(period) => { setActivityPeriod(period); setSelectedWorkflow(0); }} activeScope={activeScope} scopes={scopes} setScope={selectScope} embedded={embedded} startWindowDrag={platform.startWindowDrag} openCommandPalette={() => setCommandPaletteOpen(true)}>{content}</AppShell>
+    <CommandPalette open={commandPaletteOpen} commands={paletteCommands} close={() => setCommandPaletteOpen(false)} />
+  </>;
 }
