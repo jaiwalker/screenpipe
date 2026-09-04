@@ -6,7 +6,7 @@
 
 Screenpipe Workflows is a parallel Tauri app built from the existing Screenpipe desktop foundation. It keeps the native capture engine, local database, permission flow, and engine startup, but replaces the product shell with one focused lifecycle:
 
-> Observe repeated work → prove the pattern → draft an agent → constrain it → dry-run it → publish it → supervise decisions → learn from outcomes.
+> Observe work → map repeated workflows → measure time and friction → inspect the evidence.
 
 The existing `apps/screenpipe-app-tauri` folder is unchanged. This app has distinct development and production bundle identifiers, deep-link schemes, tray identifiers, and a development port, so both can evolve independently.
 
@@ -14,54 +14,26 @@ The existing `apps/screenpipe-app-tauri` folder is unchanged. This app has disti
 
 The app should:
 
-- Open on ranked workflow opportunities, not a blank chat.
-- Show the local evidence behind every proposed workflow.
-- Make the agent plan editable and understandable.
-- Require explicit boundaries before testing or publishing.
-- Dry-run against a real past case before enabling an agent.
-- Pause for approval before consequential external actions.
-- Propose learnings from user edits instead of silently changing behavior.
+- Find workflows across the complete selected period, including less frequent work.
+- Break every workflow into granular, measured stages.
+- Separate hands-on work, waiting, handoffs, and external constraints.
+- Show the local evidence and screenshots behind every accepted stage.
+- Keep categories, projects, people, and companies explorable without exposing raw employee history to managers.
 
 The app should not:
 
 - Pretend a one-off task is a durable workflow.
-- Ask users to configure tools before it has shown useful evidence.
-- Send, publish, delete, spend, or mutate records without approval.
-- Hide sources, tool calls, or corrections behind a chat transcript.
+- Recommend, create, publish, or run automations.
+- Score employee productivity or blame users for external constraints.
+- Hide uncertainty, unattributed time, or missing evidence.
 - Upload raw screen or audio memory by default.
-- Present generated evidence or agent runs as completed actions.
+- Present model-generated detail as observed evidence.
 
 ## Current implementation boundary
 
-Capture selection and workflow discovery are real. At launch, Workflows checks the installed Screenpipe API on port 3030 and reuses it only when frames or audio are fresh. If no fresh recorder exists, the isolated Workflows profile starts its own engine. The native process queries bounded `/activity-summary` bundles, keeps credentials out of JavaScript, and explicitly requests `gpt-5.6-luna` through the Screenpipe gateway. The discovery and evidence views show that live result.
+Capture selection and local verification are public. At launch, Workflows checks the installed Screenpipe API on port 3030 and reuses it only when frames or audio are fresh. If no fresh recorder exists, the isolated Workflows profile starts its own engine. The native process queries bounded `/activity-summary` bundles, keeps credentials out of JavaScript, and sends the compact evidence to the authenticated workflow-analysis endpoint.
 
-The builder, dry-run, publish, supervision, and outcomes screens remain an interaction preview. They are labeled as such and do not execute external actions.
-
-## Screenshots
-
-### Onboarding
-
-![Screenpipe Workflows onboarding](docs/screenshots/00-onboarding.png)
-
-### Opportunity discovery
-
-![Ranked repeated-work opportunities](docs/screenshots/01-opportunities.png)
-
-### Traceable evidence
-
-![Observed workflow with evidence](docs/screenshots/02-evidence.png)
-
-### Explicit boundaries
-
-![Agent run policy and tool scope](docs/screenshots/03-boundaries.png)
-
-### Safe dry run
-
-![Dry-run comparison against a prior case](docs/screenshots/04-dry-run.png)
-
-### Supervised approval
-
-![Agent paused for an external-action approval](docs/screenshots/05-approval.png)
+The private website monorepo owns the investigation plan, model selection, and workflow reasoning. It returns a candidate map. The public app then rejects invented timestamps and apps, recalculates supported time, attaches screenshots locally, and stores the result. Neither side performs automation.
 
 ## Run locally
 
@@ -77,20 +49,4 @@ Open `http://127.0.0.1:1430/home`. Browser development mode is useful for layout
 bun run dev:tauri
 ```
 
-## Deterministic review routes
-
-The main experience can be reviewed at `home?view=` followed by:
-
-- `opportunities`
-- `evidence`
-- `draft`
-- `boundaries`
-- `dry-run`
-- `publish`
-- `run`
-- `outcomes`
-- `agents`
-- `memory`
-- `controls`
-
-Onboarding preview states use `onboarding?preview=welcome`, `privacy`, `permissions`, `engine`, `model`, or `ready`. Preview mode is only for deterministic visual review; ordinary onboarding invokes the real native permission and recorder-selection components.
+The shared browser preview is available from `apps/screenpipe-workflows-web`. It uses fictional data and does not process local capture history.
