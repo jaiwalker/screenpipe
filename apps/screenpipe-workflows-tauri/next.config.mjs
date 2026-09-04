@@ -1,12 +1,20 @@
+// screenpipe — AI that knows everything you've seen, said, or heard
+// https://screenpipe.com
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     output: 'export',
+    transpilePackages: ['@screenpipe/workflows-ui'],
     images: {
         unoptimized: true,
     },
     eslint: {
         // Disable eslint during builds - we run it separately in CI
         ignoreDuringBuilds: true,
+    },
+    webpack: (config) => {
+        config.resolve.symlinks = false
+        return config
     },
     // Env-gated. When ON, sourcemaps ship inside the Tauri bundle so React
     // #185 / similar minified stack traces decode to real component + file
@@ -19,4 +27,3 @@ const nextConfig = {
     productionBrowserSourceMaps: process.env.SHIP_SOURCE_MAPS === '1',
 }
 export default nextConfig;
-

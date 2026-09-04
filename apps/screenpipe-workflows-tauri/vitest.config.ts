@@ -39,6 +39,7 @@ export default defineConfig({
 		],
 	},
 	resolve: {
+		preserveSymlinks: true,
 		alias: {
 			"@": path.resolve(__dirname, "./"),
 			"@screenpipe-ext": path.resolve(__dirname, "../../crates/screenpipe-core/assets/extensions"),
