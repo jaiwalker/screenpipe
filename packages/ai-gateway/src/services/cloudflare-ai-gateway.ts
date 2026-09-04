@@ -217,6 +217,30 @@ export async function getHostedChatGatewayConnection(
 	if (provider === 'custom-tinfoil' && !glmApiKey) {
 		throw new HostedChatGatewayConfigurationError('TINFOIL_GLM_API_KEY is not configured');
 	}
+	const directGlmBaseUrl = String(env.TINFOIL_GLM_BASE_URL ?? '').trim();
+	if (provider === 'custom-tinfoil' && directGlmBaseUrl) {
+		let directUrl: URL;
+		try {
+			directUrl = new URL(directGlmBaseUrl);
+		} catch {
+			throw new HostedChatGatewayConfigurationError('TINFOIL_GLM_BASE_URL must be a valid URL');
+		}
+		if (
+			directUrl.protocol !== 'https:'
+			|| !directUrl.hostname.endsWith('.containers.tinfoil.dev')
+			|| directUrl.pathname.replace(/\/$/, '') !== '/glm/v1'
+		) {
+			throw new HostedChatGatewayConfigurationError(
+				'TINFOIL_GLM_BASE_URL must be an HTTPS Tinfoil container /glm/v1 URL',
+			);
+		}
+		return {
+			baseURL: directUrl.toString().replace(/\/$/, ''),
+			apiKey: glmApiKey,
+			maxRetries: 0,
+			defaultHeaders,
+		};
+	}
 	const gatewayBaseUrl = localBaseUrl
 		? localGatewayProviderUrl(localBaseUrl, gatewayId, provider)
 		: await env.AI!.gateway(gatewayId).getUrl(provider);

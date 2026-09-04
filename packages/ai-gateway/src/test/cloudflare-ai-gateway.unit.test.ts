@@ -167,6 +167,53 @@ describe('Cloudflare provider-native connection', () => {
 		expect(connection.defaultHeaders['cf-aig-collect-log-payload']).toBe('false');
 	});
 
+	it('can route a zero-traffic Worker version directly to a Tinfoil GLM canary', async () => {
+		const calls: string[] = [];
+		const env = {
+			HOSTED_CHAT_GATEWAY_MODE: 'cloudflare',
+			CLOUDFLARE_AI_GATEWAY_ID: 'gateway-staging',
+			TINFOIL_GLM_API_KEY: 'glm-container-secret',
+			TINFOIL_GLM_BASE_URL: 'https://test.debug.screenpipe.containers.tinfoil.dev/glm/v1',
+			AI: {
+				gateway: (id: string) => ({
+					getUrl: async (provider: string) => {
+						calls.push(`${id}:${provider}`);
+						return `https://gateway.example/${id}/${provider}`;
+					},
+				}),
+			},
+		} as unknown as Env;
+		const context = await buildHostedChatGatewayContext(
+			auth({ accountPlan: 'business' }),
+			'glm-5.3-flash-reap50-iq3m',
+			'interactive',
+		);
+		const connection = await getHostedChatGatewayConnection(env, 'custom-tinfoil', context);
+
+		expect(calls).toEqual([]);
+		expect(connection.baseURL).toBe('https://test.debug.screenpipe.containers.tinfoil.dev/glm/v1');
+		expect(connection.apiKey).toBe('glm-container-secret');
+		expect(connection.maxRetries).toBe(0);
+	});
+
+	it('rejects a direct GLM base URL outside the Tinfoil container domain', async () => {
+		const env = {
+			CLOUDFLARE_AI_GATEWAY_ID: 'gateway-staging',
+			TINFOIL_GLM_API_KEY: 'glm-container-secret',
+			TINFOIL_GLM_BASE_URL: 'https://example.com/glm/v1',
+			AI: { gateway: () => ({ getUrl: async () => 'https://gateway.example/custom-tinfoil' }) },
+		} as unknown as Env;
+		const context = await buildHostedChatGatewayContext(
+			auth({ accountPlan: 'business' }),
+			'glm-5.3-flash-reap50-iq3m',
+			'interactive',
+		);
+
+		await expect(getHostedChatGatewayConnection(env, 'custom-tinfoil', context)).rejects.toThrow(
+			'TINFOIL_GLM_BASE_URL must be an HTTPS Tinfoil container /glm/v1 URL',
+		);
+	});
+
 	it('fails closed when the custom GLM provider has no container key', async () => {
 		const env = {
 			CLOUDFLARE_AI_GATEWAY_ID: 'gateway-staging',
