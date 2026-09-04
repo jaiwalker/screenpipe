@@ -104,7 +104,7 @@
   "app": {
     "withGlobalTauri": true,
     "trayIcon": {
-      "id": "screenpipe_main",
+      "id": "screenpipe_workflows_main",
       "iconPath": "assets/screenpipe-logo-tray-white.png",
       "iconAsTemplate": true,
       "menuOnLeftClick": true

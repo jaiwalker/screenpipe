@@ -17,6 +17,7 @@ use futures::{stream, StreamExt};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{AppHandle, State};
 
@@ -27,6 +28,8 @@ const HISTORY_BUNDLE_DAYS: u16 = 7;
 const HISTORY_QUERY_CONCURRENCY: usize = 2;
 const MAX_WORKFLOWS: usize = 30;
 const MAX_MEETINGS_PER_BUNDLE: usize = 250;
+
+static USING_EXTERNAL_RECORDER: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug)]
 struct RecorderEndpoint {
@@ -304,15 +307,23 @@ async fn own_recorder(app: &AppHandle) -> Option<RecorderEndpoint> {
 
 async fn selected_recorder(app: &AppHandle) -> Option<RecorderEndpoint> {
     if let Some(external) = external_recorder().await {
+        USING_EXTERNAL_RECORDER.store(true, Ordering::Relaxed);
         return Some(external);
     }
+    USING_EXTERNAL_RECORDER.store(false, Ordering::Relaxed);
     own_recorder(app).await
 }
 
 pub async fn external_recorder_is_fresh() -> bool {
-    fetch_health(EXTERNAL_API_BASE)
+    let fresh = fetch_health(EXTERNAL_API_BASE)
         .await
-        .is_some_and(|health| health_has_fresh_capture(&health, Utc::now()))
+        .is_some_and(|health| health_has_fresh_capture(&health, Utc::now()));
+    USING_EXTERNAL_RECORDER.store(fresh, Ordering::Relaxed);
+    fresh
+}
+
+pub fn using_external_recorder() -> bool {
+    USING_EXTERNAL_RECORDER.load(Ordering::Relaxed)
 }
 
 /// The copied app remains useful without a second account bootstrap. Cloud AI

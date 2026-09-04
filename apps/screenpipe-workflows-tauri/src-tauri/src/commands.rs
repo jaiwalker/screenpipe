@@ -1437,7 +1437,7 @@ mod browser_log_tests {
 pub fn set_tray_unhealth_icon(app_handle: tauri::AppHandle) {
     let app = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
-        if let Some(main_tray) = app.tray_by_id("screenpipe_main") {
+        if let Some(main_tray) = app.tray_by_id(crate::tray::MAIN_TRAY_ID) {
             match tauri::image::Image::from_path("icons/screenpipe-logo-tray-failed.png") {
                 Ok(icon) => {
                     if let Err(e) = crate::safe_icon::safe_set_icon(&main_tray, icon) {
@@ -1457,7 +1457,7 @@ pub fn set_tray_unhealth_icon(app_handle: tauri::AppHandle) {
 pub fn set_tray_health_icon(app_handle: tauri::AppHandle) {
     let app = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
-        if let Some(main_tray) = app.tray_by_id("screenpipe_main") {
+        if let Some(main_tray) = app.tray_by_id(crate::tray::MAIN_TRAY_ID) {
             match tauri::image::Image::from_path("icons/screenpipe-logo-tray-black.png") {
                 Ok(icon) => {
                     if let Err(e) = crate::safe_icon::safe_set_icon(&main_tray, icon) {

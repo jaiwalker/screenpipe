@@ -10,7 +10,6 @@ use tauri::Manager;
 use tracing::info;
 
 use crate::commands::show_main_window;
-use crate::window::ShowRewindWindow;
 
 /// App handle for dock menu callbacks.  Uses `OnceLock` (not `static mut`)
 /// to avoid undefined behaviour from unsynchronised mutable access.
@@ -39,19 +38,6 @@ pub fn setup_dock_menu(app_handle: AppHandle) {
                 }
             }));
         }
-        extern "C" fn open_settings(_this: &Object, _sel: Sel, _sender: id) {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(app) = DOCK_APP_HANDLE.get() {
-                    let app_for_closure = app.clone();
-                    let _ = app.run_on_main_thread(move || {
-                        let _ = ShowRewindWindow::Home {
-                            page: Some("general".to_string()),
-                        }
-                        .show(&app_for_closure);
-                    });
-                }
-            }));
-        }
         extern "C" fn check_updates(_this: &Object, _sel: Sel, _sender: id) {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 if let Some(app) = DOCK_APP_HANDLE.get() {
@@ -69,18 +55,9 @@ pub fn setup_dock_menu(app_handle: AppHandle) {
             unsafe {
                 let menu: id = msg_send![class!(NSMenu), new];
 
-                // "Show screenpipe"
-                let title = NSString::alloc(nil).init_str("Show screenpipe");
+                // "Show Screenpipe Workflows"
+                let title = NSString::alloc(nil).init_str("Show Screenpipe Workflows");
                 let action = sel!(showScreenpipe:);
-                let key = NSString::alloc(nil).init_str("");
-                let item: id = msg_send![class!(NSMenuItem), alloc];
-                let item: id = msg_send![item, initWithTitle:title action:action keyEquivalent:key];
-                let _: () = msg_send![item, setTarget: _this];
-                let _: () = msg_send![menu, addItem: item];
-
-                // "Settings"
-                let title = NSString::alloc(nil).init_str("Settings");
-                let action = sel!(openSettings:);
                 let key = NSString::alloc(nil).init_str("");
                 let item: id = msg_send![class!(NSMenuItem), alloc];
                 let item: id = msg_send![item, initWithTitle:title action:action keyEquivalent:key];
@@ -108,10 +85,6 @@ pub fn setup_dock_menu(app_handle: AppHandle) {
         decl.add_method(
             sel!(showScreenpipe:),
             show_screenpipe as extern "C" fn(&Object, Sel, id),
-        );
-        decl.add_method(
-            sel!(openSettings:),
-            open_settings as extern "C" fn(&Object, Sel, id),
         );
         decl.add_method(
             sel!(checkUpdates:),
@@ -142,7 +115,7 @@ pub fn setup_dock_menu(app_handle: AppHandle) {
             objc::runtime::class_addMethod(delegate_class as *mut _, dock_menu_sel, imp, encoding);
             // Also add the action methods
             let void_encoding = b"v:@\0".as_ptr() as *const std::ffi::c_char;
-            for sel_name in &[sel!(showScreenpipe:), sel!(openSettings:)] {
+            for sel_name in &[sel!(showScreenpipe:)] {
                 let m = objc::runtime::class_getInstanceMethod(
                     object_getClass(delegate) as *const _,
                     *sel_name,

@@ -598,6 +598,11 @@ pub fn confirm_and_request_app_quit(app: AppHandle) {
 /// to the both-on wording when settings can't be read.
 #[cfg(target_os = "macos")]
 fn quit_message(app: &AppHandle, show_minimize: bool) -> String {
+    if crate::workflows_runtime::using_external_recorder() {
+        return "Screenpipe will keep recording. Quitting closes only Screenpipe Workflows."
+            .to_string();
+    }
+
     let (audio_on, vision_on) = crate::store::SettingsStore::get(app)
         .ok()
         .flatten()
@@ -629,7 +634,7 @@ fn show_quit_alert(app: &AppHandle, show_minimize: bool, message: &str) {
 
     // NSAlert binds Return to the first button and Escape only to a button
     // titled exactly "Cancel", so the order and the literal label matter.
-    const QUIT_BUTTON: &str = "Quit screenpipe";
+    const QUIT_BUTTON: &str = "Quit Screenpipe Workflows";
     const MINIMIZE_BUTTON: &str = "Minimize to Tray";
     const CANCEL_BUTTON: &str = "Cancel";
 
@@ -645,7 +650,7 @@ fn show_quit_alert(app: &AppHandle, show_minimize: bool, message: &str) {
         // NSAlertStyleInformational — app icon, never a caution-triangle badge.
         let _: () = msg_send![alert, setAlertStyle: 1i64];
 
-        let title = NSString::alloc(nil).init_str("Quit screenpipe?");
+        let title = NSString::alloc(nil).init_str("Quit Screenpipe Workflows?");
         let _: () = msg_send![alert, setMessageText: title];
         let message = NSString::alloc(nil).init_str(message);
         let _: () = msg_send![alert, setInformativeText: message];

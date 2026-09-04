@@ -1227,14 +1227,14 @@ async fn main() {
                 crate::window::install_non_activating_guard();
             }
 
-            // Create macOS app menu with Settings
+            // Create the native macOS app menu.
             #[cfg(target_os = "macos")]
             {
                 use tauri::menu::{MenuBuilder, SubmenuBuilder, PredefinedMenuItem, MenuItemBuilder};
                 let app_ui_hidden = crate::enterprise_policy::is_app_ui_hidden();
 
-                let mut app_submenu_builder = SubmenuBuilder::new(app, "screenpipe")
-                    .item(&PredefinedMenuItem::about(app, Some("About screenpipe"), None)?)
+                let mut app_submenu_builder = SubmenuBuilder::new(app, "Screenpipe Workflows")
+                    .item(&PredefinedMenuItem::about(app, Some("About Screenpipe Workflows"), None)?)
                     .separator();
                 if !crate::updates::is_enterprise_build(&app_handle) {
                     app_submenu_builder = app_submenu_builder
@@ -1242,7 +1242,7 @@ async fn main() {
                             .build(app)?)
                         .separator();
                 }
-                if !app_ui_hidden {
+                if !app_ui_hidden && !WORKFLOWS_MAPPING_ONLY {
                     app_submenu_builder = app_submenu_builder
                         .item(&MenuItemBuilder::with_id("settings", "Settings...")
                             .accelerator("CmdOrCtrl+,")
@@ -1251,7 +1251,7 @@ async fn main() {
                 }
                 let app_submenu = app_submenu_builder
                     .item(
-                        &MenuItemBuilder::with_id("quit_app", "Quit screenpipe")
+                        &MenuItemBuilder::with_id("quit_app", "Quit Screenpipe Workflows")
                             .accelerator("CmdOrCtrl+Q")
                             .build(app)?,
                     )
@@ -2224,7 +2224,7 @@ async fn main() {
             app_handle.manage(update_manager.clone()); // Register for state::<Arc<UpdatesManager>>()
 
             // Setup tray
-            if let Some(_) = app_handle.tray_by_id("screenpipe_main") {
+            if let Some(_) = app_handle.tray_by_id(crate::tray::MAIN_TRAY_ID) {
                 if let Err(e) = tray::setup_tray(&app_handle, update_manager.update_now_menu_item_ref()) {
                     error!("Failed to setup tray: {}", e);
                 }

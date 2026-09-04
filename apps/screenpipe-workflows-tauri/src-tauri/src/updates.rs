@@ -1151,7 +1151,7 @@ impl UpdatesManager {
                 let app_clone = self.app.clone();
                 let _ = self.app.run_on_main_thread(move || {
                     crate::window::with_autorelease_pool(|| {
-                        if let Some(tray) = app_clone.tray_by_id("screenpipe_main") {
+                        if let Some(tray) = app_clone.tray_by_id(crate::tray::MAIN_TRAY_ID) {
                             if let Err(e) =
                                 crate::safe_icon::safe_set_icon_as_template(&tray, image)
                             {

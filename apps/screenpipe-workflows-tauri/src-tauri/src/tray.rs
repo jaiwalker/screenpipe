@@ -37,6 +37,8 @@ use tracing::{debug, error, info, warn};
 /// Re-export for callers that already import from tray.
 pub use crate::process_exit::QUIT_REQUESTED;
 
+pub(crate) const MAIN_TRAY_ID: &str = "screenpipe_workflows_main";
+
 /// Pre-fetched data for building the tray menu. All store reads, settings
 /// deserialization, and permission checks happen OFF the main thread; only
 /// the lightweight menu-item construction runs on the main thread.
@@ -55,6 +57,7 @@ struct TrayMenuData {
     disable_timeline: bool,
     /// Both audio and vision are disabled in settings — nothing can record.
     all_capture_disabled: bool,
+    using_external_recorder: bool,
 }
 
 /// Gather all data needed by `create_dynamic_menu` on the current (non-main)
@@ -150,6 +153,7 @@ fn prefetch_tray_menu_data(app: &AppHandle) -> TrayMenuData {
         app_ui_hidden,
         disable_timeline,
         all_capture_disabled,
+        using_external_recorder: crate::workflows_runtime::using_external_recorder(),
     }
 }
 
@@ -379,7 +383,7 @@ fn dispatch_tray_recording_action(
                 tracing::error!(?action, %error, "native tray recording action failed");
                 send_notify(
                     title,
-                    format!("screenpipe could not {verb} capture: {error}"),
+                    format!("Screenpipe Workflows could not {verb} capture: {error}"),
                 );
             }
         }
@@ -441,7 +445,7 @@ pub(crate) fn force_tray_rebuild(app: &AppHandle) -> Result<()> {
 
     let data = prefetch_tray_menu_data(app);
     let menu = create_dynamic_menu(app, &new_state, update_item.as_ref(), &data)?;
-    if let Some(tray) = app.tray_by_id("screenpipe_main") {
+    if let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) {
         install_tray_menu(&tray, menu)?;
         clear_pending_tray_menu();
     }
@@ -771,7 +775,7 @@ fn apply_pending_tray_menu(app: &AppHandle) -> Result<()> {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let menu = create_dynamic_menu(app, &state, update_item.as_ref(), &data)?;
-    if let Some(tray) = app.tray_by_id("screenpipe_main") {
+    if let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) {
         install_tray_menu(&tray, menu)?;
     }
     Ok(())
@@ -802,6 +806,7 @@ fn snapshot_menu_state(data: &TrayMenuData, effective_status: RecordingStatus) -
         subscription_plan: data.subscription_plan.clone(),
         hd: hd_menu_state(&hd),
         all_capture_disabled: data.all_capture_disabled,
+        using_external_recorder: data.using_external_recorder,
     }
 }
 
@@ -950,6 +955,7 @@ struct MenuState {
     hd: HdMenuState,
     /// Both audio and vision disabled in settings.
     all_capture_disabled: bool,
+    using_external_recorder: bool,
 }
 
 pub fn setup_tray(app: &AppHandle, update_item: Option<&tauri::menu::MenuItem<Wry>>) -> Result<()> {
@@ -958,7 +964,7 @@ pub fn setup_tray(app: &AppHandle, update_item: Option<&tauri::menu::MenuItem<Wr
         *guard = update_item.cloned();
     }
 
-    if let Some(main_tray) = app.tray_by_id("screenpipe_main") {
+    if let Some(main_tray) = app.tray_by_id(MAIN_TRAY_ID) {
         // Initial menu setup with empty state
         let data = prefetch_tray_menu_data(app);
         let menu = create_dynamic_menu(app, &MenuState::default(), update_item, &data)?;
@@ -997,7 +1003,7 @@ pub fn setup_tray(app: &AppHandle, update_item: Option<&tauri::menu::MenuItem<Wr
 /// Log the tray icon position for debugging notch visibility issues.
 #[allow(dead_code)] // called only on macOS
 pub fn log_tray_position(app: &AppHandle) {
-    if let Some(tray) = app.tray_by_id("screenpipe_main") {
+    if let Some(tray) = app.tray_by_id(MAIN_TRAY_ID) {
         match tray.rect() {
             Ok(Some(rect)) => {
                 info!(
@@ -1013,7 +1019,7 @@ pub fn log_tray_position(app: &AppHandle) {
             }
         }
     } else {
-        error!("tray icon 'screenpipe_main' not found");
+        error!("tray icon '{}' not found", MAIN_TRAY_ID);
     }
 }
 
@@ -1036,7 +1042,7 @@ pub fn recreate_tray(app: &AppHandle) {
 
                 // Remove the old tray icon (must be on main thread for NSStatusBar)
                 debug!("recreate_tray: removing old tray icon");
-                let _old = app.remove_tray_by_id("screenpipe_main");
+                let _old = app.remove_tray_by_id(MAIN_TRAY_ID);
                 // Drop the old tray icon explicitly on main thread
                 drop(_old);
                 debug!("recreate_tray: old tray removed, building new one");
@@ -1052,7 +1058,7 @@ pub fn recreate_tray(app: &AppHandle) {
                     }
                 };
 
-                let mut builder = TrayIconBuilder::<Wry>::with_id("screenpipe_main")
+                let mut builder = TrayIconBuilder::<Wry>::with_id(MAIN_TRAY_ID)
                     .icon_as_template(true)
                     .show_menu_on_left_click(!cfg!(target_os = "windows"));
 
@@ -1159,6 +1165,10 @@ fn create_dynamic_menu(
     update_item: Option<&tauri::menu::MenuItem<Wry>>,
     data: &TrayMenuData,
 ) -> Result<tauri::menu::Menu<Wry>> {
+    if crate::WORKFLOWS_MAPPING_ONLY {
+        return create_workflows_menu(app, data);
+    }
+
     let mut menu_builder = MenuBuilder::new(app);
 
     // During setup or summary-first activation, expose only the safe return
@@ -1471,6 +1481,109 @@ fn create_dynamic_menu(
     menu_builder.build().map_err(Into::into)
 }
 
+fn create_workflows_menu(app: &AppHandle, data: &TrayMenuData) -> Result<tauri::menu::Menu<Wry>> {
+    let mut menu_builder = MenuBuilder::new(app);
+    if !data.app_ui_hidden {
+        let (open_id, open_label) = if data.onboarding_completed {
+            ("open_app", "Open Screenpipe Workflows")
+        } else {
+            ("onboarding", "Continue setup")
+        };
+        menu_builder = menu_builder
+            .item(&MenuItemBuilder::with_id(open_id, open_label).build(app)?)
+            .item(&PredefinedMenuItem::separator(app)?);
+    }
+    menu_builder = menu_builder.item(
+        &MenuItemBuilder::with_id("privacy_info", "Raw capture stays on this Mac")
+            .enabled(false)
+            .build(app)?,
+    );
+
+    if data.using_external_recorder {
+        menu_builder = menu_builder.item(
+            &MenuItemBuilder::with_id("recording_status", "● Using Screenpipe recording")
+                .enabled(false)
+                .build(app)?,
+        );
+    } else if !data.onboarding_completed {
+        menu_builder = menu_builder.item(
+            &MenuItemBuilder::with_id("recording_status", "○ Recording starts after setup")
+                .enabled(false)
+                .build(app)?,
+        );
+    } else {
+        let effective_status = get_effective_recording_status();
+        let status_text = recording_status_text(
+            effective_status,
+            data.all_capture_disabled,
+            get_recording_info().audio_capture_status,
+        );
+        menu_builder = menu_builder.item(
+            &MenuItemBuilder::with_id("recording_status", status_text)
+                .enabled(false)
+                .build(app)?,
+        );
+
+        if effective_status == RecordingStatus::Error && data.has_permission_issue {
+            menu_builder = menu_builder.item(
+                &MenuItemBuilder::with_id("fix_permissions", "Fix screen recording permission")
+                    .build(app)?,
+            );
+        }
+
+        if !is_tray_item_hidden("tray_recording_controls") {
+            let is_recording =
+                effective_status == RecordingStatus::Recording && !data.all_capture_disabled;
+            let label = if data.all_capture_disabled {
+                "Recording off — no screen enabled"
+            } else {
+                match effective_status {
+                    RecordingStatus::Recording => "Pause recording",
+                    RecordingStatus::Paused => "Resume recording",
+                    RecordingStatus::ScheduledPause => "Recording paused by schedule",
+                    RecordingStatus::Starting => "Starting recording…",
+                    RecordingStatus::Error => "Retry recording",
+                    RecordingStatus::Stopped => "Start recording",
+                }
+            };
+            menu_builder = menu_builder.item(
+                &CheckMenuItemBuilder::with_id("toggle_recording", label)
+                    .checked(is_recording)
+                    .enabled(!data.all_capture_disabled)
+                    .build(app)?,
+            );
+
+            if is_recording {
+                let pause_submenu = SubmenuBuilder::new(app, "Pause for…")
+                    .item(&MenuItemBuilder::with_id("pause_5", "5 minutes").build(app)?)
+                    .item(&MenuItemBuilder::with_id("pause_15", "15 minutes").build(app)?)
+                    .item(&MenuItemBuilder::with_id("pause_30", "30 minutes").build(app)?)
+                    .item(&MenuItemBuilder::with_id("pause_60", "1 hour").build(app)?)
+                    .build()?;
+                menu_builder = menu_builder.item(&pause_submenu);
+            }
+        }
+    }
+
+    menu_builder
+        .item(&PredefinedMenuItem::separator(app)?)
+        .item(
+            &MenuItemBuilder::with_id(
+                "version",
+                format!("Screenpipe Workflows v{}", app.package_info().version),
+            )
+            .enabled(false)
+            .build(app)?,
+        )
+        .item(
+            &MenuItemBuilder::with_id("quit", "Quit Screenpipe Workflows")
+                .accelerator("CmdOrCtrl+Q")
+                .build(app)?,
+        )
+        .build()
+        .map_err(Into::into)
+}
+
 fn setup_tray_click_handlers(main_tray: &TrayIcon) -> Result<()> {
     main_tray.on_menu_event(move |app_handle, event| {
         // This runs inside tao::send_event (Obj-C FFI, nounwind). handle_menu_event
@@ -1697,7 +1810,10 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
                 dispatch_tray_recording_action(
                     app_for_resume,
                     TrayRecordingAction::Start,
-                    Some(("Recording resumed", "screenpipe is recording again.")),
+                    Some((
+                        "Recording resumed",
+                        "Screenpipe Workflows is recording again.",
+                    )),
                 );
             });
             *PAUSE_TIMER.lock().unwrap_or_else(|e| e.into_inner()) = Some(PauseTimer {
@@ -1720,7 +1836,7 @@ fn handle_menu_event(app_handle: &AppHandle, event: tauri::menu::MenuEvent) {
             };
             send_notify(
                 "Recording paused",
-                format!("screenpipe will auto-resume in {}.", pretty),
+                format!("Screenpipe Workflows will auto-resume in {}.", pretty),
             );
             // Repaint the tray so "Recording" flips to "Paused" immediately.
             let app_for_rebuild = app_handle.clone();
@@ -2086,29 +2202,34 @@ async fn update_menu_if_needed(
     // has changed. Cheap: just an NSString swap on the existing status item.
     let has_perm_issue = new_state.has_permission_issue;
     let audio_capture_status = get_recording_info().audio_capture_status;
-    let tooltip: String = if has_perm_issue {
-        "screenpipe — ⚠️ permissions needed".to_string()
+    let tooltip: String = if data.using_external_recorder {
+        "Screenpipe Workflows — using Screenpipe recording".to_string()
+    } else if has_perm_issue {
+        "Screenpipe Workflows — permissions needed".to_string()
     } else if effective_status == RecordingStatus::Recording
         && audio_capture_status == Some(AudioCaptureStatus::MeetingDetectorUnavailable)
     {
-        "screenpipe — screen recording; meeting detection unavailable".to_string()
+        "Screenpipe Workflows — screen recording; meeting detection unavailable".to_string()
     } else if effective_status == RecordingStatus::Recording
         && audio_capture_status == Some(AudioCaptureStatus::WaitingForMeeting)
     {
-        "screenpipe — screen recording; audio waiting for meeting".to_string()
+        "Screenpipe Workflows — screen recording; audio waiting for meeting".to_string()
     } else if effective_status == RecordingStatus::Paused {
         match pause_remaining() {
-            Some(d) => format!("screenpipe — paused, resumes in {}", format_remaining(d)),
-            None => "screenpipe — paused".to_string(),
+            Some(d) => format!(
+                "Screenpipe Workflows — paused, resumes in {}",
+                format_remaining(d)
+            ),
+            None => "Screenpipe Workflows — paused".to_string(),
         }
     } else if effective_status == RecordingStatus::ScheduledPause {
-        "screenpipe — outside work hours (paused by schedule)".to_string()
+        "Screenpipe Workflows — outside work hours (paused by schedule)".to_string()
     } else {
-        "screenpipe".to_string()
+        "Screenpipe Workflows".to_string()
     };
     let app_for_tooltip = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Some(tray) = app_for_tooltip.tray_by_id("screenpipe_main") {
+        if let Some(tray) = app_for_tooltip.tray_by_id(MAIN_TRAY_ID) {
             let _ = tray.set_tooltip(Some(&tooltip));
         }
     });
@@ -2139,7 +2260,7 @@ async fn update_menu_if_needed(
             let update_item = update_item.cloned();
             if let Err(e) = app.run_on_main_thread(move || {
                 if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let Some(tray) = app_for_thread.tray_by_id("screenpipe_main") else {
+                    let Some(tray) = app_for_thread.tray_by_id(MAIN_TRAY_ID) else {
                         warn!("tray_menu_update: tray missing; will retry state transition");
                         return;
                     };
@@ -2327,6 +2448,19 @@ mod tests {
 
         assert!(replace_menu_state_if_changed(&mut previous, recording));
         assert_eq!(previous.recording_status, Some(RecordingStatus::Recording));
+    }
+
+    #[test]
+    fn workflows_tray_refreshes_when_recorder_ownership_changes() {
+        assert_eq!(MAIN_TRAY_ID, "screenpipe_workflows_main");
+
+        let local = MenuState::default();
+        let external = MenuState {
+            using_external_recorder: true,
+            ..MenuState::default()
+        };
+
+        assert!(menu_state_needs_update(&local, &external));
     }
 
     #[test]
