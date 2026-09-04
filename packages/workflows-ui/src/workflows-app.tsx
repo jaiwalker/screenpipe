@@ -67,6 +67,7 @@ import {
   type WorkflowMap,
   type WorkflowRuntime,
   type WorkflowScope,
+  type TimeAllocationItem,
   type TimeProfileDimension,
 } from "./model";
 import type { WorkflowAnalysisJob, WorkflowsAppProps, WorkflowsPlatform } from "./platform";
@@ -644,17 +645,17 @@ const timeLensOptions = [
   ["companies", Building2, "Companies"],
 ] as const;
 
-function TimeAllocationList({ dimension, lens }: { dimension: TimeProfileDimension; lens: TimeLens }) {
-  if (!dimension.items.length) {
+function TimeAllocationList({ items, lens, query }: { items: TimeAllocationItem[]; lens: TimeLens; query: string }) {
+  if (!items.length) {
     return <section className={styles.timeLensEmpty}>
       <FileCheck2 size={21} />
-      <h2>No supported {lens} identified</h2>
-      <p>This captured history did not provide enough evidence to name any {lens}. The app leaves that time unattributed instead of guessing.</p>
+      <h2>{query ? `No ${lens} match this filter` : `No supported ${lens} identified`}</h2>
+      <p>{query ? "Try another name or clear the filter." : `This captured history did not provide enough evidence to name any ${lens}. The app leaves that time unattributed instead of guessing.`}</p>
     </section>;
   }
 
   return <section className={styles.timeAllocationList}>
-    {dimension.items.map((item, index) => <article key={`${lens}-${item.label}`} className={styles.timeAllocationItem}>
+    {items.map((item, index) => <article key={`${lens}-${item.label}`} className={styles.timeAllocationItem}>
       <div className={styles.timeAllocationRank}>{String(index + 1).padStart(2, "0")}</div>
       <div className={styles.timeAllocationBody}>
         <div className={styles.timeAllocationHead}><div><h2>{item.label}</h2><p>{item.description}</p></div><div><strong>{formatMinutes(item.minutes)}</strong><span>{item.percentage}% of captured time</span></div></div>
@@ -669,17 +670,40 @@ function TimeAllocationList({ dimension, lens }: { dimension: TimeProfileDimensi
   </section>;
 }
 
-function TimeView({ analysis, analyze, analyzing, workProfile }: { analysis: WorkflowAnalysis | null; analyze: () => void; analyzing: boolean; workProfile: WorkProfile | null }) {
+function TimeView({ analysis, analyze, analyzing, workProfile, workspaceView }: { analysis: WorkflowAnalysis | null; analyze: () => void; analyzing: boolean; workProfile: WorkProfile | null; workspaceView: boolean }) {
   const [lens, setLens] = useState<TimeLens>("categories");
+  const [query, setQuery] = useState("");
+  const [visibleCount, setVisibleCount] = useState(12);
   const profile = analysis?.timeProfile;
+  const dimension = profile?.[lens];
+  const matchingItems = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!dimension) return [];
+    if (!normalized) return dimension.items;
+    return dimension.items.filter((item) =>
+      [item.label, item.description, ...item.apps].some((value) => value.toLowerCase().includes(normalized)),
+    );
+  }, [dimension, query]);
+  useEffect(() => {
+    setQuery("");
+    setVisibleCount(12);
+  }, [lens]);
   if (!profile) {
     return <>
       <div className={styles.pageHeader}><div><span>Time portfolio</span><h1>Where your time goes</h1><p>See captured time by category, project, person, and company—with traceable observations and explicit gaps.</p></div></div>
       {analyzing ? <ProcessingView /> : <section className={styles.emptyState}><ChartPie size={23} /><h2>Build your time profile</h2><p>Refresh once to organize the same bounded {WORKFLOW_CATALOG_DAYS}-day work history into four independent views. Unsupported time stays unattributed.</p><button className={styles.primaryButton} onClick={analyze}><RefreshCw size={14} />Map where my time goes</button></section>}
     </>;
   }
-  const dimension = profile[lens];
+  if (!dimension) return null;
   const usableDays = analysis?.quality.usableDays ?? 0;
+  const visibleItems = matchingItems.slice(0, visibleCount);
+  const hiddenCount = matchingItems.length - visibleItems.length;
+  const resultLabel = matchingItems.length === 1
+    ? ({ categories: "category", projects: "project", people: "person", companies: "company" } as const)[lens]
+    : lens;
+  const lensPrivacy = workspaceView && lens === "people"
+    ? "People here are external collaborators from approved aggregate reports. Contributing employee identities stay private."
+    : "Filter the complete supported list; open an item only when you need its underlying observations.";
 
   return <>
     <div className={styles.pageHeader}>
@@ -700,7 +724,13 @@ function TimeView({ analysis, analyze, analyzing, workProfile }: { analysis: Wor
     <div className={styles.timeLensTabs} role="tablist" aria-label="Time profile lens">
       {timeLensOptions.map(([target, Icon, label]) => <button key={target} role="tab" aria-selected={lens === target} className={lens === target ? styles.timeLensActive : ""} onClick={() => setLens(target)}><Icon size={15} /><span>{label}</span><strong>{profile[target].items.length}</strong></button>)}
     </div>
-    <TimeAllocationList dimension={dimension} lens={lens} />
+    <div className={styles.timeLensTools}>
+      <label><Search size={13} /><input aria-label={`Filter ${lens}`} value={query} onChange={(event) => { setQuery(event.target.value); setVisibleCount(12); }} placeholder={`Filter ${lens}…`} /></label>
+      <p>{lensPrivacy}</p>
+      <strong>{matchingItems.length} {resultLabel}</strong>
+    </div>
+    <TimeAllocationList items={visibleItems} lens={lens} query={query} />
+    {hiddenCount > 0 && <button className={styles.timeShowMore} onClick={() => setVisibleCount((count) => count + 24)}>Show 24 more <span>{hiddenCount} remaining</span></button>}
     <div className={styles.timeCoverageNote}><Eye size={14} /><div><strong>{formatMinutes(dimension.attributedMinutes)} attributed · {formatMinutes(dimension.unattributedMinutes)} left open</strong><p>Amounts are conservative estimates from exact captured observations. Low-evidence labels are omitted.</p></div></div>
   </>;
 }
@@ -845,7 +875,7 @@ function PrivacyView({ runtime }: { runtime: WorkflowRuntime | null }) {
   </>;
 }
 
-export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "screenpipe-workflows:last-analysis", initialScopeId, embedded = false }: WorkflowsAppProps) {
+export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "screenpipe-workflows:last-analysis-v2", initialScopeId, embedded = false }: WorkflowsAppProps) {
   const [runtime, setRuntime] = useState<WorkflowRuntime | null>(null);
   const [analysis, setAnalysis] = useState<WorkflowAnalysis | null>(initialAnalysis);
   const [scopeId, setScopeId] = useState(initialScopeId ?? initialAnalysis?.scope?.id ?? "");
@@ -1005,7 +1035,7 @@ export function WorkflowsApp({ platform, initialAnalysis = null, storageKey = "s
   let content: React.ReactNode;
   switch (view) {
     case "overview": content = <OverviewView analysis={analysis ? { ...analysis, analysis: { workflows } } : null} analyzing={analyzing} error={analysisError} analyze={() => void analyze()} openWorkflow={openWorkflow} navigate={navigate} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} runtime={runtime} workProfile={workProfile} refreshRuntime={refreshRuntime} openAccount={platform.openAccount} />; break;
-    case "time": content = <TimeView analysis={analysis} analyze={() => void analyze()} analyzing={analyzing} workProfile={workProfile} />; break;
+    case "time": content = <TimeView analysis={analysis} analyze={() => void analyze()} analyzing={analyzing} workProfile={workProfile} workspaceView={workspaceProfile} />; break;
     case "workflows": content = <WorkflowsView workflows={workflows} knownWorkflowCount={knownWorkflows.length} activityPeriod={activityPeriod} filters={filters} setFilters={setFilters} openWorkflow={openWorkflow} analyze={() => void analyze()} analyzing={analyzing} />; break;
     case "workflow": content = <WorkflowDetail workflow={activeWorkflow} navigate={navigate} />; break;
     case "bottlenecks": content = <BottlenecksView workflows={workflows} openWorkflow={openWorkflow} />; break;
