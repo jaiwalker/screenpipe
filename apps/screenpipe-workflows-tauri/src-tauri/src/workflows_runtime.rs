@@ -299,6 +299,25 @@ fn runtime_payload(recorder: Option<&RecorderEndpoint>, has_cloud_token: bool) -
         "authenticatedLocalApi": authenticated_local_api,
         "cloudAuthAvailable": has_cloud_token,
         "processingAvailable": recording && has_cloud_token && authenticated_local_api,
+        "captureLocation": "device",
+        "processingLocation": "cloud",
+        "syncState": "local-only",
+        "dataBoundary": {
+            "owner": "employee",
+            "rawHistory": "device-only",
+            "screenshots": "device-only",
+            "workspaceVisibility": "none",
+            "managerRawAccess": false,
+            "retention": {
+                "controlledBy": "employee",
+                "recommendedMinimumDays": 30,
+                "recommendedMaximumDays": 90
+            },
+            "archive": {
+                "status": "off",
+                "recoveryControlledBy": "employee"
+            }
+        },
         "health": recorder.map(|endpoint| &endpoint.health),
         "reason": if recorder.is_none() {
             "No fresh recorder is available yet."

@@ -46,9 +46,10 @@ describe("shared workflows experience", () => {
     );
 
     expect(await screen.findByRole("combobox", { name: "Workflows scope" })).toHaveValue("organization");
-    fireEvent.click(screen.getByRole("button", { name: /^privacy$/i }));
-    expect(screen.getByRole("heading", { name: "Verified confidential processing" })).toBeInTheDocument();
-    expect(screen.getByText("Attested processing")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^data controls$/i }));
+    expect(screen.getByRole("heading", { name: "What this workspace can see" })).toBeInTheDocument();
+    expect(screen.getByText("Managers cannot open raw employee history")).toBeInTheDocument();
+    expect(screen.getByText("Approved outputs only")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create automation|new automation/i })).not.toBeInTheDocument();
   });
 });

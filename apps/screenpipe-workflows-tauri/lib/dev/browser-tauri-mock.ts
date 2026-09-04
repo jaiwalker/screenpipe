@@ -852,6 +852,25 @@ export function createBrowserIpcMock(options: BrowserIpcMockOptions) {
           authenticatedLocalApi: true,
           cloudAuthAvailable: true,
           processingAvailable: true,
+          captureLocation: "device",
+          processingLocation: "cloud",
+          syncState: "local-only",
+          dataBoundary: {
+            owner: "employee",
+            rawHistory: "device-only",
+            screenshots: "device-only",
+            workspaceVisibility: "none",
+            managerRawAccess: false,
+            retention: {
+              controlledBy: "employee",
+              recommendedMinimumDays: 30,
+              recommendedMaximumDays: 90,
+            },
+            archive: {
+              status: "off",
+              recoveryControlledBy: "employee",
+            },
+          },
           reason: "ready",
         };
       case "analyze_workflows":
