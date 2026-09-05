@@ -15,7 +15,14 @@ fi
 rm -rf src-tauri/target/debug-dev/bundle
 
 # Build the bundle; the stable development identity is applied below.
-bun tauri build --bundles app -- --profile debug-dev
+# Bundle Metal as a sidecar so Tauri signs the destination after copying it.
+# macOS.files copies do not preserve its generic signature. arm64 never loads
+# the Intel ONNX placeholder, so omit it. Null removes inherited file mappings.
+if [ "$(uname -m)" = "arm64" ]; then
+  bun tauri build --bundles app --config '{"bundle":{"macOS":{"files":{"MacOS/libonnxruntime.dylib":null,"MacOS/mlx.metallib":null}},"externalBin":["bun","ffmpeg","ffprobe","mlx.metallib"]}}' -- --profile debug-dev
+else
+  bun tauri build --bundles app -- --profile debug-dev
+fi
 
 # Strip extended attributes from all files in the bundle
 APP_PATH="src-tauri/target/debug-dev/bundle/macos/screenpipe - Development.app"
@@ -23,6 +30,10 @@ xattr -cr "$APP_PATH"
 
 # Sign the app manually
 IDENTITY="${APPLE_SIGNING_IDENTITY:-Apple Development: Louis Beaumont (NJ372MT773)}"
+if [ -f "$APP_PATH/Contents/MacOS/mlx.metallib" ]; then
+  codesign --force --sign "$IDENTITY" "$APP_PATH/Contents/MacOS/mlx.metallib"
+fi
 codesign --force --deep --sign "$IDENTITY" "$APP_PATH"
+codesign --verify --deep --strict "$APP_PATH"
 
 echo "Build completed successfully!"

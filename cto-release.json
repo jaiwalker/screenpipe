@@ -1,0 +1,8 @@
+{
+  "companionVersion": "0.1.0",
+  "build": 1,
+  "upstreamTag": "app-v2.7.21",
+  "upstreamCommit": "2d6c709ae10329ff597d37db67ef53af9cc2b2bf",
+  "channel": "development",
+  "licenseStatus": "User arranging commercial source license; evaluation and development only until confirmed"
+}

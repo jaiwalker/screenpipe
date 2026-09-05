@@ -98,3 +98,7 @@ packages/sdk/npm/*/LICENSE.md
 # literal directory of that name next to the crate. Junk, but easy to commit by
 # accident with `git add -A`.
 sqlite:/
+# Personal validation outputs can contain private feedback. Never publish them.
+.cto-runtime/
+
+!scripts/cto/package-local.py
