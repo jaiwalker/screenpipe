@@ -53,3 +53,7 @@ After the canonical signed build succeeds, run `python3 scripts/cto/package-loca
 The default local signature is ad hoc (`-`) and is not notarized. It supports local evaluation but does not promise stable macOS permission grants across changed builds. Set `APPLE_SIGNING_IDENTITY` consistently for the build and package steps when a development certificate is available.
 
 Retaining a candidate preserves its app bytes and separate data directory. Switching back requires quitting the currently running development instance first because candidates share development bundle identity and port. Do not point an older candidate at newer data. Cross-version migration and a consistent backup/restore rehearsal remain release gates.
+
+## Account-free local evaluation (build 2)
+
+Run `bash scripts/cto/build-local.sh`, then `python3 scripts/cto/package-local.py`. The wrapper compiles the upstream DEV_LOGIN_SKIP and DEV_BILLING_BYPASS options into the frontend and calls the canonical queued signed build. The frontend cache includes NEXT_PUBLIC variables, so these settings invalidate build 1 assets. On onboarding, choose “skip for dev, continue without an account”; complete macOS capture permissions normally. These options do not provide hosted AI access or substitute for the source license. Build 1 stays retained.
